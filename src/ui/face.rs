@@ -7,6 +7,7 @@
 use std::fmt::Write;
 use std::sync::OnceLock;
 
+use super::print::{JACK, SECTION, SMALL, SWITCH};
 use super::text;
 use crate::graph::{Device, Dir, Finish, Media};
 
@@ -118,12 +119,13 @@ fn fin(f: Finish) -> Fin {
     }
 }
 
-fn slots(count: usize) -> usize {
+/// How many jacks a mult shows for `count` cords: one each, and a free one.
+pub fn slots(count: usize) -> usize {
     count + 1
 }
 
 fn label_w(t: &str) -> f64 {
-    text::width(text::BOLD, t, 8.5, 0.8)
+    SECTION.width(t)
 }
 
 fn group_w(dev: &Device, gi: usize, jd: &[JackDef], counts: &[usize]) -> f64 {
@@ -227,6 +229,47 @@ fn esc(t: &str) -> String {
     t.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
+/// The shadow a face of width `w` casts on the desk, as an SVG document the size of the face's
+/// picture. It is all blur, so it is drawn small and stretched, and only again when the face's
+/// size changes: blurring at full size cost more than drawing the rest of the face.
+pub fn shadow(w: f64, rack: bool) -> String {
+    let (dw, dh) = (w + 2.0 * SHADOW, DEV_H + 2.0 * SHADOW);
+    let r = if rack { 3.0 } else { 12.0 };
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{dw}" height="{dh}" viewBox="0 0 {dw} {dh}">
+<filter id="sh" filterUnits="userSpaceOnUse" x="0" y="0" width="{dw}" height="{dh}"><feGaussianBlur stdDeviation="7"/></filter>
+<rect x="{SHADOW}" y="{}" width="{w}" height="{DEV_H}" rx="{r}" fill="#000" opacity=".5" filter="url(#sh)"/>
+</svg>"##,
+        SHADOW + 10.0
+    )
+}
+
+/// Half the size of a jack's picture: the nut and its shadow fit inside.
+pub const PIC: f64 = 22.0;
+
+/// A jack (`Some`) or the plus badge at the corner of a mult's free jack (`None`), as an SVG
+/// document `2 PIC` square centred on it. The jacks are laid over the faces as pictures of their
+/// own, so that while a plug is in the hand the ones it can't go into can fade without the faces
+/// being drawn again.
+pub fn jack_pic(kind: Option<JackKind>) -> String {
+    let s = 2.0 * PIC;
+    let what = match kind {
+        Some(JackKind::Mono) => format!(r##"<use href="#jack-mono" x="{PIC}" y="{PIC}"/>"##),
+        Some(JackKind::Stereo) => format!(r##"<use href="#jack-stereo" x="{PIC}" y="{PIC}"/>"##),
+        Some(JackKind::Midi) => format!(r##"<use href="#jack-midi" x="{PIC}" y="{PIC}"/>"##),
+        None => format!(
+            r##"<circle cx="{PIC}" cy="{}" r="6.2" fill="#000" opacity=".35"/><circle cx="{PIC}" cy="{PIC}" r="5.8" fill="#1b1c1e" stroke="#f2f2f2" stroke-opacity=".35" stroke-width=".8"/><path d="M{},{PIC} h6 M{PIC},{} v6" stroke="#f2f2f2" stroke-width="1.6" stroke-linecap="round"/>"##,
+            PIC + 0.8,
+            PIC - 3.0,
+            PIC - 3.0
+        ),
+    };
+    format!(r##"<svg xmlns="http://www.w3.org/2000/svg" width="{s}" height="{s}" viewBox="0 0 {s} {s}">{}{what}</svg>"##, defs())
+}
+
+/// Where the badge sits from the centre of the free jack it marks.
+pub const BADGE: (f64, f64) = (11.5, -11.5);
+
 /// The face as an SVG document, `SHADOW` larger on every side than the face itself.
 /// `rack_w`: in a rack, the rack's width (the face gets ears and fills it).
 pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack_w: Option<f64>) -> (String, Geometry) {
@@ -242,18 +285,26 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
         let (x, gw) = geo.groups[gi];
         let _ = write!(
             body,
-            r#"<rect x="{x}" y="18" width="{gw}" height="92" rx="6" fill="rgba(0,0,0,.15)" stroke="rgba(0,0,0,.3)"/><path d="M{},110.6 h{}" stroke="rgba(255,255,255,.14)"/><text x="{}" y="31" font-size="8.5" fill="{}" letter-spacing=".8">{}</text>"#,
+            r#"<rect x="{x}" y="18" width="{gw}" height="92" rx="6" fill="rgba(0,0,0,.15)" stroke="rgba(0,0,0,.3)"/><path d="M{},110.6 h{}" stroke="rgba(255,255,255,.14)"/>{}"#,
             x + 6.0,
             gw - 12.0,
-            x + 8.0,
-            f.print,
-            esc(&g.label)
+            SECTION.text(x + 8.0, 31.0, f.print, "start", &g.label)
         );
         let tx = x + gw - 30.0;
         if g.dir == Dir::In {
-            let _ = write!(body, r#"<rect x="{tx}" y="22.5" width="23" height="11" rx="2" fill="none" stroke="{p}" stroke-width=".9"/><text x="{}" y="31" font-size="7.5" fill="{p}" text-anchor="middle">IN</text>"#, tx + 11.5, p = f.print);
+            let _ = write!(
+                body,
+                r#"<rect x="{tx}" y="22.5" width="23" height="11" rx="2" fill="none" stroke="{}" stroke-width=".9"/>{}"#,
+                f.print,
+                SMALL.text(tx + 11.5, 31.0, f.print, "middle", "IN")
+            );
         } else {
-            let _ = write!(body, r#"<rect x="{tx}" y="22.5" width="23" height="11" rx="2" fill="{}"/><text x="{}" y="31" font-size="7.5" fill="{}" text-anchor="middle">OUT</text>"#, f.print, tx + 11.5, f.inv);
+            let _ = write!(
+                body,
+                r#"<rect x="{tx}" y="22.5" width="23" height="11" rx="2" fill="{}"/>{}"#,
+                f.print,
+                SMALL.text(tx + 11.5, 31.0, f.inv, "middle", "OUT")
+            );
         }
         for (i, j) in jd.iter().enumerate().filter(|(_, j)| j.group == gi) {
             let k = slots(counts[i]);
@@ -262,23 +313,19 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
             if k > 1 {
                 let _ = write!(body, r#"<rect x="{}" y="41" width="{}" height="42" rx="21" fill="rgba(0,0,0,.08)" stroke="{}" stroke-width=".9" opacity=".5"/>"#, jx - 21.0, (k - 1) as f64 * JP + 42.0, f.print);
             }
-            let sym = match j.kind {
-                JackKind::Mono => "jack-mono",
-                JackKind::Stereo => "jack-stereo",
-                JackKind::Midi => "jack-midi",
-            };
-            for s in 0..k {
-                let _ = write!(body, r##"<use href="#{sym}" x="{}" y="62"/>"##, jx + s as f64 * JP);
-            }
-            let (size, ls) = if j.kind == JackKind::Stereo { (7.5, 0.6) } else { (9.0, 0.0) };
-            let _ = write!(body, r#"<text x="{}" y="91" font-size="{size}" fill="{}" text-anchor="middle" letter-spacing="{ls}">{}</text>"#, jx + (k - 1) as f64 * JP / 2.0, f.print, esc(&j.label));
+            // the jacks themselves are pictures of their own, laid over the face (see `jack_pic`)
+            body.push_str(&JACK.text(jx + (k - 1) as f64 * JP / 2.0, 91.0, f.print, "middle", &j.label));
         }
     }
     for (gi, [bx, by, _, _]) in &geo.switches {
         // a little hardware switch: one stereo jack, or L and R apart
         let by = by + 2.0;
         let on = split.get(*gi).copied().unwrap_or(false);
-        let _ = write!(body, r##"<rect x="{bx}" y="{by}" width="34" height="10" rx="2" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/><text x="{}" y="{}" font-size="6.8" fill="#e6e7e8" text-anchor="middle" letter-spacing=".5">{}</text>"##, bx + 17.0, by + 7.6, if on { "JOIN" } else { "SPLIT" });
+        let _ = write!(
+            body,
+            r##"<rect x="{bx}" y="{by}" width="34" height="10" rx="2" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/>{}"##,
+            SWITCH.text(bx + 17.0, by + 7.6, "#e6e7e8", "middle", if on { "JOIN" } else { "SPLIT" })
+        );
     }
     let mut grille = String::new();
     if let Some((gx0, gx1)) = geo.grille {
@@ -308,7 +355,12 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
         [(11.0, 11.0), (w - 11.0, 11.0), (11.0, h - 11.0), (w - 11.0, h - 11.0)]
             .iter()
             .enumerate()
-            .map(|(i, (sx, sy))| format!(r##"<use href="#screw" transform="translate({sx},{sy}) rotate({})"/>"##, (i * 37 + dev.name.len() * 11) % 90))
+            .map(|(i, (sx, sy))| {
+                format!(
+                    r##"<use href="#screw" transform="translate({sx},{sy}) rotate({})"/>"##,
+                    (i * 37 + dev.name.len() * 11) % 90
+                )
+            })
             .collect()
     };
     // paint: solid base, then the texture on top
@@ -345,7 +397,7 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="{dw}" height="{dh}" viewBox="0 0 {dw} {dh}" font-family="Noto Sans" font-weight="bold">
 {defs}
 <g transform="translate({SHADOW},{SHADOW})">
-<g filter="url(#sh)">
+<g>
 {ears}
 {skin}
 <rect x="{a}" y=".75" width="{b}" height="{c}" rx="{r}" fill="none" stroke="rgba(255,255,255,.2)"/>
@@ -353,13 +405,13 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
 </g>
 {screws}
 <g font-weight="900" fill="{print}">{title}</g>
-<text x="{x0}" y="57" font-size="7.8" fill="{sub}" letter-spacing="1">{model}</text>
+{model}
 <circle cx="{led}" cy="54" r="5" fill="{glow}" opacity=".35"/><circle cx="{led}" cy="54" r="3.2" fill="{lamp}" stroke="rgba(0,0,0,.6)" stroke-width=".8"/>
 <rect x="{lx}" y="64.5" width="{lw}" height="43" rx="4" fill="#111214"/>
 <rect x="{ix}" y="67.5" width="{iw}" height="37" rx="2" fill="url(#gLcd)"/>
 <rect x="{ix}" y="67.5" width="{iw}" height="37" rx="2" fill="none" stroke="rgba(110,45,0,.35)" stroke-width="3"/>
 {body}{grille}{leds}
-<text x="{sig}" y="112" font-size="7.5" fill="{print}" text-anchor="middle" letter-spacing=".6">SIG</text>
+{sig}
 </g>
 </svg>"##,
         defs = defs(),
@@ -369,14 +421,13 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
         c = h - 1.5,
         d = w - 2.0 * ear,
         print = f.print,
-        sub = f.sub,
-        model = esc(&dev.model),
+        model = SMALL.text(x0, 57.0, f.sub, "start", &dev.model),
         led = x0 + IDW - 5.0,
         lx = x0 - 1.5,
         lw = IDW + 3.0,
         ix = x0 + 1.5,
         iw = IDW - 3.0,
-        sig = mx + 9.5,
+        sig = SMALL.text(mx + 9.5, 112.0, f.print, "middle", "SIG"),
         // the status lamp: green while running, amber when idle, dark when suspended
         lamp = match dev.state {
             "running" => "#4cff6a",
@@ -430,7 +481,6 @@ fn defs() -> &'static str {
             r##"<defs>
 <pattern id="pt" width="80" height="80" patternUnits="userSpaceOnUse"><image href="{paint}" width="80" height="80"/></pattern>
 <pattern id="nz" width="128" height="128" patternUnits="userSpaceOnUse"><image href="{noise}" width="128" height="128"/></pattern>
-<filter id="sh" x="-10%" y="-25%" width="120%" height="160%"><feDropShadow dx="0" dy="10" stdDeviation="7" flood-color="#000" flood-opacity=".5"/></filter>
 <linearGradient id="gSheen" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".16"/><stop offset=".35" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".24"/></linearGradient>
 <linearGradient id="gNut" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f6f7f8"/><stop offset=".45" stop-color="#b6b9bd"/><stop offset="1" stop-color="#55585d"/></linearGradient>
 <radialGradient id="gWasher" cx=".4" cy=".35" r=".75"><stop offset="0" stop-color="#5e6166"/><stop offset="1" stop-color="#141517"/></radialGradient>
@@ -438,10 +488,12 @@ fn defs() -> &'static str {
 <radialGradient id="gChrome" cx=".35" cy=".3" r=".85"><stop offset="0" stop-color="#fff"/><stop offset=".4" stop-color="#b9bcc1"/><stop offset=".75" stop-color="#65686d"/><stop offset="1" stop-color="#a6a9ad"/></radialGradient>
 <radialGradient id="gHole" cx=".5" cy=".62" r=".6"><stop offset="0" stop-color="#000"/><stop offset=".7" stop-color="#0a0a0b"/><stop offset="1" stop-color="#3c3d40"/></radialGradient>
 <linearGradient id="gLcd" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f7bb62"/><stop offset="1" stop-color="#e38c2a"/></linearGradient>
-<polygon id="hex" points="{hex}" fill="url(#gNut)" stroke="#43454a" stroke-width=".8"/>
-<g id="jack-mono"><circle r="16.5" cx="1.2" cy="2.4" fill="#000" opacity=".35"/><use href="#hex"/><circle r="11.4" fill="url(#gWasher)"/><circle r="8.7" fill="url(#gChrome)" stroke="#2a2b2e" stroke-width=".8"/><circle r="5.5" fill="url(#gHole)"/></g>
+<filter id="nutShadow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="1.2"/></filter>
+<polygon id="hexShape" points="{hex}"/>
+<g id="hex"><use href="#hexShape" fill="#000" opacity=".4" transform="translate(1.2,2.4)" filter="url(#nutShadow)"/><use href="#hexShape" fill="url(#gNut)" stroke="#43454a" stroke-width=".8"/></g>
+<g id="jack-mono"><use href="#hex"/><circle r="11.4" fill="url(#gWasher)"/><circle r="8.7" fill="url(#gChrome)" stroke="#2a2b2e" stroke-width=".8"/><circle r="5.5" fill="url(#gHole)"/></g>
 <g id="jack-stereo"><use href="#jack-mono"/><circle r="10.1" fill="none" stroke="#c9a24a" stroke-width="1.3"/></g>
-<g id="jack-midi"><circle r="16.5" cx="1.2" cy="2.4" fill="#000" opacity=".35"/><use href="#hex"/><circle r="11.4" fill="url(#gWasherMidi)"/><circle r="8.7" fill="url(#gChrome)" stroke="#2a2b2e" stroke-width=".8"/><circle r="5.5" fill="url(#gHole)"/></g>
+<g id="jack-midi"><use href="#hex"/><circle r="11.4" fill="url(#gWasherMidi)"/><circle r="8.7" fill="url(#gChrome)" stroke="#2a2b2e" stroke-width=".8"/><circle r="5.5" fill="url(#gHole)"/></g>
 <g id="screw"><circle r="5.2" fill="url(#gChrome)" stroke="#35363a" stroke-width=".7"/><path d="M-3.2,0 H3.2 M0,-3.2 V3.2" stroke="#36373b" stroke-width="1.4" stroke-linecap="round"/></g>
 </defs>"##
         )

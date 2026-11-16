@@ -20,7 +20,7 @@ use super::scene::{Layer, Scene, View, next_id};
 use crate::pw::Connection;
 
 /// After zooming, faces are drawn sharp again once the zoom has been still this long.
-const RESCALE_DELAY: Duration = Duration::from_millis(150);
+const RESCALE_DELAY: Duration = Duration::from_millis(250);
 /// How often a long name on an LCD moves on.
 const MARQUEE: Duration = Duration::from_millis(280);
 
@@ -37,6 +37,8 @@ enum Drag {
     Plug { seq: u64, p: (f32, f32), v: (f32, f32), magnet: Option<String>, targets: Vec<String>, moved: f64, start: (f64, f64) },
     /// the SAG knob, turned by dragging up and down
     Knob { y0: f64, sag0: f32 },
+    /// the cords switch: dragged, it steps between its positions; clicked, it moves on one
+    Switch { from: (f64, f64), pos0: u8, moved: bool },
     /// a panel key held down
     Key,
 }
@@ -270,6 +272,10 @@ impl App {
                 self.scene.cables = (self.scene.cables + 1) % 3;
                 self.save_settings();
             }
+            Key::CablesAt(n) => {
+                self.scene.cables = n.min(2);
+                self.save_settings();
+            }
             Key::Arrange => {
                 self.scene.arrange();
                 self.fit(true);
@@ -393,8 +399,11 @@ impl App {
                 Some(_) => {}
                 None => self.rescale_at = Some(now + RESCALE_DELAY),
             }
+        } else {
+            // zoomed back to the scale they are drawn at
+            self.rescale_at = None;
         }
-        self.scene.prepare(self.raster, (now - self.start).as_millis());
+        let faces_waiting = self.scene.prepare(self.raster, (now - self.start).as_millis());
         if self.bg.as_ref().is_none_or(|(_, pm)| (pm.width(), pm.height()) != self.size) {
             self.bg = Some((next_id(), background(self.size.0, self.size.1)));
         }
@@ -430,28 +439,38 @@ impl App {
         let v = self.view;
         let mut sprites: Vec<Sprite> = Vec::new();
         if let Some((id, pm)) = &self.bg {
-            sprites.push(Sprite { id: *id, pm: Some(pm), x: 0.0, y: 0.0, w: pm.width() as f64, h: pm.height() as f64 });
+            sprites.push(Sprite { id: *id, pm: Some(pm), x: 0.0, y: 0.0, w: pm.width() as f64, h: pm.height() as f64, alpha: 1.0 });
         }
         if let Some((_, l)) = &self.scene.rack_bg {
-            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: l.x * v.s + v.x, y: l.y * v.s + v.y, w: l.w * v.s, h: l.h * v.s });
+            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: l.x * v.s + v.x, y: l.y * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha: 1.0 });
         }
-        for d in &self.scene.devs {
-            for l in [d.face.as_ref(), d.lcd.as_ref().map(|(_, l)| l), d.meter.as_ref().map(|(_, l)| l)].into_iter().flatten() {
-                sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (d.x + l.x) * v.s + v.x, y: (d.y + l.y) * v.s + v.y, w: l.w * v.s, h: l.h * v.s });
+        let targets = match &self.drag {
+            Some(Drag::Plug { targets, .. }) => Some(targets.as_slice()),
+            _ => None,
+        };
+        for (di, d) in self.scene.devs.iter().enumerate() {
+            for l in [d.shade.as_ref().map(|(_, l)| l), d.face.as_ref(), d.lcd.as_ref().map(|(_, l)| l), d.meter.as_ref().map(|(_, l)| l)].into_iter().flatten() {
+                sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (d.x + l.x) * v.s + v.x, y: (d.y + l.y) * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha: 1.0 });
+            }
+            // its jacks, over the face
+            for (pic, x, y, alpha) in self.scene.jack_sprites(di, targets) {
+                if let Some(l) = &self.scene.jack_pics[pic] {
+                    sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (x + l.x) * v.s + v.x, y: (y + l.y) * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha });
+                }
             }
         }
         if let Some((pm, x, y)) = &cords {
-            sprites.push(Sprite { id: cord_id, pm: Some(pm), x: *x as f64, y: *y as f64, w: pm.width() as f64, h: pm.height() as f64 });
+            sprites.push(Sprite { id: cord_id, pm: Some(pm), x: *x as f64, y: *y as f64, w: pm.width() as f64, h: pm.height() as f64, alpha: 1.0 });
         }
         let (fw, fh) = (self.size.0 as f64, self.size.1 as f64);
         if let Some((_, l)) = &self.notice {
-            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: ((fw - l.w * dpi) / 2.0).round(), y: ((panel::H + 14.0) * dpi).round(), w: l.w * dpi, h: l.h * dpi });
+            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: ((fw - l.w * dpi) / 2.0).round(), y: ((panel::H + 14.0) * dpi).round(), w: l.w * dpi, h: l.h * dpi, alpha: 1.0 });
         }
         if let Some((_, l)) = &self.status {
-            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: 0.0, y: fh - l.h * dpi, w: l.w * dpi, h: l.h * dpi });
+            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: 0.0, y: fh - l.h * dpi, w: l.w * dpi, h: l.h * dpi, alpha: 1.0 });
         }
         for l in self.panel.layers() {
-            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (l.x * dpi).round(), y: (l.y * dpi).round(), w: l.w * dpi, h: l.h * dpi });
+            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (l.x * dpi).round(), y: (l.y * dpi).round(), w: l.w * dpi, h: l.h * dpi, alpha: 1.0 });
         }
         sf.gpu.draw(&sprites);
         self.panel.uploaded();
@@ -465,15 +484,16 @@ impl App {
                 l.pm = None;
             }
         }
-        // the GPU has the pixels now
+        // the GPU has the pixels now (the jack pictures are kept: they are small, and the GPU lets
+        // a texture go in a frame that doesn't draw it)
         for d in &mut self.scene.devs {
-            for l in [d.face.as_mut(), d.lcd.as_mut().map(|(_, l)| l), d.meter.as_mut().map(|(_, l)| l)].into_iter().flatten() {
+            for l in [d.shade.as_mut().map(|(_, l)| l), d.face.as_mut(), d.lcd.as_mut().map(|(_, l)| l), d.meter.as_mut().map(|(_, l)| l)].into_iter().flatten() {
                 if sf.gpu.has(l.id) {
                     l.pm = None;
                 }
             }
         }
-        self.animating = moving || self.view_to.is_some() || self.drag.is_some() || self.rescale_at.is_some() || self.notice.is_some();
+        self.animating = moving || self.view_to.is_some() || self.drag.is_some() || self.rescale_at.is_some() || self.notice.is_some() || faces_waiting;
     }
 
     fn press(&mut self, button: MouseButton) {
@@ -513,8 +533,14 @@ impl App {
                 && let Some(key) = self.panel.hit(self.cursor.0 / dpi, self.cursor.1 / dpi)
             {
                 self.panel.state.pressed = Some(key);
-                self.drag = Some(if key == Key::Sag { Drag::Knob { y0: self.cursor.1, sag0: self.scene.sag } } else { Drag::Key });
-                self.panel_key(key);
+                self.drag = Some(match key {
+                    Key::Sag => Drag::Knob { y0: self.cursor.1, sag0: self.scene.sag },
+                    Key::Cables => Drag::Switch { from: self.cursor, pos0: self.scene.cables, moved: false },
+                    _ => Drag::Key,
+                });
+                if key != Key::Cables {
+                    self.panel_key(key);
+                }
             }
             return;
         }
@@ -585,6 +611,12 @@ impl App {
                 self.save_settings();
             }
             Some(Drag::Knob { .. }) => self.save_settings(),
+            Some(Drag::Switch { moved, .. }) => {
+                if !moved {
+                    self.panel_key(Key::Cables);
+                }
+                self.save_settings();
+            }
             _ => {}
         }
         self.panel.state.pressed = None;
@@ -629,6 +661,22 @@ impl App {
                 self.redraw();
             }
             Some(Drag::Key) => {}
+            Some(Drag::Switch { from, pos0, .. }) => {
+                let (from, pos0) = (*from, *pos0);
+                // right or up steps on, left or down steps back: one position per 30 pixels
+                let dpi = self.dpi();
+                let d = ((self.cursor.0 - from.0) - (self.cursor.1 - from.1)) / (30.0 * dpi);
+                let pos = (pos0 as f64 + d.round()).clamp(0.0, 2.0) as u8;
+                if d.abs() > 0.3
+                    && let Some(Drag::Switch { moved, .. }) = &mut self.drag
+                {
+                    *moved = true;
+                }
+                if pos != self.scene.cables {
+                    self.scene.cables = pos;
+                    self.redraw();
+                }
+            }
             Some(Drag::Plug { .. }) => {
                 let cursor = self.cursor;
                 if let Some(Drag::Plug { magnet, targets, moved, start, .. }) = &mut self.drag {
@@ -643,6 +691,7 @@ impl App {
                 let (icon, hint) = if self.cursor.1 < top {
                     match self.panel.hit(self.cursor.0 / dpi, self.cursor.1 / dpi) {
                         Some(Key::Sag) => (CursorIcon::NsResize, Key::Sag.hint().to_owned()),
+                        Some(Key::Cables) => (CursorIcon::EwResize, Key::Cables.hint().to_owned()),
                         Some(k) => (CursorIcon::Pointer, k.hint().to_owned()),
                         None => (CursorIcon::Default, String::new()),
                     }
@@ -687,6 +736,8 @@ impl App {
         let s = (self.view.s * factor).clamp(0.25 * dpi, 2.5 * dpi);
         self.view = View { s, x: self.cursor.0 - w.0 * s, y: self.cursor.1 - w.1 * s };
         self.view_to = None;
+        // the faces are drawn sharp again once the zooming stops, not while it goes on
+        self.rescale_at = Some(Instant::now() + RESCALE_DELAY);
         self.redraw();
     }
 
@@ -793,9 +844,19 @@ impl ApplicationHandler<()> for App {
                 let dpi = self.dpi();
                 if self.cursor.1 < top {
                     // the wheel turns the SAG knob
-                    if self.panel.hit(self.cursor.0 / dpi, self.cursor.1 / dpi) == Some(Key::Sag) {
-                        self.scene.sag = (self.scene.sag + (f.ln() * 0.6) as f32).clamp(0.0, 1.0);
-                        self.redraw();
+                    match self.panel.hit(self.cursor.0 / dpi, self.cursor.1 / dpi) {
+                        Some(Key::Sag) => {
+                            self.scene.sag = (self.scene.sag + (f.ln() * 0.6) as f32).clamp(0.0, 1.0);
+                            self.redraw();
+                        }
+                        // the wheel steps the cords switch, one click at a time
+                        Some(Key::Cables | Key::CablesAt(_)) if f != 1.0 => {
+                            let step = if f > 1.0 { 1 } else { -1 };
+                            self.scene.cables = (self.scene.cables as i32 + step).clamp(0, 2) as u8;
+                            self.save_settings();
+                            self.redraw();
+                        }
+                        _ => {}
                     }
                 } else if self.cursor.1 <= bottom {
                     self.zoom(f);

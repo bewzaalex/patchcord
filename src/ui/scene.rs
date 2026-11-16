@@ -11,10 +11,10 @@ use resvg::tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Rect, Transform};
 use resvg::usvg;
 
 use super::cord::{Cord, Held, RATE};
-use super::face::{self, DEV_H, Geometry, JP, JackDef, JackKind, LCD_H, LCD_W, LCD_X, LCD_Y, RACK_MIN, SHADOW};
+use super::face::{self, BADGE, DEV_H, Geometry, JP, JackDef, JackKind, LCD_H, LCD_W, LCD_X, LCD_Y, PIC, RACK_MIN, SHADOW};
 use super::{paint, text};
 use crate::config::Preset;
-use crate::graph::{Device, Dir, Graph, Media};
+use crate::graph::{Device, Dir, Graph, Group, Media};
 use crate::pw::{Cmd, Event};
 
 /// A picture of something on the field: (x, y, w, h) is the world area it covers.
@@ -39,6 +39,10 @@ const RACK_GAP: f64 = 3.0;
 /// the rails each side of the rack, and the margin above and below
 const RAIL: f64 = 34.0;
 const RACK_PAD: f64 = 14.0;
+/// pixels per world unit for the faces' shadows, whatever the zoom
+const SHADE_SCALE: f64 = 0.5;
+/// how long a frame may spend drawing pictures again at a new scale after zooming
+const RESCALE_BUDGET: std::time::Duration = std::time::Duration::from_millis(6);
 
 /// World → window pixels: `x * s + (x, y)`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -64,8 +68,11 @@ pub struct DevView {
     pub dx: f64,
     pub dy: f64,
     pub face: Option<Layer>,
-    /// what the face was drawn for (jack counts, split switches, scale)
+    /// its shadow on the desk, and the width it was drawn for
+    pub shade: Option<(u64, Layer)>,
+    /// what the face was drawn for (jack counts, split switches…) and at what scale
     face_sig: u64,
+    face_scale: f64,
     pub lcd: Option<(String, Layer)>,
     /// the meter's lit LEDs, left and right (0…10, falling smoothly)
     pub level: [f32; 2],
@@ -80,6 +87,8 @@ pub struct Scene {
     jacks: HashMap<String, (usize, usize)>,
     /// PipeWire port → jack key
     port_jack: HashMap<u32, String>,
+    /// the links there were at the last look, to tell new ones
+    seen_links: Vec<u32>,
     pub cords: Vec<Cord>,
     seq: u64,
     slot_seq: u64,
@@ -109,6 +118,10 @@ pub struct Scene {
     rack_h: f64,
     /// the rack's rails and inside, behind the devices
     pub rack_bg: Option<(u64, Layer)>,
+    rack_scale: f64,
+    /// pictures of a mono, a stereo and a MIDI jack and of the plus badge, laid over the faces
+    pub jack_pics: [Option<Layer>; 4],
+    pics_scale: f64,
     /// the links changed since the last preset was saved or loaded
     pub edited: bool,
     /// PipeWire's settings (clock.rate, clock.quantum…) and version
@@ -129,6 +142,7 @@ impl Scene {
             devs: Vec::new(),
             jacks: HashMap::new(),
             port_jack: HashMap::new(),
+            seen_links: Vec::new(),
             cords: Vec::new(),
             seq: 0,
             slot_seq: 0,
@@ -149,6 +163,9 @@ impl Scene {
             rack_w: None,
             rack_h: 0.0,
             rack_bg: None,
+            rack_scale: 0.0,
+            jack_pics: [None, None, None, None],
+            pics_scale: 0.0,
             edited: false,
             settings: HashMap::new(),
             version: None,
@@ -210,13 +227,14 @@ impl Scene {
                 None => {
                     let split = vec![false; dev.groups.len()];
                     fresh.push(dev.key.clone());
-                    DevView { dev, split, defs: Vec::new(), counts: Vec::new(), geo: Geometry::default(), x: 0.0, y: 0.0, tx: 0.0, ty: 0.0, dx: 0.0, dy: 0.0, face: None, face_sig: 0, lcd: None, level: [0.0; 2], meter: None }
+                    DevView { dev, split, defs: Vec::new(), counts: Vec::new(), geo: Geometry::default(), x: 0.0, y: 0.0, tx: 0.0, ty: 0.0, dx: 0.0, dy: 0.0, face: None, shade: None, face_sig: 0, face_scale: 0.0, lcd: None, level: [0.0; 2], meter: None }
                 }
             };
             self.devs.push(dv);
         }
         // keep the drawing order the user made by dragging
         self.devs.sort_by_key(|d| order.iter().position(|k| *k == d.dev.key).unwrap_or(usize::MAX));
+        self.follow_splits();
         self.index();
         self.meters();
         self.reconcile(!self.laid_out);
@@ -240,6 +258,36 @@ impl Scene {
         for d in self.devs.iter_mut().filter(|d| fresh.contains(&d.dev.key)) {
             (d.x, d.y) = (d.tx, d.ty);
         }
+    }
+
+    /// A stereo jack that new links tie channel by channel to a split pair is split too (a stream
+    /// that starts playing to split headphones, say): as one jack it would show two cords that
+    /// each carry only L or R. A jack linked to L with both its channels (a cord pulled from L
+    /// into it) stays whole.
+    fn follow_splits(&mut self) {
+        let links = self.graph.links();
+        let mut group_of: HashMap<u32, (usize, usize)> = HashMap::new();
+        for (di, d) in self.devs.iter().enumerate() {
+            for (gi, g) in d.dev.groups.iter().enumerate().filter(|(_, g)| g.stereo) {
+                for p in &g.ports {
+                    group_of.insert(p.id, (di, gi));
+                }
+            }
+        }
+        let split = |devs: &[DevView], (di, gi): (usize, usize)| devs[di].split.get(gi).copied().unwrap_or(false);
+        for l in links.iter().filter(|l| !self.seen_links.contains(&l.id)) {
+            let (Some(&a), Some(&b)) = (group_of.get(&l.out_port), group_of.get(&l.in_port)) else { continue };
+            for (x, px, y) in [(a, l.out_port, b), (b, l.in_port, a)] {
+                // how many of y's channels the split side's port is linked to
+                let to_y = links.iter().filter(|m| (m.out_port == px && group_of.get(&m.in_port) == Some(&y)) || (m.in_port == px && group_of.get(&m.out_port) == Some(&y))).count();
+                if split(&self.devs, x) && !split(&self.devs, y) && to_y == 1 {
+                    self.devs[y.0].split[y.1] = true;
+                }
+            }
+        }
+        // a link to a device not shown yet (a new stream shows after a moment) stays new until it is
+        let shown: Vec<u32> = self.devs.iter().flat_map(|d| d.dev.groups.iter().flat_map(|g| g.ports.iter().map(|p| p.id))).collect();
+        self.seen_links = links.iter().filter(|l| shown.contains(&l.out_port) && shown.contains(&l.in_port)).map(|l| l.id).collect();
     }
 
     /// Faces' geometry; in a rack every face is as wide as the widest needs.
@@ -608,20 +656,38 @@ impl Scene {
         View { s, x: (w - (x1 - x0) * s) / 2.0 - x0 * s, y: top + ((h - (y1 - y0 + 60.0) * s) / 2.0).max(m * 0.6) - y0 * s }
     }
 
-    /// Draws faces and LCDs that are missing, out of date or drawn at another scale.
-    /// `ms`: time, for the scrolling names. True when something new was drawn.
+    /// Draws the rack, faces and LCDs that are missing, out of date or drawn at another scale.
+    /// `ms`: time, for the scrolling names. Pictures that only need drawing at a new scale are
+    /// drawn a few at a time, frame by frame (the old ones stretch meanwhile), so zooming never
+    /// stops a frame for long. True when some are still waiting.
     pub fn prepare(&mut self, scale: f64, ms: u128) -> bool {
-        let mut drew = false;
+        let start = std::time::Instant::now();
+        let mut waiting = false;
+        // one picture at a new scale per frame at least, more while the frame has time for them
+        let mut may_rescale = || {
+            let ok = start.elapsed() < RESCALE_BUDGET;
+            waiting |= !ok;
+            ok
+        };
+        if self.pics_scale != scale {
+            // small: always drawn sharp at once
+            for (i, kind) in [Some(JackKind::Mono), Some(JackKind::Stereo), Some(JackKind::Midi), None].into_iter().enumerate() {
+                let pm = rasterize(&self.opt, &face::jack_pic(kind), scale);
+                self.jack_pics[i] = Some(Layer { id: next_id(), pm, x: -PIC, y: -PIC, w: 2.0 * PIC, h: 2.0 * PIC });
+            }
+            self.pics_scale = scale;
+        }
         match self.rack_w {
             Some(rw) => {
                 let mut h = DefaultHasher::new();
-                (rw.to_bits(), self.rack_h.to_bits(), scale.to_bits()).hash(&mut h);
+                (rw.to_bits(), self.rack_h.to_bits()).hash(&mut h);
                 let sig = h.finish();
-                if self.rack_bg.as_ref().is_none_or(|(s, _)| *s != sig) {
+                let changed = self.rack_bg.as_ref().is_none_or(|(s, _)| *s != sig);
+                if changed || (self.rack_scale != scale && may_rescale()) {
                     let (w, ht) = (rw + 2.0 * RAIL, self.rack_h + 2.0 * RACK_PAD);
                     let pm = rasterize(&self.opt, &rack_svg(w, ht), scale);
                     self.rack_bg = Some((sig, Layer { id: next_id(), pm, x: -RAIL, y: -RACK_PAD, w, h: ht }));
-                    drew = true;
+                    self.rack_scale = scale;
                 }
             }
             None => self.rack_bg = None,
@@ -639,18 +705,24 @@ impl Scene {
         };
         for (di, d) in self.devs.iter_mut().enumerate() {
             let mut h = DefaultHasher::new();
-            (&d.counts, &d.split, scale.to_bits(), &d.dev.name, &d.dev.model, d.dev.state, self.rack_w.map(f64::to_bits)).hash(&mut h);
+            (&d.counts, &d.split, &d.dev.name, &d.dev.model, d.dev.state, self.rack_w.map(f64::to_bits)).hash(&mut h);
             d.defs.iter().for_each(|j| (&j.key, &j.label).hash(&mut h));
             let sig = h.finish();
-            if d.face.is_none() || sig != d.face_sig {
+            let changed = d.face.is_none() || sig != d.face_sig;
+            if changed || (d.face_scale != scale && may_rescale()) {
                 let (svg, geo) = face::face(&d.dev, &d.defs, &d.counts, &d.split, self.rack_w);
                 d.geo = geo;
                 let pm = rasterize(&self.opt, &svg, scale);
                 d.face = Some(Layer { id: next_id(), pm, x: -SHADOW, y: -SHADOW, w: d.geo.w + 2.0 * SHADOW, h: DEV_H + 2.0 * SHADOW });
-                d.face_sig = sig;
+                (d.face_sig, d.face_scale) = (sig, scale);
                 d.lcd = None;
                 d.meter = None;
-                drew = true;
+            }
+            let wsig = d.geo.w.to_bits() ^ self.rack_w.is_some() as u64;
+            if d.shade.as_ref().is_none_or(|(s, _)| *s != wsig) {
+                // a blur: drawn at a small fixed scale and stretched, so zooming never redraws it
+                let pm = rasterize(&self.opt, &face::shadow(d.geo.w, self.rack_w.is_some()), SHADE_SCALE);
+                d.shade = Some((wsig, Layer { id: next_id(), pm, x: -SHADOW, y: -SHADOW, w: d.geo.w + 2.0 * SHADOW, h: DEV_H + 2.0 * SHADOW }));
             }
             let n = links.get(&di).copied().unwrap_or(0);
             let line2 = format!(
@@ -668,17 +740,15 @@ impl Scene {
                 let pm = rasterize(&self.opt, &face::lcd(l1, l2), scale);
                 let x = d.geo.left + LCD_X;
                 d.lcd = Some((text, Layer { id: next_id(), pm, x, y: LCD_Y, w: LCD_W, h: LCD_H }));
-                drew = true;
             }
             let lit = (d.level[0].round() as u8, d.level[1].round() as u8);
             if lit == (0, 0) {
                 d.meter = None;
             } else if d.meter.as_ref().is_none_or(|(l, _)| *l != lit) {
                 d.meter = Some((lit, meter_layer(lit, d.geo.meter, scale)));
-                drew = true;
             }
         }
-        drew
+        waiting
     }
 
     /// The cords and plugs in the window area (x, y, w, h) in pixels, or None when there are none.
@@ -749,6 +819,44 @@ impl Scene {
         })
     }
 
+    /// The jacks to lay over device `di`'s face: picture (in `jack_pics`), the world position of
+    /// its centre, and opacity. A mult's free jack is faded, as is everything a plug in the hand
+    /// (`targets`: the jacks it fits) can't go into; the free jacks it can go into are solid.
+    pub fn jack_sprites(&self, di: usize, targets: Option<&[String]>) -> Vec<(usize, f64, f64, f32)> {
+        let d = &self.devs[di];
+        let mut v = Vec::new();
+        for (ji, j) in d.defs.iter().enumerate() {
+            let (Some(&(jx, jy)), Some(&n)) = (d.geo.jacks.get(ji), d.counts.get(ji)) else { continue };
+            let pic = match j.kind {
+                JackKind::Mono => 0,
+                JackKind::Stereo => 1,
+                JackKind::Midi => 2,
+            };
+            let k = face::slots(n);
+            for s in 0..k {
+                let (x, y) = (d.x + jx + s as f64 * JP, d.y + jy);
+                let spare = k > 1 && s == k - 1;
+                let a = match targets {
+                    None if spare => 0.4,
+                    None => 1.0,
+                    Some(t) if s == n && t.contains(&j.key) => 1.0,
+                    Some(_) => 0.4,
+                };
+                v.push((pic, x, y, a));
+                // its badge; while a plug is in the hand a free jack it fits glows instead
+                let badge = match targets {
+                    None => 1.0,
+                    Some(_) if a == 1.0 => 0.0,
+                    Some(_) => a,
+                };
+                if spare && badge > 0.0 {
+                    v.push((3, x + BADGE.0, y + BADGE.1, badge));
+                }
+            }
+        }
+        v
+    }
+
     /// Where the free slot of a jack is.
     pub fn spare(&self, key: &str) -> Option<(f32, f32)> {
         let &(di, ji) = self.jacks.get(key)?;
@@ -767,13 +875,44 @@ impl Scene {
     }
 
     /// One stereo jack ⇄ separate L and R jacks. The cords re-plug themselves to match.
+    /// The stereo jacks at the other ends of its cords follow, else one would keep two cords that
+    /// each carry only L or R and look like they carry both. They join again only when all their
+    /// cords come here.
     pub fn toggle_split(&mut self, di: usize, g: usize) {
-        if let Some(v) = self.devs[di].split.get_mut(g) {
-            *v = !*v;
+        let Some(&was) = self.devs[di].split.get(g) else { return };
+        let ids = |grp: &Group| grp.ports.iter().map(|p| p.id).collect::<Vec<u32>>();
+        let here = ids(&self.devs[di].dev.groups[g]);
+        let links = self.graph.links();
+        // the port at the far end of each link of `ports`
+        let far = |ports: &[u32]| -> Vec<u32> {
+            links.iter().filter_map(|l| if ports.contains(&l.out_port) { Some(l.in_port) } else if ports.contains(&l.in_port) { Some(l.out_port) } else { None }).collect()
+        };
+        let there = far(&here);
+        let mut flip = vec![(di, g)];
+        for (dj, d) in self.devs.iter().enumerate() {
+            for (gj, grp) in d.dev.groups.iter().enumerate() {
+                let ports = ids(grp);
+                if !grp.stereo || (dj, gj) == (di, g) || !ports.iter().any(|p| there.contains(p)) {
+                    continue;
+                }
+                if !was || far(&ports).iter().all(|p| here.contains(p)) {
+                    flip.push((dj, gj));
+                }
+            }
+        }
+        for (dj, gj) in flip {
+            if let Some(v) = self.devs[dj].split.get_mut(gj) {
+                *v = !was;
+            }
         }
         self.index();
         self.reconcile(false);
         self.slots();
+    }
+
+    /// The first output jack, for snapshots that show a plug in the hand.
+    pub fn first_output(&self) -> Option<String> {
+        self.devs.iter().flat_map(|d| d.defs.iter()).find(|j| j.dir == Dir::Out).map(|j| j.key.clone())
     }
 
     /// Pulls a new cord out of a jack's free slot, into the hand. Returns the cord's number.

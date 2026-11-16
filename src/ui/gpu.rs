@@ -21,25 +21,28 @@ pub struct Sprite<'a> {
     pub y: f64,
     pub w: f64,
     pub h: f64,
+    /// how opaque, 0…1
+    pub alpha: f32,
 }
 
 /// Behind everything.
 const BG: wgpu::Color = wgpu::Color { r: 0x15 as f64 / 255.0, g: 0x16 as f64 / 255.0, b: 0x18 as f64 / 255.0, a: 1.0 };
 
 const SHADER: &str = r#"
-struct V { @builtin(position) pos: vec4f, @location(0) uv: vec2f }
-@vertex fn vs(@location(0) p: vec2f, @location(1) uv: vec2f) -> V {
-    return V(vec4f(p, 0.0, 1.0), uv);
+struct V { @builtin(position) pos: vec4f, @location(0) uv: vec2f, @location(1) a: f32 }
+@vertex fn vs(@location(0) p: vec2f, @location(1) uv: vec2f, @location(2) a: f32) -> V {
+    return V(vec4f(p, 0.0, 1.0), uv, a);
 }
 @group(0) @binding(0) var tex: texture_2d<f32>;
 @group(0) @binding(1) var smp: sampler;
 @fragment fn fs(v: V) -> @location(0) vec4f {
-    return textureSample(tex, smp, v.uv);
+    // the pixels are premultiplied, so fading is a plain product
+    return textureSample(tex, smp, v.uv) * v.a;
 }
 "#;
 
-/// Floats per vertex: position in clip space, then texture position.
-const VERTEX: usize = 4;
+/// Floats per vertex: position in clip space, texture position, opacity.
+const VERTEX: usize = 5;
 
 struct Texture {
     bind: wgpu::BindGroup,
@@ -115,7 +118,7 @@ impl Gpu {
                 buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: (VERTEX * 4) as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2],
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32],
                 })],
             },
             fragment: Some(wgpu::FragmentState {
@@ -188,7 +191,7 @@ impl Gpu {
             let c = [clip(s.x, s.y), clip(s.x + s.w, s.y), clip(s.x + s.w, s.y + s.h), clip(s.x, s.y + s.h)];
             let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
             for i in [0, 1, 2, 0, 2, 3] {
-                v.extend_from_slice(&[c[i][0], c[i][1], uv[i][0], uv[i][1]]);
+                v.extend_from_slice(&[c[i][0], c[i][1], uv[i][0], uv[i][1], s.alpha]);
             }
         }
         if self.vertices.size() < (v.len() * 4) as u64 {

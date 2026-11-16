@@ -4,6 +4,7 @@
 use std::fmt::Write;
 
 use super::face::paint_uri;
+use super::print::{SECTION, SMALL};
 use super::scene::{Layer, next_id, rasterize};
 use super::text;
 
@@ -21,7 +22,9 @@ pub enum Key {
     Desk,
     Rack,
     Lock,
+    /// the cords switch: the knob, or one of its printed positions
     Cables,
+    CablesAt(u8),
     Sag,
     Arrange,
     Fit,
@@ -40,7 +43,10 @@ impl Key {
             Key::Desk => "Devices anywhere on a desk",
             Key::Rack => "Devices in a 19\" rack (R)",
             Key::Lock => "Lock devices in place (L)",
-            Key::Cables => "Cords: show · fade · hide (C)",
+            Key::Cables => "Cords: show · fade · hide: drag, turn the wheel or click (C)",
+            Key::CablesAt(0) => "Show the cords",
+            Key::CablesAt(1) => "Fade the cords",
+            Key::CablesAt(_) => "Hide the cords (the plugs stay)",
             Key::Sag => "How much the cords sag: drag or turn the wheel",
             Key::Arrange => "Arrange devices by signal flow (A)",
             Key::Fit => "Fit everything in the window (F)",
@@ -107,6 +113,8 @@ const ICONS: &[(Key, &str)] = &[
 ];
 
 const KEY_Y: f64 = 10.0;
+/// the knobs' centre line, a little low so the label above the cords switch clears the edge
+const KNOB_Y: f64 = 30.0;
 const KEY_H: f64 = 30.0;
 const LABEL: &str = "#26272a";
 
@@ -187,7 +195,8 @@ impl Panel {
         let logo_w = text::width(text::BLACK, "PATCHCORD", 26.0, 1.0) * 1.06;
         let _ = write!(
             o,
-            r##"<g transform="translate({x},34) scale(1.06,1)" font-size="26" font-weight="900" letter-spacing="1"><text y="1" fill="#fff" opacity=".35">PATCHCORD</text><text fill="#2a2b2e">PATCHCORD</text></g><text x="{x}" y="50" font-size="9" letter-spacing="1.6" fill="#2e3033">PC-1 · PIPEWIRE PATCHBAY</text>"##
+            r##"<g transform="translate({x},34) scale(1.06,1)" font-size="26" font-weight="900" letter-spacing="1"><text y="1" fill="#fff" opacity=".35">PATCHCORD</text><text fill="#2a2b2e">PATCHCORD</text></g>{sub}"##,
+            sub = SECTION.text(x, 50.0, LABEL, "start", "PC-1 · PIPEWIRE PATCHBAY")
         );
         x += logo_w + 26.0;
 
@@ -196,18 +205,18 @@ impl Panel {
             let x0 = *x;
             for (i, (key, txt, led)) in keys.iter().enumerate() {
                 if i > 0 {
-                    *x += 8.0;
+                    *x += 13.0;
                 }
                 let kw = match txt {
-                    Some(t) => (text::width(text::BOLD, t, 10.5, 0.4) + 20.0).max(62.0) + if *key == Key::Cables { 26.0 } else { 0.0 },
+                    Some(t) => (text::width(text::BOLD, t, 10.5, 0.4) + 20.0).max(62.0),
                     None => 38.0,
                 };
                 let pressed = st.pressed == Some(*key);
                 o.push_str(&key_svg(*x, kw, pressed));
-                let dy = if pressed { 1.0 } else { 0.0 };
+                let dy = 0.0;
                 match txt {
                     Some(t) => {
-                        let tx = *x + if *key == Key::Cables { (kw - 26.0) / 2.0 + 2.0 } else { kw / 2.0 + if led.is_some() { 4.0 } else { 0.0 } };
+                        let tx = *x + kw / 2.0 + if led.is_some() { 4.0 } else { 0.0 };
                         let _ = write!(o, r##"<text x="{tx}" y="{}" font-size="10.5" letter-spacing=".4" fill="#e6e7e8" text-anchor="middle">{t}</text>"##, KEY_Y + 19.0 + dy);
                     }
                     None => {
@@ -223,25 +232,48 @@ impl Panel {
                 if let Some(on) = led {
                     o.push_str(&led_svg(*x + 8.0, KEY_Y + 7.0 + dy, *on, "#ff4a32"));
                 }
-                if *key == Key::Cables {
-                    for k in 0..3u8 {
-                        o.push_str(&led_svg(*x + kw - 24.0 + k as f64 * 7.0, KEY_Y + 15.0 + dy, st.cables == k, "#ffb02e"));
-                    }
-                }
                 rects.push((*key, [*x - 3.0, KEY_Y - 3.0, kw + 6.0, KEY_H + 6.0]));
                 *x += kw;
             }
-            let _ = write!(o, r#"<text x="{}" y="54" font-size="9" letter-spacing="1.2" fill="{LABEL}" text-anchor="middle">{label}</text>"#, (x0 + *x) / 2.0);
+            o.push_str(&SECTION.text((x0 + *x) / 2.0, 54.0, LABEL, "middle", label));
             *x += 22.0;
         };
         group(&mut o, &mut rects, &mut x, &[(Key::Undo, None, None), (Key::Redo, None, None), (Key::Save, None, None), (Key::Load, None, None)], "EDIT");
         group(&mut o, &mut rects, &mut x, &[(Key::Desk, Some("DESK"), Some(!st.rack)), (Key::Rack, Some("RACK"), Some(st.rack)), (Key::Lock, None, Some(st.locked))], "LAYOUT");
-        group(&mut o, &mut rects, &mut x, &[(Key::Cables, Some("CABLES"), None)], "SHOW·FADE·HIDE");
+        // the cords switch: three click positions with their names printed around it
+        let (kx, ky) = (x + 44.0, KNOB_Y);
+        let mut ticks = String::new();
+        for (i, (name, anchor, dx, dy)) in [("SHOW", "end", -19.0, 0.0), ("FADE", "middle", 0.0, -20.5), ("HIDE", "start", 19.0, 0.0)]
+            .into_iter()
+            .enumerate()
+        {
+            let a = SWITCH[i].to_radians();
+            let _ = write!(ticks, r#"<path d="M{},{} L{},{}" stroke="{LABEL}" stroke-width="1.4"/>"#, kx + 15.0 * a.sin(), ky - 15.0 * a.cos(), kx + 16.8 * a.sin(), ky - 16.8 * a.cos());
+            // the labels stay as printed: the pointer shows the position
+            ticks.push_str(&SMALL.text(kx + dx * 1.15, ky + dy + 2.5, LABEL, anchor, name));
+            let w = SMALL.width(name) + 4.0;
+            let lx = match anchor {
+                "end" => kx + dx * 1.15 - w,
+                "middle" => kx - w / 2.0,
+                _ => kx + dx * 1.15 - 2.0,
+            };
+            rects.push((Key::CablesAt(i as u8), [lx, ky + dy - 6.0, w, 11.0]));
+        }
+        o.push_str(&ticks);
+        o.push_str(&knob_svg(kx, ky, SWITCH[st.cables.min(2) as usize], ""));
+        o.push_str(&SECTION.text(kx, 54.0, LABEL, "middle", "CABLES"));
+        rects.push((Key::Cables, [kx - 16.0, ky - 16.0, 32.0, 32.0]));
+        x += 88.0 + 22.0;
 
-        // the SAG knob
-        let (kx, ky) = (x + 17.0, KEY_Y + 15.0);
-        o.push_str(&knob_svg(kx, ky, st.sag as f64 / 100.0));
-        let _ = write!(o, r#"<text x="{kx}" y="54" font-size="9" letter-spacing="1.2" fill="{LABEL}" text-anchor="middle">SAG</text>"#);
+        // the SAG knob, level with the cords switch
+        let (kx, ky) = (x + 17.0, KNOB_Y);
+        let mut scale = String::new();
+        for i in 0..=10 {
+            let t = (-135.0 + 27.0 * i as f64).to_radians();
+            let _ = write!(scale, r#"<path d="M{},{} L{},{}" stroke="{LABEL}" stroke-width="1.2"/>"#, kx + 17.0 * t.sin(), ky - 17.0 * t.cos(), kx + 19.5 * t.sin(), ky - 19.5 * t.cos());
+        }
+        o.push_str(&knob_svg(kx, ky, -135.0 + 270.0 * st.sag as f64 / 100.0, &scale));
+        o.push_str(&SECTION.text(kx, 54.0, LABEL, "middle", "SAG"));
         rects.push((Key::Sag, [kx - 20.0, ky - 20.0, 40.0, 40.0]));
         x += 34.0 + 22.0;
 
@@ -278,8 +310,12 @@ impl Panel {
 <pattern id="pt" width="80" height="80" patternUnits="userSpaceOnUse"><image href="{paint}" width="80" height="80"/></pattern>
 <linearGradient id="gStrip" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".10"/><stop offset="1" stop-color="#000" stop-opacity=".18"/></linearGradient>
 <linearGradient id="gDrop" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#000" stop-opacity=".55"/><stop offset="1" stop-color="#000" stop-opacity="0"/></linearGradient>
-<linearGradient id="gKey" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#45464a"/><stop offset=".55" stop-color="#232427"/><stop offset="1" stop-color="#1b1c1e"/></linearGradient>
-<linearGradient id="gKeyDown" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#36373a"/><stop offset="1" stop-color="#1d1e20"/></linearGradient>
+<linearGradient id="hole" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#050506"/><stop offset="1" stop-color="#232427"/></linearGradient>
+<linearGradient id="edgeHole" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2a2c2e"/><stop offset="0.5" stop-color="#55585b"/><stop offset="1" stop-color="#a7aaad"/></linearGradient>
+<linearGradient id="btnGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#303134"/><stop offset="0.6" stop-color="#1d1e20"/><stop offset="1" stop-color="#131314"/></linearGradient>
+<linearGradient id="capEdge" x1="0" y1="0" x2="0.3" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.28"/><stop offset="0.45" stop-color="#fff" stop-opacity="0.04"/><stop offset="1" stop-color="#000" stop-opacity="0.5"/></linearGradient>
+<linearGradient id="capTop" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.13"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+<filter id="blur1" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="1"/></filter>
 <radialGradient id="gKnob" cx=".38" cy=".3" r=".8"><stop offset="0" stop-color="#5a5b5f"/><stop offset="1" stop-color="#151618"/></radialGradient>
 <linearGradient id="gPanelLcd" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f7bb62"/><stop offset="1" stop-color="#e58f2c"/></linearGradient>
 </defs>
@@ -364,28 +400,38 @@ fn menu_svg(menu: &Menu) -> (String, f64, Vec<(MenuHit, [f64; 4])>) {
     (svg, h, rects)
 }
 
-/// A dark hardware key with its bezel.
+/// A dark key as on Kadence: a cap in a hole in the panel. The hole's rim catches the light at
+/// the bottom right; the cap casts a soft shadow into it and has a fine lit edge and a sheen.
+/// Pressed, the cap sinks a little into the hole and darkens.
 fn key_svg(x: f64, w: f64, pressed: bool) -> String {
-    let (y, h) = (KEY_Y + if pressed { 1.0 } else { 0.0 }, KEY_H);
-    format!(
-        r##"<rect x="{}" y="{}" width="{}" height="{}" rx="7" fill="#000" opacity=".3"/><rect x="{}" y="{}" width="{}" height="{}" rx="7" fill="#fff" opacity=".18"/><rect x="{}" y="{}" width="{}" height="{}" rx="6" fill="#19191b"/><rect x="{x}" y="{y}" width="{w}" height="{h}" rx="5" fill="url(#{})"/><path d="M{},{} h{}" stroke="#fff" stroke-opacity=".18"/>"##,
-        x - 3.0,
-        KEY_Y - 1.0,
-        w + 6.0,
-        h + 7.0,
-        x - 3.0,
-        KEY_Y - 3.0,
-        w + 6.0,
-        h + 6.0,
-        x - 2.0,
-        KEY_Y - 2.0,
-        w + 4.0,
-        h + 4.0,
-        if pressed { "gKeyDown" } else { "gKey" },
-        x + 4.0,
-        y + 0.75,
-        w - 8.0
-    )
+    let (y, h) = (KEY_Y, KEY_H);
+    let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+    let mut o = format!(r#"<rect x="{}" y="{}" width="{}" height="{}" rx="6" fill="url(#hole)" stroke="url(#edgeHole)" stroke-width="1.2"/>"#, x - 3.0, y - 3.0, w + 6.0, h + 6.0);
+    let (tr, shadow, sheen) = if pressed {
+        let s = 0.955;
+        (format!(r#" transform="translate({},{}) scale({s})""#, cx * (1.0 - s), cy * (1.0 - s)), 0.15 * 0.75, 0.35)
+    } else {
+        (String::new(), 0.75, 1.0)
+    };
+    let _ = write!(
+        o,
+        r##"<g{tr}><rect x="{}" y="{}" width="{w}" height="{h}" rx="4" fill="#000" opacity="{shadow}" filter="url(#blur1)"/><rect x="{x}" y="{y}" width="{w}" height="{h}" rx="4" fill="url(#btnGrad)" stroke="#070708" stroke-width="1"/><g opacity="{sheen}"><rect x="{}" y="{}" width="{}" height="{}" rx="3.4" fill="none" stroke="url(#capEdge)" stroke-width="1.4"/><rect x="{}" y="{}" width="{}" height="{}" rx="2.5" fill="url(#capTop)"/></g>"##,
+        x + 1.2,
+        y + 2.4,
+        x + 0.8,
+        y + 0.8,
+        w - 1.6,
+        h - 1.6,
+        x + 3.0,
+        y + 1.6,
+        w - 6.0,
+        h * 0.4
+    );
+    if pressed {
+        let _ = write!(o, r##"<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="4" fill="#000" opacity="0.2"/>"##);
+    }
+    o += "</g>";
+    o
 }
 
 fn led_svg(cx: f64, cy: f64, on: bool, color: &str) -> String {
@@ -396,14 +442,13 @@ fn led_svg(cx: f64, cy: f64, on: bool, color: &str) -> String {
     }
 }
 
-/// The SAG knob: a black knob with an amber pointer over a printed scale.
-fn knob_svg(cx: f64, cy: f64, v: f64) -> String {
-    let mut o = String::new();
-    for i in 0..=10 {
-        let t = (-135.0 + 27.0 * i as f64).to_radians();
-        let _ = write!(o, r#"<path d="M{},{} L{},{}" stroke="{LABEL}" stroke-width="1.2"/>"#, cx + 17.0 * t.sin(), cy - 17.0 * t.cos(), cx + 19.5 * t.sin(), cy - 19.5 * t.cos());
-    }
-    let a = (-135.0 + 270.0 * v).to_radians();
+/// The angles (degrees from straight up) of the cords switch's three positions.
+pub const SWITCH: [f64; 3] = [-90.0, 0.0, 90.0];
+
+/// A black knob with an amber pointer at `deg` (from straight up), over its printed `scale`.
+fn knob_svg(cx: f64, cy: f64, deg: f64, scale: &str) -> String {
+    let mut o = scale.to_owned();
+    let a = deg.to_radians();
     let _ = write!(
         o,
         r##"<circle cx="{cx}" cy="{}" r="14.5" fill="#111" opacity=".5"/><circle cx="{cx}" cy="{cy}" r="14" fill="url(#gKnob)" stroke="#0c0c0d"/><circle cx="{cx}" cy="{cy}" r="10.5" fill="none" stroke="#fff" stroke-opacity=".08"/><path d="M{},{} L{},{}" stroke="#ffb02e" stroke-width="2.4" stroke-linecap="round"/>"##,

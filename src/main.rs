@@ -9,15 +9,16 @@ mod ui;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use resvg::tiny_skia::{Pixmap, PixmapPaint, Transform};
+use resvg::tiny_skia::{FilterQuality, Pixmap, PixmapPaint, Transform};
 use winit::event_loop::EventLoop;
 
 use pw::Connection;
 use ui::scene::Scene;
 
-/// `patchcord --render out.png [rack] [save | presets]`: draws the live graph to a PNG without
-/// opening a window, after letting the cords settle (PATCHCORD_SCALE sets the scale, 1.5 by
-/// default). "rack" puts the devices in the rack; "save" or "presets" opens that drop-down.
+/// `patchcord --render out.png [rack] [held] [save | presets]`: draws the live graph to a PNG
+/// without opening a window, after letting the cords settle (PATCHCORD_SCALE sets the scale, 1.5
+/// by default). "rack" puts the devices in the rack; "held" pulls a cord out of the first output
+/// and holds its plug in the air; "save" or "presets" opens that drop-down.
 fn render_snapshot(path: &str, opts: &[String]) -> Result<(), String> {
     let menu = opts.iter().map(String::as_str).find(|o| matches!(*o, "save" | "presets"));
     let conn = Connection::start(Arc::new(|| {}));
@@ -30,9 +31,14 @@ fn render_snapshot(path: &str, opts: &[String]) -> Result<(), String> {
     scene.apply(conn.events.try_iter().collect::<Vec<_>>());
     let synced = started.elapsed();
     scene.set_rack(opts.iter().any(|o| o == "rack"));
+    // a plug in the hand, up and to the right of the jack it came from
+    let held = opts.iter().any(|o| o == "held").then(|| scene.first_output()).flatten().and_then(|k| {
+        let (x, y) = scene.spare(&k)?;
+        Some((scene.pull_new(&k)?, ui::cord::Held { x: x + 150.0, y: y + 110.0, vx: 0.0, lift: 1.0, kind: None }))
+    });
     // let the cords settle
     for _ in 0..360 {
-        scene.tick(1.0 / 60.0, None, None, false);
+        scene.tick(1.0 / 60.0, None, held, false);
     }
     let s: f64 = std::env::var("PATCHCORD_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.5);
     let (x0, y0, x1, y1) = scene.bounds().ok_or("no devices")?;
@@ -49,15 +55,36 @@ fn render_snapshot(path: &str, opts: &[String]) -> Result<(), String> {
     {
         out.draw_pixmap((l.x * s + view.x).round() as i32, (l.y * s + view.y).round() as i32, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
     }
-    for d in &scene.devs {
-        for l in [d.face.as_ref(), d.lcd.as_ref().map(|(_, l)| l)].into_iter().flatten() {
+    // a picture covering (x, y, w, h) in world units, stretched to it as the GPU does (shadows are
+    // drawn small) and faded by `a`
+    let draw = |out: &mut Pixmap, pm: &Pixmap, (x, y, lw, lh): (f64, f64, f64, f64), a: f32| {
+        let (px, py) = ((x * s + view.x).round() as f32, (y * s + view.y).round() as f32);
+        let (sx, sy) = ((lw * s) as f32 / pm.width() as f32, (lh * s) as f32 / pm.height() as f32);
+        let paint = PixmapPaint { opacity: a, quality: FilterQuality::Bilinear, ..Default::default() };
+        if (sx - 1.0).abs() < 0.01 && (sy - 1.0).abs() < 0.01 {
+            out.draw_pixmap(px as i32, py as i32, pm.as_ref(), &PixmapPaint { opacity: a, ..Default::default() }, Transform::identity(), None);
+        } else {
+            out.draw_pixmap(0, 0, pm.as_ref(), &paint, Transform::from_row(sx, 0.0, 0.0, sy, px, py), None);
+        }
+    };
+    let targets: Option<Vec<String>> = held.map(|(seq, _)| scene.targets(seq));
+    for (di, d) in scene.devs.iter().enumerate() {
+        for l in [d.shade.as_ref().map(|(_, l)| l), d.face.as_ref(), d.lcd.as_ref().map(|(_, l)| l)].into_iter().flatten() {
             if let Some(pm) = &l.pm {
-                let (x, y) = (((d.x + l.x) * s + view.x).round() as i32, ((d.y + l.y) * s + view.y).round() as i32);
-                out.draw_pixmap(x, y, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+                draw(&mut out, pm, (d.x + l.x, d.y + l.y, l.w, l.h), 1.0);
+            }
+        }
+        for (pic, x, y, a) in scene.jack_sprites(di, targets.as_deref()) {
+            if let Some(l) = &scene.jack_pics[pic]
+                && let Some(pm) = &l.pm
+            {
+                draw(&mut out, pm, (x + l.x, y + l.y, l.w, l.h), a);
             }
         }
     }
-    if let Some((pm, x, y)) = scene.cord_layer(view, (w, h), &[], 0.0) {
+    // with a plug in the hand, the jacks it may go into are marked, as in the window
+    let rings: Vec<((f32, f32), bool)> = held.map_or(Vec::new(), |(seq, _)| scene.targets(seq).iter().filter_map(|t| scene.spare(t)).map(|p| (p, false)).collect());
+    if let Some((pm, x, y)) = scene.cord_layer(view, (w, h), &rings, 1.0) {
         out.draw_pixmap(x, y, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
     }
     let width = w as f64 / s;
