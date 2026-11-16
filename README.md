@@ -19,7 +19,7 @@ hangs, swings and settles like a real one.
 
 Patchcord shows the live PipeWire graph, audio and MIDI, with signal meters and the state of each
 device. You patch it with the mouse, on a desk or in a 19" rack, and keep your setups as presets.
-Plug sounds and smaller things come next (see [docs/TODO.md](docs/TODO.md)). The design is the
+Plug sounds and smaller things come next (see the [issues](https://github.com/bewzaalex/patchcord/issues)). The design is the
 interactive mockup in [docs/design/mockup](docs/design/mockup/index.html).
 
 ## Installation
@@ -151,7 +151,7 @@ opening a window, optionally in the rack, with a few cords added to the picture 
 
 ## Development
 
-The plan is in [docs/TODO.md](docs/TODO.md), the Flatpak build in
+Bugs and plans are [issues on GitHub](https://github.com/bewzaalex/patchcord/issues), the Flatpak build in
 [packaging/flatpak](packaging/flatpak/README.md), and how releases are made in
 [docs/RELEASING.md](docs/RELEASING.md).
 
