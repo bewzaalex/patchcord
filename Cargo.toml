@@ -18,5 +18,42 @@ ttf-parser = "0.25"
 wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "wgsl", "vulkan", "gles"] }
 winit = "0.30"
 
+# Linux packages, built by the release workflow (.github/workflows/release.yml)
+[package.metadata.deb]
+maintainer = "Alex Bevza <bewza_alex@ukr.net>"
+copyright = "2026, Alex Bevza <bewza_alex@ukr.net>"
+section = "sound"
+extended-description = """\
+Patchcord shows the PipeWire audio and MIDI graph as a rack of hardware gear: every device is a \
+panel with 6.3 mm jacks, and every connection is a patch cord that hangs, swings and settles like \
+a real one. Patch with the mouse, split stereo jacks, keep presets, on a desk or in a rack."""
+depends = "$auto"
+# the GPU is reached through Vulkan (loaded at run time, so $auto can't see it); OpenGL is the fallback
+recommends = "libvulkan1, mesa-vulkan-drivers, pipewire"
+assets = [
+    ["target/release/patchcord", "usr/bin/", "755"],
+    ["assets/io.github.bewzaalex.patchcord.desktop", "usr/share/applications/", "644"],
+    ["assets/io.github.bewzaalex.patchcord.metainfo.xml", "usr/share/metainfo/", "644"],
+    ["assets/icons/io.github.bewzaalex.patchcord.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["README.md", "usr/share/doc/patchcord/", "644"],
+    ["assets/fonts/OFL.txt", "usr/share/doc/patchcord/OFL-NotoSans.txt", "644"],
+]
+
+[package.metadata.generate-rpm]
+summary = "PipeWire patchbay drawn as a rack of gear"
+assets = [
+    { source = "target/release/patchcord", dest = "/usr/bin/patchcord", mode = "755" },
+    { source = "assets/io.github.bewzaalex.patchcord.desktop", dest = "/usr/share/applications/io.github.bewzaalex.patchcord.desktop", mode = "644" },
+    { source = "assets/io.github.bewzaalex.patchcord.metainfo.xml", dest = "/usr/share/metainfo/io.github.bewzaalex.patchcord.metainfo.xml", mode = "644" },
+    { source = "assets/icons/io.github.bewzaalex.patchcord.svg", dest = "/usr/share/icons/hicolor/scalable/apps/io.github.bewzaalex.patchcord.svg", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/patchcord/README.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/licenses/patchcord/LICENSE", mode = "644", doc = true },
+    { source = "assets/fonts/OFL.txt", dest = "/usr/share/licenses/patchcord/OFL-NotoSans.txt", mode = "644", doc = true },
+]
+
 [profile.release]
+opt-level = 3
 lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"

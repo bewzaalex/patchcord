@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Patchcord
+GenericName=PipeWire Patchbay
+Comment=Connect PipeWire audio and MIDI with patch cords on a rack of gear
+Exec=patchcord
+Icon=io.github.bewzaalex.patchcord
+Terminal=false
+Categories=AudioVideo;Audio;Mixer;
+Keywords=pipewire;patchbay;graph;audio;midi;routing;connections;jack;
+StartupNotify=true
+StartupWMClass=io.github.bewzaalex.patchcord

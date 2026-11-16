@@ -1,0 +1,136 @@
+# Builds the release packages and puts them in a draft GitHub release.
+#
+#   Push a tag vX.Y.Z  -> check, test, build all packages, create a draft release with them
+#   Run it by hand     -> the same checks and builds, packages only as workflow artifacts
+#
+# See docs/RELEASING.md.
+
+name: Release
+run-name: ${{ github.ref_type == 'tag' && format('Patchcord {0}', github.ref_name) || format('Dry run on {0}', github.ref_name) }}
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check versions and test
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Versions agree (tag, Cargo.toml, metainfo)
+        id: version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            v=$(python3 .github/scripts/release.py version "$GITHUB_REF_NAME")
+          else
+            v=$(python3 .github/scripts/release.py version)
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      # PipeWire's headers, and libclang for the bindings the pipewire crate generates from them
+      - name: Build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpipewire-0.3-dev libclang-dev clang pkg-config
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo test --release --locked
+
+  linux:
+    name: tar.gz, deb and rpm
+    needs: check
+    # the oldest supported Ubuntu: the program then runs on systems with glibc 2.35 and
+    # PipeWire 0.3.48 or newer
+    runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+      # PipeWire's headers, and libclang for the bindings the pipewire crate generates from them
+      - name: Build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpipewire-0.3-dev libclang-dev clang pkg-config
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo build --release --locked
+      - name: tar.gz
+        run: |
+          d=patchcord-$VERSION-x86_64-linux
+          mkdir -p dist $d
+          cp target/release/patchcord README.md LICENSE $d/
+          cp assets/io.github.bewzaalex.patchcord.desktop assets/io.github.bewzaalex.patchcord.metainfo.xml \
+             assets/icons/io.github.bewzaalex.patchcord.svg $d/
+          cp assets/fonts/OFL.txt $d/OFL-NotoSans.txt
+          tar -czf dist/$d.tar.gz --owner=0 --group=0 $d
+      - name: Packaging tools
+        run: cargo install --locked cargo-deb cargo-generate-rpm
+      - name: deb and rpm
+        run: |
+          cargo deb --no-build --output dist/
+          cargo generate-rpm --output dist/
+      - name: Package contents
+        run: |
+          ls -l dist
+          dpkg-deb --info dist/*.deb && dpkg-deb --contents dist/*.deb
+          tar -tzvf dist/*.tar.gz
+      - uses: actions/upload-artifact@v6
+        with:
+          name: linux
+          path: dist/*
+          if-no-files-found: error
+
+  flatpak:
+    name: Flatpak
+    needs: check
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
+      # /var/lib/flatpak on a volume (filled from the image) instead of the image's layered
+      # filesystem: updating the preinstalled SDK there fails with "Invalid cross-device link"
+      # whenever Flathub has a newer one than the image
+      options: --privileged --volume /var/lib/flatpak
+    env:
+      BUNDLE: patchcord-${{ needs.check.outputs.version }}-x86_64.flatpak
+    steps:
+      - uses: actions/checkout@v6
+      - uses: flathub-infra/flatpak-github-actions/flatpak-builder@master
+        with:
+          manifest-path: packaging/flatpak/io.github.bewzaalex.patchcord.yml
+          bundle: ${{ env.BUNDLE }}
+          cache-key: flatpak-builder-${{ github.sha }}
+          upload-artifact: false
+      - uses: actions/upload-artifact@v6
+        with:
+          name: flatpak
+          path: ${{ env.BUNDLE }}
+          if-no-files-found: error
+
+  release:
+    name: Draft release
+    if: github.ref_type == 'tag'
+    needs: [check, linux, flatpak]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
+      - name: Release notes
+        run: python3 .github/scripts/release.py notes "$VERSION" > notes.md
+      - name: Create the draft (or update its files when re-run)
+        run: |
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --draft --verify-tag \
+              --title "Patchcord $VERSION" --notes-file notes.md
+          fi
