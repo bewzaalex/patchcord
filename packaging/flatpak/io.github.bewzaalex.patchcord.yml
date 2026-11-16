@@ -20,7 +20,8 @@ modules:
   - name: patchcord
     buildsystem: simple
     build-options:
-      append-path: /usr/lib/sdk/rust-stable/bin
+      # clang on the path too: bindgen asks it where its own C headers are
+      append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm21/bin
       env:
         CARGO_HOME: /run/build/patchcord/cargo
         LIBCLANG_PATH: /usr/lib/sdk/llvm21/lib
