@@ -692,6 +692,13 @@ impl Scene {
             for p in &c.pts {
                 (x0, y0, x1, y1) = (x0.min(p.x), y0.min(p.y), x1.max(p.x), y1.max(p.y));
             }
+            // plugs in the air reach a little beyond the cord's end
+            for e in [&c.a, &c.b] {
+                (x0, y0, x1, y1) = (x0.min(e.x), y0.min(e.y), x1.max(e.x), y1.max(e.y));
+            }
+        }
+        if ![x0, y0, x1, y1].iter().all(|v| v.is_finite()) {
+            return None;
         }
         // room for plugs in the hand and shadows
         let m = 170.0;

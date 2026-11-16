@@ -355,12 +355,20 @@ impl App {
             // the plug is a weight on a spring to the pointer; near a jack it is pulled in
             let spot = magnet.as_ref().and_then(|m| self.scene.spare(m));
             let to = spot.unwrap_or((cursor.0 as f32, cursor.1 as f32));
-            let (k, ddt) = (if spot.is_some() { 1200.0 } else { 650.0 }, dt.max(1e-3));
+            let k = if spot.is_some() { 1200.0 } else { 650.0 };
             let damp = 2.0 * f32::sqrt(k);
-            v.0 += ((to.0 - p.0) * k - v.0 * damp) * ddt;
-            v.1 += ((to.1 - p.1) * k - v.1 * damp) * ddt;
-            p.0 += v.0 * ddt;
-            p.1 += v.1 * ddt;
+            // small fixed steps: one big step on a slow frame would fling the plug away
+            let n = (dt / 0.004).ceil().max(1.0);
+            let h = dt / n;
+            for _ in 0..n as usize {
+                v.0 += ((to.0 - p.0) * k - v.0 * damp) * h;
+                v.1 += ((to.1 - p.1) * k - v.1 * damp) * h;
+                p.0 += v.0 * h;
+                p.1 += v.1 * h;
+            }
+            if !(p.0.is_finite() && p.1.is_finite()) {
+                (*p, *v) = (to, (0.0, 0.0));
+            }
             // near its jack the plug turns to face the panel
             let lift = spot.map_or(1.0, |s| (((s.0 - p.0).powi(2) + (s.1 - p.1).powi(2)).sqrt() - 4.0).clamp(0.0, 70.0) / 70.0);
             let kind = magnet.as_ref().and_then(|m| self.scene.jack_kind(m));

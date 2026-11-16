@@ -233,6 +233,16 @@ impl Cord {
         for _ in 0..steps {
             self.step(1.0 / RATE, hand);
         }
+        // a safety net: a cord whose numbers went wrong starts over as a straight line
+        let sane = |v: f32| v.is_finite() && v.abs() < 1e6;
+        if !self.pts.iter().all(|p| sane(p.x) && sane(p.y)) || !sane(self.len) {
+            let (a, b) = if sane(self.a.x) && sane(self.a.y) && sane(self.b.x) && sane(self.b.y) { ((self.a.x, self.a.y), (self.b.x, self.b.y)) } else { ((0.0, 0.0), (0.0, 0.0)) };
+            for (i, p) in self.pts.iter_mut().enumerate() {
+                let t = i as f32 / (N - 1) as f32;
+                *p = P::at(a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+            }
+            self.len = target_len(((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt(), sag);
+        }
         let len: f32 = self.pts.windows(2).map(|w| ((w[1].x - w[0].x).powi(2) + (w[1].y - w[0].y).powi(2)).sqrt()).sum();
         self.strain = len / self.len;
         if let Some(t) = &mut self.dying {
