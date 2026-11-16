@@ -13,12 +13,12 @@ submission needs its own manifest, written and submitted by a person.
 
 ## Build and test
 
-You need the builder, the freedesktop SDK and its Rust extension as flatpaks (the extension is
-a download of about 560 MB):
+You need the builder, the freedesktop SDK and its Rust and LLVM extensions as flatpaks (LLVM
+brings libclang, which the `pipewire` crate needs at build time; the extensions are big downloads):
 
 ```sh
 flatpak install --user flathub org.flatpak.Builder org.freedesktop.Sdk//25.08 \
-    org.freedesktop.Sdk.Extension.rust-stable//25.08
+    org.freedesktop.Sdk.Extension.rust-stable//25.08 org.freedesktop.Sdk.Extension.llvm21//25.08
 ```
 
 Build in `build/flatpak/`, so everything the builder writes stays there, its cache in `.flatpak-builder`

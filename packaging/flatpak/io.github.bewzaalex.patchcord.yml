@@ -4,6 +4,8 @@ runtime-version: '25.08'
 sdk: org.freedesktop.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
+  # libclang, for the bindings the pipewire crate generates from PipeWire's headers
+  - org.freedesktop.Sdk.Extension.llvm21
 command: patchcord
 finish-args:
   - --share=ipc
@@ -21,6 +23,7 @@ modules:
       append-path: /usr/lib/sdk/rust-stable/bin
       env:
         CARGO_HOME: /run/build/patchcord/cargo
+        LIBCLANG_PATH: /usr/lib/sdk/llvm21/lib
     build-commands:
       - cargo --offline build --release --locked
       - install -Dm755 target/release/patchcord /app/bin/patchcord

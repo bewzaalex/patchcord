@@ -11,7 +11,7 @@ hangs, swings and settles like a real one.
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 ![Rust 2024](https://img.shields.io/badge/Rust-2024_edition-dea584?logo=rust&logoColor=white)
 ![Linux](https://img.shields.io/badge/Linux-Wayland_%7C_X11-fcc624?logo=linux&logoColor=black)
-![PipeWire](https://img.shields.io/badge/PipeWire-0.3.48+-4a86c5)
+![PipeWire](https://img.shields.io/badge/PipeWire-1.0+-4a86c5)
 
 <img src="docs/screenshots/desk.png" width="720" alt="Devices on the desk, connected with patch cords">
 
@@ -42,6 +42,8 @@ program. To uninstall: `flatpak uninstall --user io.github.bewzaalex.patchcord`.
 
 ### Debian and Ubuntu
 
+For Ubuntu 24.04 and Debian 13 or newer (older ones: use the Flatpak).
+
 ```sh
 sudo apt install ./patchcord_*_amd64.deb
 ```
@@ -49,6 +51,8 @@ sudo apt install ./patchcord_*_amd64.deb
 To uninstall: `sudo apt remove patchcord`.
 
 ### Fedora and openSUSE
+
+For Fedora 40 and openSUSE Leap 16 or newer, and Tumbleweed (older ones: use the Flatpak).
 
 ```sh
 sudo dnf install ./patchcord-*.x86_64.rpm        # Fedora
@@ -59,8 +63,8 @@ To uninstall: `sudo dnf remove patchcord` or `sudo zypper remove patchcord`.
 
 ### Other Linux
 
-The `.tar.gz` holds the program, which runs on any distribution with glibc 2.35 and PipeWire
-0.3.48 or newer (2022 and later), with its icon and desktop entry:
+The `.tar.gz` holds the program, which runs on any distribution with glibc 2.39 and PipeWire
+1.0 or newer (2024 and later), with its icon and desktop entry:
 
 ```sh
 tar -xzf patchcord-*-x86_64-linux.tar.gz

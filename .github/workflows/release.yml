@@ -42,9 +42,9 @@ jobs:
   linux:
     name: tar.gz, deb and rpm
     needs: check
-    # the oldest supported Ubuntu: the program then runs on systems with glibc 2.35 and
-    # PipeWire 0.3.48 or newer
-    runs-on: ubuntu-22.04
+    # the oldest Ubuntu whose PipeWire headers the pipewire crate builds with (22.04's 0.3.48 are
+    # too old): the program then runs on systems with glibc 2.39 and PipeWire 1.0 or newer
+    runs-on: ubuntu-24.04
     env:
       VERSION: ${{ needs.check.outputs.version }}
     steps:

@@ -8,13 +8,14 @@ you publish the draft.
 | File | Built on | For |
 | --- | --- | --- |
 | `patchcord-X.Y.Z-x86_64.flatpak` | the freedesktop 25.08 SDK, with the manifest in [`packaging/flatpak/`](../packaging/flatpak/README.md) | any Linux with Flatpak |
-| `patchcord_X.Y.Z-1_amd64.deb` | Ubuntu 22.04 ([cargo-deb](https://github.com/kornelski/cargo-deb)) | Debian, Ubuntu and derivatives |
-| `patchcord-X.Y.Z-1.x86_64.rpm` | Ubuntu 22.04 ([cargo-generate-rpm](https://github.com/cat-in-136/cargo-generate-rpm)) | Fedora, openSUSE and derivatives |
-| `patchcord-X.Y.Z-x86_64-linux.tar.gz` | Ubuntu 22.04 | any other Linux with glibc 2.35 and PipeWire 0.3.48 or newer |
+| `patchcord_X.Y.Z-1_amd64.deb` | Ubuntu 24.04 ([cargo-deb](https://github.com/kornelski/cargo-deb)) | Debian, Ubuntu and derivatives |
+| `patchcord-X.Y.Z-1.x86_64.rpm` | Ubuntu 24.04 ([cargo-generate-rpm](https://github.com/cat-in-136/cargo-generate-rpm)) | Fedora, openSUSE and derivatives |
+| `patchcord-X.Y.Z-x86_64-linux.tar.gz` | Ubuntu 24.04 | any other Linux with glibc 2.39 and PipeWire 1.0 or newer |
 | `SHA256SUMS` | | checksums of all the files above |
 
-The `.deb`, `.rpm` and `.tar.gz` share one build. It's made on the oldest supported Ubuntu, so it
-runs on systems with the same or a newer C library and PipeWire. Their contents are set in `Cargo.toml` under
+The `.deb`, `.rpm` and `.tar.gz` share one build. It's made on Ubuntu 24.04, the oldest
+whose PipeWire headers the `pipewire` crate builds with, so it runs on systems with the same or a
+newer C library and PipeWire. Their contents are set in `Cargo.toml` under
 `[package.metadata.deb]` and `[package.metadata.generate-rpm]`.
 
 ## Making a release
