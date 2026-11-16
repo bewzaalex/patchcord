@@ -1,0 +1,8 @@
+[package]
+name = "pw-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+pipewire = "0.10.1"

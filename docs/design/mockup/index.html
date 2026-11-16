@@ -1,0 +1,1375 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Patchcord Mockup</title>
+<style>
+  :root { --bg: #141517; --fg: #c9cbcd; --muted: #7d8085; --key: #2c2d30; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); overflow: hidden;
+    font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { display: flex; flex-direction: column; }
+
+  /* ---------- top panel: a strip of painted metal with hardware keys ---------- */
+  #bar { flex: none; display: flex; align-items: center; gap: 18px; padding: 10px 18px 6px; position: relative; z-index: 3;
+    background: url(paint.png) 0 0 / 80px 80px, #8c8e91; white-space: nowrap;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.35), inset 0 -1px 0 rgba(0,0,0,.5), 0 6px 18px rgba(0,0,0,.55);
+    font-family: Arial, Helvetica, "Liberation Sans", sans-serif; font-weight: bold; user-select: none; }
+  #bar::after { content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(rgba(255,255,255,.10), rgba(0,0,0,.18)); }
+  .logo { display: flex; flex-direction: column; line-height: 1; margin-right: 6px; }
+  .logo b { font: 900 26px "Arial Black", "DejaVu Sans", sans-serif; color: #2a2b2e; letter-spacing: 1px;
+    transform: scaleX(1.06); transform-origin: left; text-shadow: 0 1px 0 rgba(255,255,255,.35); }
+  .logo span { font-size: 9px; letter-spacing: 1.6px; color: #2e3033; margin-top: 4px; }
+  .grp { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .grp .keys { display: flex; gap: 8px; }
+  .grp > label { font-size: 9px; letter-spacing: 1.2px; color: #26272a; }
+  .key { position: relative; min-width: 62px; height: 30px; padding: 0 10px; border: 0; border-radius: 5px; cursor: pointer;
+    font: bold 10.5px Arial, Helvetica, sans-serif; color: #e6e7e8; letter-spacing: .4px; white-space: nowrap;
+    background: linear-gradient(#45464a, #232427 55%, #1b1c1e);
+    box-shadow: 0 0 0 2px #19191b, 0 0 0 3px rgba(255,255,255,.18), inset 0 1px 0 rgba(255,255,255,.18), 0 3px 4px rgba(0,0,0,.45); }
+  .key:active { transform: translateY(1px); background: linear-gradient(#36373a, #1d1e20); }
+  .key .led { position: absolute; left: 6px; top: 5px; width: 5px; height: 5px; border-radius: 50%; background: #3a1512; }
+  .key.on .led { background: #ff4a32; box-shadow: 0 0 6px 1px rgba(255,80,50,.85); }
+  .key .tri { display: inline-flex; gap: 3px; margin-left: 7px; vertical-align: 1px; }
+  .key .tri i { width: 5px; height: 5px; border-radius: 50%; background: #3a1512; }
+  .key .tri i.on { background: #ffb02e; box-shadow: 0 0 5px 1px rgba(255,170,40,.8); }
+  .knob { width: 34px; height: 34px; cursor: ns-resize; touch-action: none; }
+  .key.ico { min-width: 0; width: 38px; padding: 0; }
+  .key.ico svg { width: 17px; height: 17px; display: block; margin: auto; fill: none; stroke: #e6e7e8; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .lcd { margin-left: auto; min-width: 0; max-width: 340px; overflow: hidden; cursor: pointer; padding: 6px 12px; border-radius: 4px; color: #3a2408; white-space: nowrap;
+    font: bold 11.5px ui-monospace, "DejaVu Sans Mono", monospace; line-height: 1.35;
+    background: linear-gradient(#f7bb62, #e58f2c); box-shadow: 0 0 0 3px #121214, 0 0 0 4px rgba(255,255,255,.2), inset 0 0 12px rgba(120,50,0,.35); }
+  .lcd div { overflow: hidden; text-overflow: ellipsis; }
+  .lcd div:last-child { font-weight: normal; }
+  /* the preset list drops out of the LCD and looks like more of it */
+  #presets { position: absolute; right: 18px; top: calc(100% + 6px); width: 300px; padding: 8px 0; border-radius: 4px; z-index: 5;
+    color: #3a2408; font: bold 12px ui-monospace, "DejaVu Sans Mono", monospace; white-space: nowrap;
+    background: linear-gradient(#f7bb62, #e58f2c); box-shadow: 0 0 0 3px #121214, 0 0 0 4px rgba(255,255,255,.2), 0 14px 30px rgba(0,0,0,.6); }
+  #presets.hide { display: none; }
+  #presets h2 { margin: 0 12px 6px; font-size: 10px; letter-spacing: 1.5px; opacity: .7; }
+  #presets .row { display: flex; align-items: center; gap: 8px; padding: 4px 12px; cursor: pointer; }
+  #presets .row:hover { background: rgba(58,36,8,.15); }
+  #presets .row.cur { background: #3a2408; color: #f7bb62; }
+  #presets .row span { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  #presets .del { border: 0; background: none; color: inherit; font: inherit; cursor: pointer; opacity: .6; padding: 0 2px; }
+  #presets .del:hover { opacity: 1; }
+  #presets .empty { padding: 4px 12px; opacity: .7; font-weight: normal; }
+  #presets form { display: flex; gap: 6px; padding: 2px 12px; }
+  #presets input { flex: 1; min-width: 0; font: inherit; color: #3a2408; background: rgba(255,255,255,.35); border: 0; border-radius: 3px;
+    padding: 4px 6px; outline: 2px solid #3a2408; text-transform: uppercase; }
+  #presets form button { font: inherit; border: 0; border-radius: 3px; padding: 4px 8px; cursor: pointer; background: #3a2408; color: #f7bb62; }
+
+  /* ---------- the patch field ---------- */
+  #stage { flex: 1; position: relative; overflow: hidden; touch-action: none;
+    background: radial-gradient(ellipse at 50% 30%, #2a2c2f, #151618 70%); }
+  #stage::before { content: ""; position: absolute; inset: 0; opacity: .5; pointer-events: none;
+    background: radial-gradient(circle, rgba(255,255,255,.05) 1px, transparent 1.5px) 0 0 / 22px 22px; }
+  #world { position: absolute; left: 0; top: 0; transform-origin: 0 0; pointer-events: none; }
+  #cables { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .dev { position: absolute; left: 0; top: 0; border-radius: 12px; transition: box-shadow .15s;
+    filter: drop-shadow(0 10px 14px rgba(0,0,0,.5)); }
+  .dev svg { display: block; overflow: visible; }
+  .dev.hl { box-shadow: 0 0 0 2px rgba(255,190,90,.55), 0 0 22px rgba(255,170,60,.25); }
+  .dev.rack { border-radius: 3px; }
+  #rack { position: absolute; left: 0; top: 0; opacity: 0; transition: opacity .35s; border-radius: 4px;
+    background: linear-gradient(#0c0d0e, #17181a); box-shadow: 0 0 0 1px #000, 0 20px 40px rgba(0,0,0,.6); }
+  #rack.show { opacity: 1; }
+  #rack i { position: absolute; top: 0; bottom: 0; width: 30px;
+    background: radial-gradient(circle at 15px 50%, #050506 3.2px, rgba(0,0,0,.4) 4px, transparent 4.6px) 0 6px / 30px 21px repeat-y,
+                linear-gradient(90deg, #6e7175, #c4c7cb 45%, #8a8d91 70%, #5d6064); }
+  #rack i:first-child { left: 0; } #rack i:last-child { right: 0; }
+
+  #tip { position: absolute; z-index: 4; pointer-events: none; opacity: 0; transition: opacity .12s;
+    background: rgba(18,19,21,.94); color: #e6e7e8; padding: 5px 9px; border-radius: 6px; font-size: 12px; white-space: nowrap;
+    box-shadow: 0 6px 16px rgba(0,0,0,.5); }
+  #tip.show { opacity: 1; }
+  #tip b { color: #ffb44e; font-weight: 600; }
+  #helpBtn { position: absolute; right: 16px; bottom: 14px; z-index: 3; width: 30px; height: 30px; border-radius: 50%; border: 0;
+    background: rgba(20,21,23,.9); color: var(--fg); font: bold 14px system-ui, sans-serif; cursor: pointer; box-shadow: 0 6px 16px rgba(0,0,0,.5); }
+  #help { position: absolute; right: 16px; bottom: 54px; z-index: 3; width: 290px; padding: 12px 14px 10px;
+    background: rgba(20,21,23,.94); border-radius: 10px; box-shadow: 0 10px 26px rgba(0,0,0,.5); font-size: 12px; }
+  #help h1 { margin: 0 0 6px; font-size: 13px; }
+  #help table { border-collapse: collapse; } #help td { padding: 2px 8px 2px 0; vertical-align: top; color: #b9bbbe; }
+  #help td:first-child { color: var(--fg); white-space: nowrap; }
+  #help.hide { display: none; }
+  kbd { background: var(--key); border-radius: 4px; padding: 0 5px; font: 11px ui-monospace, monospace; }
+  #status { flex: none; display: flex; justify-content: space-between; gap: 16px; padding: 5px 14px;
+    background: #0e0f10; color: var(--muted); font: 11.5px ui-monospace, "DejaVu Sans Mono", monospace; border-top: 1px solid #000; }
+  #status span:last-child { color: #a8abae; }
+</style>
+</head>
+<body>
+
+<header id="bar">
+  <div class="logo"><b>PATCHCORD</b><span>PC-1 · PIPEWIRE PATCHBAY</span></div>
+  <div class="grp"><div class="keys"><button class="key ico" id="undo" title="Undo (Ctrl+Z)"><svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button><button class="key ico" id="redo" title="Redo (Ctrl+Shift+Z)"><svg viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button><button class="key ico" id="save" title="Save as a new preset (Ctrl+S)"><svg viewBox="0 0 24 24"><path d="M5 3h11l3 3v15H5z"/><path d="M8 3v5h7V3"/><path d="M8 21v-7h8v7"/></svg></button><button class="key ico" id="load" title="Load a preset (Ctrl+O)"><svg viewBox="0 0 24 24"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h10"/></svg></button></div><label>EDIT</label></div>
+  <div class="grp"><div class="keys">
+    <button class="key" data-mode="desk"><span class="led"></span>DESK</button>
+    <button class="key" data-mode="rack"><span class="led"></span>RACK</button>
+    <button class="key ico" id="lock" title="Lock devices in place (L)"><span class="led"></span><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></button></div><label>LAYOUT</label></div>
+  <div class="grp"><div class="keys"><button class="key" id="cablesKey">CABLES<span class="tri"><i></i><i></i><i></i></span></button></div><label>SHOW·FADE·HIDE</label></div>
+  <div class="grp"><svg class="knob" id="sag" viewBox="-20 -20 40 40"></svg><label>SAG</label></div>
+  <div class="grp"><div class="keys"><button class="key ico" id="arrange" title="Arrange by signal flow"><svg viewBox="0 0 24 24"><rect x="3.5" y="4" width="7" height="5" rx="1"/><rect x="3.5" y="15" width="7" height="5" rx="1"/><rect x="13.5" y="9.5" width="7" height="5" rx="1"/><path d="M10.5 6.5h1.5v11h-1.5M12 12h1.5"/></svg></button><button class="key ico" id="fit" title="Fit to window (F)"><svg viewBox="0 0 24 24"><path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/></svg></button><button class="key ico" id="snd" title="Plug sounds"><span class="led"></span><svg viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7"/><path d="M19 6a8.5 8.5 0 0 1 0 12"/></svg></button></div><label>VIEW</label></div>
+  <div class="lcd" id="lcd" title="Presets"><div id="lcd1"></div><div id="lcd2"></div></div>
+  <div id="presets" class="hide"></div>
+</header>
+
+<div id="stage">
+  <div id="world"><div id="rack"><i></i><i></i></div></div>
+  <canvas id="cables"></canvas>
+  <div id="tip"></div>
+  <button id="helpBtn" title="Help (?)">?</button>
+  <div id="help" class="hide">
+    <h1>Patchcord — interactive mockup</h1>
+    <table>
+      <tr><td>Drag from a jack</td><td>pull out a cord, drop it on a jack</td></tr>
+      <tr><td>Drag a plug</td><td>unplug it, move it, or drop it to remove</td></tr>
+      <tr><td>Free jack</td><td>every port keeps one; plug in and the mult grows</td></tr>
+      <tr><td>SPLIT / JOIN</td><td>stereo jack ⇄ separate L and R jacks</td></tr>
+      <tr><td><kbd>Shift</kbd> + drag</td><td>split L/R jacks: both cords at once</td></tr>
+      <tr><td>Drag a cord</td><td>grab it and swing it</td></tr>
+      <tr><td>Double-click</td><td>pull a cord out</td></tr>
+      <tr><td>Drag a device</td><td>move it (reorder in RACK)</td></tr>
+      <tr><td>Wheel / empty drag</td><td>zoom / pan</td></tr>
+      <tr><td><kbd>R</kbd> <kbd>L</kbd> <kbd>C</kbd> <kbd>F</kbd></td><td>rack/desk · lock · cables · fit</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd></td><td>undo (<kbd>Shift</kbd> redo)</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>O</kbd></td><td>save a new preset / pick one (or click the LCD)</td></tr>
+    </table>
+  </div>
+</div>
+<div id="status"><span id="st1"></span><span id="st2"></span></div>
+
+<!-- gradients and parts shared by every device face (paint patterns live in each face) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="gSheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity=".16"/><stop offset=".35" stop-color="#fff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000" stop-opacity=".24"/></linearGradient>
+    <linearGradient id="gNut" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f6f7f8"/><stop offset=".45" stop-color="#b6b9bd"/><stop offset="1" stop-color="#55585d"/></linearGradient>
+    <radialGradient id="gWasher" cx=".4" cy=".35" r=".75">
+      <stop offset="0" stop-color="#5e6166"/><stop offset="1" stop-color="#141517"/></radialGradient>
+    <radialGradient id="gWasherMidi" cx=".4" cy=".35" r=".75">
+      <stop offset="0" stop-color="#c8483a"/><stop offset="1" stop-color="#4a120d"/></radialGradient>
+    <radialGradient id="gChrome" cx=".35" cy=".3" r=".85">
+      <stop offset="0" stop-color="#fff"/><stop offset=".4" stop-color="#b9bcc1"/><stop offset=".75" stop-color="#65686d"/><stop offset="1" stop-color="#a6a9ad"/></radialGradient>
+    <radialGradient id="gHole" cx=".5" cy=".62" r=".6">
+      <stop offset="0" stop-color="#000"/><stop offset=".7" stop-color="#0a0a0b"/><stop offset="1" stop-color="#3c3d40"/></radialGradient>
+    <linearGradient id="gLcd" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f7bb62"/><stop offset="1" stop-color="#e38c2a"/></linearGradient>
+    <g id="jack-mono">
+      <circle r="16.5" cx="1.2" cy="2.4" fill="#000" opacity=".35"/>
+      <polygon id="hex" fill="url(#gNut)" stroke="#43454a" stroke-width=".8"/>
+      <circle r="11.4" fill="url(#gWasher)"/>
+      <circle r="8.7" fill="url(#gChrome)" stroke="#2a2b2e" stroke-width=".8"/>
+      <circle r="5.5" fill="url(#gHole)"/>
+    </g>
+    <g id="jack-stereo">
+      <use href="#jack-mono"/>
+      <circle r="10.1" fill="none" stroke="#c9a24a" stroke-width="1.3"/>
+    </g>
+    <g id="jack-midi">
+      <circle r="16.5" cx="1.2" cy="2.4" fill="#000" opacity=".35"/>
+      <use href="#hex"/>
+      <circle r="11.4" fill="url(#gWasherMidi)"/>
+      <circle r="8.7" fill="url(#gChrome)" stroke="#2a2b2e" stroke-width=".8"/>
+      <circle r="5.5" fill="url(#gHole)"/>
+    </g>
+    <g id="screw">
+      <circle r="5.2" fill="url(#gChrome)" stroke="#35363a" stroke-width=".7"/>
+      <path d="M-3.2,0 H3.2 M0,-3.2 V3.2" stroke="#36373b" stroke-width="1.4" stroke-linecap="round"/>
+    </g>
+  </defs>
+</svg>
+
+<script>
+'use strict';
+const TAU = Math.PI * 2;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const wrapA = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+const $ = (s) => document.querySelector(s);
+const stage = $('#stage'), world = $('#world'), cv = $('#cables'), ctx = cv.getContext('2d'), tip = $('#tip');
+
+// ---------------- the PipeWire graph we pretend to see ----------------
+const P = (n, full, t = 'audio') => ({ n, full, t });
+const stereo = (pre) => [P('L', pre + '_FL'), P('R', pre + '_FR')];
+// name: what PipeWire calls the node (node.description), shown on the panel and scrolled on the LCD.
+// Nodes of one card (sink, source, monitor) are merged into one device.
+const DEVICES = [
+  { id: 'cpal', title: 'cpal-pulseaudio-1293852', name: 'cpal-pulseaudio-1293852', model: 'APP · PULSEAUDIO CLIENT', finish: 'black', color: '#e8742a', gen: .6, x: 40, y: 40,
+    groups: [{ label: 'OUTPUT', dir: 'out', stereo: true, ports: stereo('output') }] },
+  { id: 'jlab', title: 'JLab GO Work 2', name: 'JLab GO Work 2 [JLab GO Work 2]', model: 'BLUETOOTH HEADSET', finish: 'metal', color: '#5b7fe0', gen: .3, pass: true, x: 540, y: 40,
+    groups: [{ label: 'PLAYBACK', dir: 'in', stereo: true, ports: stereo('playback') },
+             { label: 'MIC', dir: 'out', ports: [P('MONO', 'capture_MONO')] },
+             { label: 'MONITOR', dir: 'out', stereo: true, ports: stereo('monitor') }] },
+  { id: 'btcap', title: 'Bluetooth internal capture stream', name: 'Bluetooth internal capture stream', model: 'BLUEZ · STREAM', finish: 'cream', color: '#3fae5a', pass: true, x: 540, y: 220,
+    groups: [{ label: 'INPUT', dir: 'in', ports: [P('MONO', 'input_MONO')] }, { label: 'MONITOR', dir: 'out', ports: [P('MONO', 'monitor_MONO')] }] },
+  { id: 'ryzen', title: 'Ryzen HD Audio Controller', name: 'Ryzen HD Audio Controller Analog Stereo', model: 'ALSA · PCI · ANALOG STEREO', finish: 'metal', color: '#2bb0a8', gen: .15, pass: true, x: 540, y: 400,
+    groups: [{ label: 'PLAYBACK', dir: 'in', stereo: true, ports: stereo('playback') },
+             { label: 'CAPTURE', dir: 'out', stereo: true, ports: stereo('capture') },
+             { label: 'MONITOR', dir: 'out', stereo: true, ports: stereo('monitor') }] },
+  { id: 'alsamidi', title: '14:Midi Through', name: '14:Midi Through', model: 'ALSA MIDI · CLIENT 14', finish: 'navy', color: '#c05bd0', x: 40, y: 220,
+    groups: [{ label: 'MIDI', dir: 'in', ports: [P('PORT 0', '0:Midi Through Port-0', 'midi')] }, { label: 'MIDI', dir: 'out', ports: [P('PORT 0', '0:Midi Through Port-0', 'midi')] }] },
+  { id: 'bridge', title: 'Midi-Bridge', name: 'Midi-Bridge', model: 'PIPEWIRE MIDI', finish: 'navy', color: '#d23b32', x: 40, y: 400,
+    groups: [{ label: 'MIDI', dir: 'in', ports: [P('PORT 0', 'Midi Through Port-0', 'midi')] }, { label: 'MIDI', dir: 'out', ports: [P('PORT 0', 'Midi Through Port-0', 'midi')] }] },
+  { id: 'ble', title: 'BLE MIDI 1', name: 'BLE MIDI 1', model: 'BLUETOOTH MIDI', finish: 'navy', color: '#e9c53a', x: 40, y: 580,
+    groups: [{ label: 'MIDI', dir: 'in', ports: [P('IN', 'in', 'midi')] }, { label: 'MIDI', dir: 'out', ports: [P('OUT', 'out', 'midi')] }] },
+];
+// the truth is PipeWire's list of port-to-port links; cords are drawn from it
+const LINKS = [
+  ['cpal:out:output_FL', 'jlab:in:playback_FL'], ['cpal:out:output_FR', 'jlab:in:playback_FR'],
+];
+
+const FINISH = {
+  metal: { base: '#8b8d90', paint: true, noise: 0, print: '#1d1e20', sub: '#2c2e31' },
+  black: { base: '#26272a', noise: .9, print: '#d5d7d9', sub: '#9a9da1' },
+  cream: { base: '#d9d3be', noise: .6, print: '#2a2926', sub: '#5a574f' },
+  navy:  { base: '#2b3950', noise: .8, print: '#dde5f0', sub: '#9aa8bd' },
+};
+
+// ---------------- state ----------------
+const RACK_MIN = 1000, RACK_GAP = 3, DEV_H = 128, JP = 48;
+const S = { locked: false, mode: 'desk', rackW: RACK_MIN, cableMode: 0, sag: .45, sound: true, view: { x: 0, y: 0, s: 1 }, vt: null, edited: false };
+const devs = DEVICES.map((d) => ({ ...d, dx: d.x, dy: d.y, tx: d.x, ty: d.y, W: 0, H: DEV_H, lvl: 0, shown: 0, running: null }));
+const ports = new Map(), jacks = new Map(), links = new Set();
+for (const d of devs) for (const g of d.groups) for (const p of g.ports) {
+  Object.assign(p, { dev: d, group: g, key: d.id + ':' + g.dir + ':' + p.full });
+  ports.set(p.key, p);
+}
+let rackOrder = [];
+const cables = [];
+let seq = 0, slotSeq = 0;
+
+// a jack is what you plug into: a stereo jack carries the L and R ports, a mono jack one port
+function buildJacks(d, g) {
+  for (const j of g.jacks || []) jacks.delete(j.key);
+  const mk = (gi, n, ps, kind) => {
+    const j = { dev: d, group: g, gi, n, ports: ps, kind, dir: g.dir, t: ps[0].t, lx: 0, ly: 0,
+      key: d.id + ':' + g.dir + ':' + ps.map((p) => p.full).join('+') };
+    for (const p of ps) p.jack = j;
+    jacks.set(j.key, j);
+    return j;
+  };
+  g.jacks = g.stereo && !g.split ? [mk(0, 'STEREO', g.ports, 'stereo')]
+    : g.ports.map((p, i) => mk(i, p.n, [p], p.t === 'midi' ? 'midi' : 'mono'));
+}
+for (const d of devs) for (const g of d.groups) buildJacks(d, g);
+
+// ---------------- device faces ----------------
+function noiseURL() {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d'), im = g.createImageData(128, 128);
+  for (let i = 0; i < im.data.length; i += 4) {
+    const v = Math.random() * 255; im.data[i] = im.data[i + 1] = im.data[i + 2] = v; im.data[i + 3] = 22;
+  }
+  g.putImageData(im, 0, 0); return c.toDataURL();
+}
+const NOISE = noiseURL();
+$('#hex').setAttribute('points', Array.from({ length: 6 }, (_, k) => {
+  const a = (k * 60 + 30) * Math.PI / 180; return `${(15 * Math.cos(a)).toFixed(2)},${(15 * Math.sin(a)).toFixed(2)}`;
+}).join(' '));
+
+const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+const BLACK = "'Arial Black', 'DejaVu Sans', sans-serif";
+const textW = (t, size) => { measure.font = `900 ${size}px ${BLACK}`; return measure.measureText(t).width; };
+// every panel title uses the same size: one line, else two, else two ending in "…".
+// Lines break after a space, "-", "_" or ":", and inside a word only when nothing else fits.
+const TITLE = 14;
+function fitTitle(name, maxW) {
+  const t = name.toUpperCase(), size = TITLE;
+  if (textW(t, size) <= maxW) return { size, lines: [t] };
+  const parts = t.split(/(?<=[ \-_:])/);
+  let l1 = '', i = 0;
+  while (i < parts.length && textW(l1 + parts[i], size) <= maxW) l1 += parts[i++];
+  let rest = parts.slice(i).join('');
+  if (!l1) { let k = 0; while (k < t.length && textW(t.slice(0, k + 1), size) <= maxW) k++; l1 = t.slice(0, k); rest = t.slice(k); }
+  let l2 = rest;
+  if (textW(l2, size) > maxW) { while (l2 && textW(l2 + '…', size) > maxW) l2 = l2.slice(0, -1); l2 = l2.trimEnd() + '…'; }
+  return { size, lines: [l1.trimEnd(), l2] };
+}
+const LCD_CH = 27; // characters the LCD shows on one line
+// a port is a mult: one jack per cord plugged in, plus one free jack
+const measure = document.createElement('canvas').getContext('2d');
+const IDW_ = 190; // width of the name and LCD block
+const slots = (j) => (j.count || 0) + 1;
+const labelW = (t) => { measure.font = 'bold 8.5px Arial, Helvetica, sans-serif'; return measure.measureText(t).width + t.length * .8; };
+const groupW = (g) => Math.max(g.jacks.reduce((s, j) => s + slots(j), 0) * JP + 14, g.stereo ? 100 : 0, Math.ceil(labelW(g.label)) + 8 + 6 + 30 + 4);
+const naturalW = (d, rack) => 2 * (rack ? 30 : 0) + 32 + IDW_ + 14 + d.groups.reduce((s, g) => s + groupW(g) + 10, 0) - 10 + 40;
+const faceSig = (d) => S.mode + (S.mode === 'rack' ? S.rackW : '') + d.groups.map((g) => g.jacks.map(slots).join(',')).join('|');
+function renderDevice(d) {
+  const rack = S.mode === 'rack', f = FINISH[d.finish];
+  const EAR = rack ? 30 : 0, PAD = 16, IDW = IDW_, H = DEV_H;
+  const x0 = EAR + PAD, inv = d.finish === 'metal' || d.finish === 'cream' ? '#d9dbdd' : '#222';
+  // inputs on the left, outputs on the right; in a rack the outputs sit against the meter with a grille between
+  const ins = d.groups.filter((g) => g.dir === 'in'), outs = d.groups.filter((g) => g.dir === 'out');
+  const span = (gs) => gs.reduce((s, g) => s + groupW(g) + 10, 0);
+  const natural = x0 + IDW + 14 + span(d.groups) - 10 + 14 + 26 + PAD + EAR;
+  const W = rack ? Math.max(S.rackW, natural) : natural;
+  const mx = W - EAR - PAD - 22;
+  let body = '';
+  const group = (g, x) => {
+    const n = g.jacks.reduce((s, j) => s + slots(j), 0), gw = groupW(g);
+    body += `<rect x="${x}" y="18" width="${gw}" height="92" rx="6" fill="rgba(0,0,0,.15)" stroke="rgba(0,0,0,.3)"/>` +
+      `<path d="M${x + 6},110.6 h${gw - 12}" stroke="rgba(255,255,255,.14)"/>` +
+      `<text x="${x + 8}" y="31" font-size="8.5" fill="${f.print}" letter-spacing=".8">${g.label}</text>`;
+    body += g.dir === 'in'
+      ? `<rect x="${x + gw - 30}" y="22.5" width="23" height="11" rx="2" fill="none" stroke="${f.print}" stroke-width=".9"/><text x="${x + gw - 18.5}" y="31" font-size="7.5" fill="${f.print}" text-anchor="middle">IN</text>`
+      : `<rect x="${x + gw - 30}" y="22.5" width="23" height="11" rx="2" fill="${f.print}"/><text x="${x + gw - 18.5}" y="31" font-size="7.5" fill="${inv}" text-anchor="middle">OUT</text>`;
+    let jx = x + (gw - n * JP) / 2 + JP / 2;
+    for (const j of g.jacks) {
+      const k = slots(j);
+      j.lx = jx; j.ly = 62;
+      // parallel jacks of one port get a printed outline, like a mult on a patch bay
+      if (k > 1) body += `<rect x="${jx - 21}" y="41" width="${(k - 1) * JP + 42}" height="42" rx="21" fill="rgba(0,0,0,.08)" stroke="${f.print}" stroke-width=".9" opacity=".5"/>`;
+      for (let i = 0; i < k; i++) body += `<use href="#jack-${j.kind}" x="${jx + i * JP}" y="62"/>`;
+      body += `<text x="${jx + (k - 1) * JP / 2}" y="91" font-size="${j.kind === 'stereo' ? 7.5 : 9}" fill="${f.print}" text-anchor="middle" letter-spacing="${j.kind === 'stereo' ? .6 : 0}">${j.n}</text>`;
+      jx += k * JP;
+    }
+    if (g.stereo) {
+      // a little hardware switch: one stereo jack, or L and R apart
+      const bx = x + gw - 42, by = 97;
+      g.btn = { x: bx, y: by - 2, w: 36, h: 14 };
+      body += `<rect x="${bx}" y="${by}" width="34" height="10" rx="2" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/>` +
+        `<text x="${bx + 17}" y="${by + 7.6}" font-size="6.8" fill="#e6e7e8" text-anchor="middle" letter-spacing=".5">${g.split ? 'JOIN' : 'SPLIT'}</text>`;
+    } else g.btn = null;
+    g.x = x; g.w = gw;
+    return x + gw + 10;
+  };
+  let x = x0 + IDW + 14;
+  for (const g of ins) x = group(g, x);
+  const gx0 = x;
+  let ox = rack ? mx - 4 - span(outs) : x;
+  const gx1 = ox - 10;
+  for (const g of outs) ox = group(g, ox);
+
+  let grille = '';
+  if (rack && gx1 - gx0 > 50) {
+    for (let y = 30; y <= 98; y += 9.5)
+      grille += `<rect x="${gx0}" y="${y}" width="${gx1 - gx0}" height="4.2" rx="2.1" fill="#0b0c0d"/>` +
+        `<path d="M${gx0 + 2},${y + 5.1} h${gx1 - gx0 - 4}" stroke="rgba(255,255,255,.12)"/>`;
+  }
+  let leds = '';
+  for (let c = 0; c < 2; c++) for (let i = 0; i < 10; i++)
+    leds += `<rect class="led" x="${mx + c * 11}" y="${92 - i * 7.6}" width="8" height="5.4" rx="1" fill="rgba(0,0,0,.5)"/>`;
+
+  const r = rack ? 3 : 12;
+  const ttl = fitTitle(d.name, IDW - 14);
+  const title = ttl.lines.length === 1
+    ? `<text x="${x0}" y="40" font-size="${ttl.size}">${esc(ttl.lines[0])}</text>`
+    : `<text x="${x0}" y="${44 - ttl.size - 2}" font-size="${ttl.size}">${esc(ttl.lines[0])}</text><text x="${x0}" y="45" font-size="${ttl.size}">${esc(ttl.lines[1])}</text>`;
+  const screws = (rack ? [] : [[11, 11], [W - 11, 11], [11, H - 11], [W - 11, H - 11]])
+    .map(([sx, sy], i) => `<use href="#screw" transform="translate(${sx},${sy}) rotate(${(i * 37 + d.name.length * 11) % 90})"/>`).join('');
+  // paint: solid base, then the texture on top, so the face stays painted even if the texture fails
+  const skin = (sx, sw, rr) => `<rect x="${sx}" y="0" width="${sw}" height="${H}" rx="${rr}" fill="${f.base}"/>` +
+    (f.paint ? `<rect x="${sx}" y="0" width="${sw}" height="${H}" rx="${rr}" fill="url(#pt-${d.id})"/>` : '') +
+    (f.noise ? `<rect x="${sx}" y="0" width="${sw}" height="${H}" rx="${rr}" fill="url(#nz-${d.id})" opacity="${f.noise}"/>` : '') +
+    `<rect x="${sx}" y="0" width="${sw}" height="${H}" rx="${rr}" fill="url(#gSheen)"/>`;
+  const ear = (ex) => skin(ex, EAR + 6, 3) + `<rect x="${ex}" y="0" width="${EAR + 6}" height="${H}" rx="3" fill="none" stroke="rgba(0,0,0,.6)"/>` +
+    [24, H - 24].map((sy) => {
+      const cx = ex === 0 ? EAR / 2 : W - EAR / 2;
+      return `<rect x="${cx - 5.5}" y="${sy - 9}" width="11" height="18" rx="5.5" fill="#0a0a0b"/><use href="#screw" transform="translate(${cx},${sy}) rotate(${sy})"/>`;
+    }).join('');
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="Arial, Helvetica, 'Liberation Sans', sans-serif" font-weight="bold">
+    <defs>
+      <pattern id="pt-${d.id}" width="80" height="80" patternUnits="userSpaceOnUse"><image href="paint.png" width="80" height="80"/></pattern>
+      <pattern id="nz-${d.id}" width="128" height="128" patternUnits="userSpaceOnUse"><image href="${NOISE}" width="128" height="128"/></pattern>
+    </defs>
+    ${rack ? ear(0) + ear(W - EAR - 6) : ''}
+    ${skin(EAR, W - 2 * EAR, r)}
+    <rect x="${EAR + .75}" y=".75" width="${W - 2 * EAR - 1.5}" height="${H - 1.5}" rx="${r}" fill="none" stroke="rgba(255,255,255,.2)" stroke-width="1"/>
+    <rect x="${EAR}" y="0" width="${W - 2 * EAR}" height="${H}" rx="${r}" fill="none" stroke="rgba(0,0,0,.65)" stroke-width="1"/>
+    ${screws}
+    <g font-family="${BLACK}" font-weight="900" fill="${f.print}">${title}</g>
+    <text x="${x0}" y="57" font-size="7.8" fill="${f.sub}" letter-spacing="1">${d.model}</text>
+    <circle class="st" cx="${x0 + IDW - 5}" cy="54" r="3.2" fill="#2a1d0a" stroke="rgba(0,0,0,.6)" stroke-width=".8"/>
+    <rect x="${x0 - 1.5}" y="64.5" width="${IDW + 3}" height="43" rx="4" fill="#111214"/>
+    <rect x="${x0 + 1.5}" y="67.5" width="${IDW - 3}" height="37" rx="2" fill="url(#gLcd)"/>
+    <rect x="${x0 + 1.5}" y="67.5" width="${IDW - 3}" height="37" rx="2" fill="none" stroke="rgba(110,45,0,.35)" stroke-width="3"/>
+    <g font-family="ui-monospace, 'DejaVu Sans Mono', monospace" fill="#3a2408" style="white-space:pre">
+      <text class="lcd1" x="${x0 + 9}" y="83" font-size="10.5"></text>
+      <text class="lcd2" x="${x0 + 9}" y="98" font-size="10.5" font-weight="normal">48 kHz  IDLE</text>
+    </g>
+    ${body}${grille}${leds}
+    <text x="${mx + 9.5}" y="112" font-size="7.5" fill="${f.print}" text-anchor="middle" letter-spacing=".6">SIG</text>
+  </svg>`;
+  if (!d.el) { d.el = document.createElement('div'); d.el.className = 'dev'; world.appendChild(d.el); }
+  d.el.classList.toggle('rack', rack);
+  d.el.innerHTML = svg;
+  d.W = W; d.H = H;
+  d.el.style.width = W + 'px'; d.el.style.height = H + 'px';
+  d.leds = d.el.querySelectorAll('.led');
+  d.stEl = d.el.querySelector('.st');
+  d.lcd2 = d.el.querySelector('.lcd2');
+  d.lcd1 = d.el.querySelector('.lcd1');
+  d.scroll = -1;
+  d.running = null; d.shown = -1;
+  d.sig = faceSig(d);
+}
+
+// ---------------- links ----------------
+// stereo→stereo is L→L and R→R; mono↔stereo fans out or sums
+function pairsOf(A, B) {
+  if (A.ports.length === B.ports.length) return A.ports.map((p, i) => [p, B.ports[i]]);
+  const r = [];
+  for (const p of A.ports) for (const q of B.ports) r.push([p, q]);
+  return r;
+}
+const linkKey = (p, q) => p.key + '>' + q.key;
+function link(A, B) { for (const [p, q] of pairsOf(A, B)) links.add(linkKey(p, q)); }
+function unlink(A, B) { for (const p of A.ports) for (const q of B.ports) links.delete(linkKey(p, q)); }
+const linksOf = (A, B) => A.ports.flatMap((p) => B.ports.filter((q) => links.has(linkKey(p, q))).map((q) => [p, q]));
+
+// make the cords match the links: keep the ones that fit, pull out the rest, plug in what is missing
+function reconcile(quiet) {
+  const want = new Map();
+  for (const k of links) {
+    const [o, i] = k.split('>'), A = ports.get(o).jack, B = ports.get(i).jack;
+    const key = A.key + '>' + B.key;
+    if (!want.has(key)) want.set(key, [A, B]);
+  }
+  const have = new Set();
+  for (const c of cables) {
+    if (!live(c)) continue;
+    const key = c.a.jack.key + '>' + c.b.jack.key;
+    const fresh = jacks.get(c.a.jack.key) === c.a.jack && jacks.get(c.b.jack.key) === c.b.jack;
+    if (want.has(key) && fresh && !have.has(key)) have.add(key); else kill(c);
+  }
+  for (const [key, [A, B]] of want) if (!have.has(key)) {
+    const c = newCable(A, B, A.dev.color);
+    c.a.ins = c.b.ins = quiet ? 0 : 1;
+  }
+  updateInfo();
+}
+
+// ---------------- cables ----------------
+const N = 22, GRAV = 2000, DAMP = .965, ITER = 20, STIFF = .35;
+const end = () => ({ jack: null, slot: ++slotSeq, rank: 0, kind: 'mono', held: false, free: false, ins: 0, lift: 0, ang: -Math.PI / 2, x: 0, y: 0, placed: false });
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const live = (c) => !c.dying && c.a.jack && c.b.jack;
+const PLUG = 1.7; // size of a plug in the hand
+const BOOT_TAIL = -12; // the boot runs this far back from the grip, tapering down to the cord
+const HOLD = PLUG * (30 - BOOT_TAIL); // from where the cord leaves the boot to the middle of the grip
+const slotPos = (j, i) => ({ x: j.dev.x + j.lx + i * JP, y: j.dev.y + j.ly });
+const spare = (j) => slotPos(j, j.count || 0);
+
+function newCable(a, b, color) {
+  const c = { id: ++seq, seq, a: end(), b: end(), color, pts: [], L: 30, dying: 0, alpha: 1, grab: -1, strain: 1 };
+  c.a.jack = a; c.b.jack = b;
+  const p0 = spare(a || b), p1 = b && a ? spare(b) : p0;
+  for (let i = 0; i < N; i++) {
+    // start on a gentle curve so new cords settle instead of dropping from a straight line
+    const t = i / (N - 1), sag = Math.sin(t * Math.PI) * Math.min(120, dist(p0, p1) * .25);
+    const x = p0.x + (p1.x - p0.x) * t, y = p0.y + (p1.y - p0.y) * t + sag;
+    c.pts.push({ x, y, px: x, py: y });
+  }
+  if (a && b) c.L = targetLen(dist(p0, p1));
+  cables.push(c);
+  return c;
+}
+const targetLen = (d) => d * (1.03 + .2 * S.sag) + 30 + 140 * S.sag;
+const cableBetween = (A, B) => cables.find((c) => live(c) && c.a.jack === A && c.b.jack === B);
+
+// one plug per jack: each cord on a port has its own jack of the mult, in the order they were plugged in
+let inJack = new Map();
+function buildSlots() {
+  inJack = new Map();
+  for (const c of cables) for (const s of ['a', 'b']) {
+    const e = c[s];
+    if (!e.jack || e.held || e.free) continue;
+    const l = inJack.get(e.jack) || []; l.push(e); inJack.set(e.jack, l);
+  }
+  for (const j of jacks.values()) {
+    const l = inJack.get(j) || [];
+    l.sort((u, v) => u.slot - v.slot);
+    l.forEach((e, i) => { e.rank = i; });
+    j.count = l.length;
+  }
+  // the mults grow and shrink, so redraw faces whose jack count changed
+  const rw = Math.max(RACK_MIN, ...devs.map((d) => naturalW(d, true)));
+  if (S.mode === 'rack' && rw !== S.rackW) S.rackW = rw;
+  let rack = false;
+  for (const d of devs) if (faceSig(d) !== d.sig) { renderDevice(d); rack = true; }
+  if (rack && S.mode === 'rack') layoutRack(drag && drag.type === 'device' ? drag.d : null);
+}
+const cordsAt = (j) => cables.filter((c) => !c.dying && (c.a.jack === j || c.b.jack === j));
+
+function placeEnds(c) {
+  for (const s of ['a', 'b']) {
+    const e = c[s];
+    if (e.free) { const p = c.pts[s === 'a' ? 0 : c.pts.length - 1]; e.x = p.x; e.y = p.y; continue; }
+    if (e.held) {
+      const hx = drag.p.x + e.off.x, hy = drag.p.y + e.off.y, l = HOLD * e.lift;
+      e.x = hx - Math.cos(e.ang) * l; e.y = hy - Math.sin(e.ang) * l;
+      continue;
+    }
+    // seated plugs glide when their mult closes up or opens
+    const p = slotPos(e.jack, e.rank);
+    if (!e.placed || (drag && drag.type === 'device')) { e.x = p.x; e.y = p.y; e.placed = true; }
+    else { e.x += (p.x - e.x) * .3; e.y += (p.y - e.y) * .3; }
+  }
+}
+
+function step(c, dt) {
+  const pts = c.pts, n = pts.length, g = GRAV * dt * dt;
+  const seg = c.L / (n - 1);
+  for (const p of pts) {
+    const vx = (p.x - p.px) * DAMP, vy = (p.y - p.py) * DAMP;
+    p.px = p.x; p.py = p.y; p.x += vx; p.y += vy + g;
+  }
+  const pinA = !c.a.free, pinB = !c.b.free, k = c.grab;
+  const axA = c.a.held && c.a.lift > .3, axB = c.b.held && c.b.lift > .3;
+  const pin = () => {
+    if (pinA) { pts[0].x = c.a.x; pts[0].y = c.a.y; }
+    if (pinB) { pts[n - 1].x = c.b.x; pts[n - 1].y = c.b.y; }
+    // the cord leaves a plug in the hand straight out of its boot
+    if (axA) { pts[1].x = c.a.x - Math.cos(c.a.ang) * seg; pts[1].y = c.a.y - Math.sin(c.a.ang) * seg; }
+    if (axB) { pts[n - 2].x = c.b.x - Math.cos(c.b.ang) * seg; pts[n - 2].y = c.b.y - Math.sin(c.b.ang) * seg; }
+    if (k >= 0) { pts[k].x += (drag.hand.x - pts[k].x) * .35; pts[k].y += (drag.hand.y - pts[k].y) * .35; }
+  };
+  const w = (i) => ((i === 0 && pinA) || (i === n - 1 && pinB) || (i === 1 && axA) || (i === n - 2 && axB) || i === k ? 0 : 1);
+  pin();
+  for (let it = 0; it < ITER; it++) {
+    for (let i = 0; i < n - 1; i++) {
+      const p = pts[i], q = pts[i + 1], wa = w(i), wb = w(i + 1);
+      if (!wa && !wb) continue;
+      const dx = q.x - p.x, dy = q.y - p.y, d = Math.hypot(dx, dy) || 1e-6;
+      const diff = (d - seg) / d / (wa + wb);
+      p.x += dx * diff * wa; p.y += dy * diff * wa; q.x -= dx * diff * wb; q.y -= dy * diff * wb;
+    }
+    // a thick cord resists folding: keep every second point apart
+    for (let i = 0; i < n - 2; i++) {
+      const p = pts[i], q = pts[i + 2], wa = w(i), wb = w(i + 2);
+      if (!wa && !wb) continue;
+      const dx = q.x - p.x, dy = q.y - p.y, d = Math.hypot(dx, dy) || 1e-6, min = seg * 1.9;
+      if (d >= min) continue;
+      const diff = (d - min) / d / (wa + wb) * STIFF;
+      p.x += dx * diff * wa; p.y += dy * diff * wa; q.x -= dx * diff * wb; q.y -= dy * diff * wb;
+    }
+    pin();
+  }
+}
+
+function updateCable(c, now) {
+  const a = c.a, b = c.b;
+  // plug pose: a held or dropped plug turns its tip away from the cord; near a jack it turns to face the panel
+  for (const s of ['a', 'b']) {
+    const e = c[s], P = c.pts, n = P.length;
+    let lift = 0;
+    if (e.held) {
+      lift = 1;
+      if (drag.magnet) lift = clamp((dist(drag.p, spare(drag.magnet)) - 4) / 70, 0, 1);
+    } else if (e.free) lift = 1;
+    e.lift += (lift - e.lift) * .22;
+    if (e.held || e.free) {
+      const p0 = s === 'a' ? P[0] : P[n - 1], p3 = s === 'a' ? P[4] : P[n - 5];
+      let want = Math.atan2(p0.y - p3.y, p0.x - p3.x);
+      if (e.held) want += clamp(drag.v.x * .0006, -.5, .5);
+      e.ang += wrapA(want - e.ang) * .16;
+    }
+    e.ins *= .82;
+    const o = c[s === 'a' ? 'b' : 'a'];
+    if (e.jack) e.kind = e.jack.kind;
+    else if (e.held) e.kind = (drag.magnet || e.orig || o.jack || { kind: e.kind }).kind;
+  }
+  c.stereo = a.kind === 'stereo' || b.kind === 'stereo';
+  placeEnds(c);
+  if (!a.free && !b.free) {
+    const d = dist(a, b);
+    const t = a.held || b.held ? Math.max(90, d + 60 + 60 * S.sag) : targetLen(d);
+    c.L += (t - c.L) * (t > c.L ? (a.held || b.held ? .12 : .05) : .03);
+  }
+  step(c, 1 / 120); step(c, 1 / 120);
+  let len = 0;
+  for (let i = 1; i < c.pts.length; i++) len += dist(c.pts[i], c.pts[i - 1]);
+  c.strain = len / c.L;
+  if (c.dying) {
+    const t = now - c.dying;
+    c.alpha = clamp(1 - (t - 650) / 450, 0, 1);
+    if (t > 1100) cables.splice(cables.indexOf(c), 1);
+  }
+}
+
+function kill(c, side = 'b') {
+  if (c.dying) return;
+  c.dying = performance.now();
+  if (!c[side].free) { c[side].free = true; c[side].held = false; }
+}
+
+// ---------------- drawing ----------------
+function shade(hex, f) {
+  const n = parseInt(hex.slice(1), 16);
+  let r = n >> 16, g = (n >> 8) & 255, b = n & 255;
+  if (f < 0) { r *= 1 + f; g *= 1 + f; b *= 1 + f; } else { r += (255 - r) * f; g += (255 - g) * f; b += (255 - b) * f; }
+  return `rgb(${r | 0},${g | 0},${b | 0})`;
+}
+function trace(pts, ox = 0, oy = 0) {
+  ctx.beginPath(); ctx.moveTo(pts[0].x + ox, pts[0].y + oy);
+  for (let i = 1; i < pts.length - 1; i++) {
+    const p = pts[i], q = pts[i + 1];
+    ctx.quadraticCurveTo(p.x + ox, p.y + oy, (p.x + q.x) / 2 + ox, (p.y + q.y) / 2 + oy);
+  }
+  const l = pts[pts.length - 1]; ctx.lineTo(l.x + ox, l.y + oy);
+}
+const cordW = (c) => (c.stereo ? 7.6 : 6.6) / Math.sqrt(Math.max(1, c.strain));
+function drawCord(c, alpha) {
+  const w = cordW(c);
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = shade(c.color, -.62); ctx.lineWidth = w + 2.2; trace(c.pts); ctx.stroke();
+  ctx.strokeStyle = c.color; ctx.lineWidth = w; ctx.stroke();
+  ctx.strokeStyle = shade(c.color, c.strain > 1.04 ? .7 : .45); ctx.lineWidth = w * .3; ctx.globalAlpha = alpha * .75;
+  trace(c.pts, -w * .17, -w * .2); ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+function drawShadow(c, alpha) {
+  ctx.strokeStyle = '#000';
+  for (const [wd, a] of [[13, .07], [9, .1], [6, .12]]) {
+    ctx.globalAlpha = a * alpha; ctx.lineWidth = wd; trace(c.pts, 7, 12); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+// points along the cord, measured from one end
+function along(c, s, ds) {
+  const P = c.pts, n = P.length, at = s === 'a' ? (i) => P[i] : (i) => P[n - 1 - i];
+  const out = [];
+  let acc = 0, i = 0, a = at(0), b = at(1), l = dist(a, b);
+  for (const d of ds) {
+    while (acc + l < d && i < n - 2) { acc += l; i++; a = at(i); b = at(i + 1); l = dist(a, b); }
+    const t = l ? clamp((d - acc) / l, 0, 1) : 0;
+    out.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, ang: Math.atan2(b.y - a.y, b.x - a.x) });
+  }
+  return out;
+}
+// seen from the front, a seated plug is its ribbed boot: round where it meets the jack, bending down into the cord
+const BOOT = Array.from({ length: 14 }, (_, i) => i * 2.4);
+function drawSeated(c, s, e, alpha) {
+  const col = c.color, k = 1 + e.ins * .2, R = 12.2 * k;
+  const sm = along(c, s, BOOT), h = sm[0];
+  ctx.save(); ctx.globalAlpha = alpha;
+  ctx.fillStyle = 'rgba(0,0,0,.32)';
+  ctx.beginPath(); ctx.arc(h.x + 3, h.y + 6, R + 1.5, 0, TAU); ctx.fill();
+  const dark = shade(col, -.6), lite = shade(col, .38), rim = shade(col, -.72);
+  for (let j = sm.length - 1; j >= 1; j--) {
+    const q = sm[j], u = j / (sm.length - 1);
+    const r = R - (R - 4.6) * Math.pow(u, .75);
+    const rx = r * (1 - .55 * Math.min(1, u * 2.5));
+    // light comes from the top-left: shade across the boot toward that side
+    let nx = -Math.sin(q.ang), ny = Math.cos(q.ang);
+    if (nx * -.6 + ny * -.8 < 0) { nx = -nx; ny = -ny; }
+    const g = ctx.createLinearGradient(q.x + nx * r, q.y + ny * r, q.x - nx * r, q.y - ny * r);
+    g.addColorStop(0, shade(col, .2)); g.addColorStop(.25, lite); g.addColorStop(.55, col); g.addColorStop(1, dark);
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.ellipse(q.x, q.y, Math.max(rx, 1.8), r, q.ang, 0, TAU); ctx.fill();
+    ctx.strokeStyle = rim; ctx.globalAlpha = alpha * .55; ctx.lineWidth = .9; ctx.stroke(); ctx.globalAlpha = alpha;
+  }
+  // the rounded back of the plug, nearest to us
+  const cg = ctx.createRadialGradient(h.x - R * .35, h.y - R * .4, 1, h.x, h.y, R);
+  cg.addColorStop(0, lite); cg.addColorStop(.55, col); cg.addColorStop(1, dark);
+  ctx.fillStyle = cg; ctx.beginPath(); ctx.arc(h.x, h.y, R, 0, TAU); ctx.fill();
+  ctx.strokeStyle = rim; ctx.lineWidth = .9; ctx.stroke();
+  ctx.strokeStyle = 'rgba(0,0,0,.18)';
+  for (const rr of [.72, .45]) { ctx.beginPath(); ctx.arc(h.x, h.y, R * rr, 0, TAU); ctx.stroke(); }
+  ctx.fillStyle = 'rgba(255,255,255,.45)';
+  ctx.beginPath(); ctx.ellipse(h.x - R * .38, h.y - R * .42, R * .3, R * .14, -.7, 0, TAU); ctx.fill();
+  ctx.restore();
+}
+// in the hand, the whole plug shows from the side: boot, ribbed grip, collar, sleeve, contacts, tip.
+// While it turns to face a jack it gets shorter until only its back shows.
+function drawSide(c, e, alpha) {
+  const col = c.color, f = Math.max(.05, e.lift);
+  const rc = (cordW(c) + 2.2) / 2 / PLUG; // the cord's radius in plug units
+  const bootR = (x) => rc + (6.4 - rc) * Math.pow((x - BOOT_TAIL) / (16 - BOOT_TAIL), 1.6);
+  const t0 = e.kind === 'stereo' ? 85 : 77.6, tipEnd = t0 + 10.5;
+  // the outline of the whole plug, for its shadow and its boot
+  const outline = () => {
+    ctx.beginPath(); ctx.moveTo(BOOT_TAIL, -rc);
+    for (let x = BOOT_TAIL + 2; x <= 16; x += 2) ctx.lineTo(x, -bootR(x));
+    ctx.lineTo(44, -7); ctx.lineTo(44, -4.9); ctx.lineTo(47.5, -4.9); ctx.lineTo(47.5, -3.7); ctx.lineTo(t0 + 5, -3.7);
+    ctx.quadraticCurveTo(tipEnd - .5, -3.2, tipEnd, 0); ctx.quadraticCurveTo(tipEnd - .5, 3.2, t0 + 5, 3.7);
+    ctx.lineTo(47.5, 3.7); ctx.lineTo(47.5, 4.9); ctx.lineTo(44, 4.9); ctx.lineTo(44, 7);
+    for (let x = 16; x >= BOOT_TAIL + 2; x -= 2) ctx.lineTo(x, bootR(x));
+    ctx.lineTo(BOOT_TAIL, rc); ctx.closePath();
+  };
+  const place = (x, y) => {
+    ctx.translate(x, y); ctx.rotate(e.ang);
+    if (Math.cos(e.ang) < 0) ctx.scale(1, -1); // keep the highlight on top
+    ctx.scale(PLUG * f, PLUG); ctx.translate(-BOOT_TAIL, 0); // the boot's thin end sits where the cord is pinned
+  };
+  const across = (r, stops) => {
+    const g = ctx.createLinearGradient(0, -r, 0, r);
+    stops.forEach(([o, s]) => g.addColorStop(o, s)); return g;
+  };
+  const chrome = (r) => across(r, [[0, '#7a7d82'], [.28, '#ffffff'], [.5, '#c3c6ca'], [.8, '#5a5d62'], [1, '#8e9195']]);
+  const paint = (r) => across(r, [[0, shade(col, -.35)], [.28, shade(col, .4)], [.55, col], [1, shade(col, -.65)]]);
+  const band = (x0, x1, r, fill) => { ctx.fillStyle = fill; ctx.fillRect(x0 - .15, -r, x1 - x0 + .3, 2 * r); };
+
+  ctx.save(); ctx.globalAlpha = alpha * clamp(e.lift * 2.2, 0, 1);
+  // shadow: same offset as the cord's shadow, so the two meet
+  ctx.save(); place(e.x + 7, e.y + 12);
+  ctx.filter = `blur(${2.5 * S.view.s}px)`; ctx.fillStyle = 'rgba(0,0,0,.4)'; outline(); ctx.fill(); ctx.restore();
+
+  place(e.x, e.y);
+  // boot and grip in one piece of rubber, then the ribs
+  ctx.fillStyle = paint(7);
+  ctx.beginPath(); ctx.moveTo(BOOT_TAIL, -rc);
+  for (let x = BOOT_TAIL + 2; x <= 16; x += 2) ctx.lineTo(x, -bootR(x));
+  ctx.lineTo(16.5, -7); ctx.lineTo(42.5, -7); ctx.quadraticCurveTo(44.2, -7, 44.2, -5.5); ctx.lineTo(44.2, 5.5); ctx.quadraticCurveTo(44.2, 7, 42.5, 7);
+  ctx.lineTo(16.5, 7);
+  for (let x = 16; x >= BOOT_TAIL + 2; x -= 2) ctx.lineTo(x, bootR(x));
+  ctx.lineTo(BOOT_TAIL, rc); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = shade(col, -.6); ctx.lineWidth = 1.1; ctx.globalAlpha *= .75;
+  for (let x = 1; x < 36; x += 3.2) {
+    const r = (x <= 16 ? bootR(x) : 7) - .7;
+    ctx.beginPath(); ctx.moveTo(x, -r); ctx.lineTo(x, r); ctx.stroke();
+  }
+  ctx.globalAlpha /= .75;
+  // collar and sleeve
+  band(44, 47.5, 4.9, chrome(4.9));
+  band(47.5, 75, 3.7, chrome(3.7));
+  // mono (TS): sleeve | insulator | tip. stereo (TRS): sleeve | insulator | ring | insulator | tip
+  const black = across(3.7, [[0, '#111'], [.3, '#555'], [1, '#050505']]);
+  band(75, 77.6, 3.7, black);
+  if (e.kind === 'stereo') { band(77.6, 82.4, 3.7, chrome(3.7)); band(82.4, 85, 3.7, black); }
+  // tip: one piece, with a groove before the rounded point
+  ctx.fillStyle = chrome(3.7);
+  ctx.beginPath(); ctx.moveTo(t0 - .15, -3.7); ctx.lineTo(t0 + 3, -3.7); ctx.lineTo(t0 + 4, -2.7); ctx.lineTo(t0 + 5, -3.6);
+  ctx.quadraticCurveTo(tipEnd - .5, -3.2, tipEnd, 0); ctx.quadraticCurveTo(tipEnd - .5, 3.2, t0 + 5, 3.6);
+  ctx.lineTo(t0 + 4, 2.7); ctx.lineTo(t0 + 3, 3.7); ctx.lineTo(t0 - .15, 3.7); ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+
+let focus = new Set();
+function draw(now) {
+  const dpr = devicePixelRatio || 1, v = S.view;
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, cv.width, cv.height);
+  ctx.setTransform(dpr * v.s, 0, 0, dpr * v.s, dpr * v.x, dpr * v.y);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+
+  if (drag && drag.type === 'plug') {
+    const pulse = .55 + .45 * Math.sin(now / 160);
+    for (const j of drag.targets) {
+      const q = spare(j), hot = drag.magnet === j;
+      ctx.beginPath(); ctx.arc(q.x, q.y, hot ? 19 : 17.5, 0, TAU);
+      ctx.strokeStyle = hot ? 'rgba(255,200,90,.95)' : `rgba(120,230,150,${.3 + .3 * pulse})`;
+      ctx.lineWidth = hot ? 3.5 : 2; ctx.stroke();
+    }
+  }
+  const held = (c) => c.a.held || c.b.held || c.grab >= 0;
+  const base = [1, .2, 0][S.cableMode];
+  const alphaOf = (c) => {
+    if (held(c)) return c.alpha;
+    let a = base;
+    if (focus.size) a = focus.has(c) ? Math.max(a, .95) : a * .3;
+    return a * c.alpha;
+  };
+  const order = [...cables].sort((u, v) => (held(u) - held(v)) || (focus.has(u) - focus.has(v)));
+  for (const c of order) { const a = alphaOf(c); if (a > .01) drawShadow(c, a); }
+  for (const c of order) { const a = alphaOf(c); if (a > .01) drawCord(c, a); }
+  const plugs = [];
+  for (const c of cables) for (const s of ['a', 'b']) {
+    const e = c[s];
+    plugs.push({ c, s, e, z: e.held ? 99 : e.free ? 50 : 0 });
+  }
+  plugs.sort((u, v) => u.z - v.z);
+  for (const { c, s, e } of plugs) {
+    const a = held(c) ? c.alpha : focus.size && !focus.has(c) ? .55 * c.alpha : c.alpha;
+    if (e.lift < .6) drawSeated(c, s, e, a * clamp(1 - e.lift * 1.8, 0, 1));
+    if (e.lift > .05) drawSide(c, e, a);
+  }
+}
+
+// ---------------- signal, meters, LCDs ----------------
+function updateSignal(now) {
+  const lv = new Map();
+  for (const d of devs) {
+    let g = d.gen || 0;
+    if (d.needsMidi && !cables.some((c) => live(c) && c.b.jack.dev === d && c.b.jack.t === 'midi')) g = 0;
+    lv.set(d, { out: g, in: 0 });
+  }
+  for (let pass = 0; pass < 3; pass++) for (const c of cables) {
+    if (!live(c) || c.a.jack.t !== 'audio') continue;
+    const s = lv.get(c.a.jack.dev), t = lv.get(c.b.jack.dev);
+    t.in = Math.max(t.in, s.out);
+    if (c.b.jack.dev.pass) t.out = Math.max(t.out, t.in * .9);
+  }
+  for (const d of devs) {
+    const l = lv.get(d), base = Math.max(l.out, l.in);
+    const wob = base ? base * (.62 + .25 * Math.sin(now / 130 + d.dx) + .2 * Math.random()) : 0;
+    d.lvl += (wob - d.lvl) * (wob > d.lvl ? .6 : .15);
+    const lit = Math.round(clamp(d.lvl, 0, 1) * 10);
+    if (lit !== d.shown) {
+      d.shown = lit;
+      d.leds.forEach((r, i) => {
+        const c = i % 10, ch = i < 10 ? 0 : 1, on = c < lit - ch * (Math.random() < .5 ? 1 : 0);
+        r.setAttribute('fill', on ? (c >= 9 ? '#ff3b2f' : c >= 7 ? '#ffb02e' : '#4cff6a') : 'rgba(0,0,0,.5)');
+      });
+    }
+    // the LCD's top line scrolls a name that is too long for it, pausing at the start
+    const nm = d.name, long = nm.length > LCD_CH;
+    const pos = long ? Math.max(0, Math.floor(now / 280) % (nm.length + 6 + 8) - 8) : 0;
+    if (pos !== d.scroll) {
+      d.scroll = pos;
+      const loop = nm + '   ·  ' + nm;
+      d.lcd1.textContent = long ? loop.slice(pos, pos + LCD_CH) : nm;
+    }
+    const run = base > .01;
+    if (run !== d.running) {
+      d.running = run;
+      d.lcd2.textContent = run ? '48 kHz  RUNNING' : '48 kHz  IDLE';
+      d.stEl.setAttribute('fill', run ? '#4cff6a' : '#6a4a12');
+      d.stEl.style.filter = run ? 'drop-shadow(0 0 2.5px #4cff6a)' : '';
+    }
+  }
+}
+function updateInfo() {
+  const n = links.size;
+  const cur = store.slots.findIndex((sl) => sl.id === store.current);
+  $('#lcd1').textContent = (cur >= 0 ? `PRESET ${String(cur + 1).padStart(2, '0')} · ${store.slots[cur].name}` : 'NO PRESET') + (S.edited ? ' *' : '');
+  const cords = cables.filter(live).length, pl = (k, w) => `${k} ${w}${k === 1 ? '' : 's'}`;
+  $('#lcd2').textContent = '48 kHz · 256 · 5.3 ms';
+  $('#st1').textContent = `PipeWire 1.4.2 · ${pl(devs.length, 'node')} · ${pl(n, 'link')} · ${pl(cords, 'cord')} · 0 xruns`;
+}
+
+// ---------------- layout ----------------
+function layoutRack(dragged = null) {
+  const others = rackOrder.filter((d) => d !== dragged);
+  let order = others;
+  if (dragged) {
+    let y = 0, idx = others.length;
+    for (let i = 0; i < others.length; i++) {
+      if (dragged.y + dragged.H / 2 < y + others[i].H / 2) { idx = i; break; }
+      y += others[i].H + RACK_GAP;
+    }
+    order = [...others.slice(0, idx), dragged, ...others.slice(idx)];
+  }
+  let y = 0;
+  for (const d of order) { if (d !== dragged) { d.tx = 0; d.ty = y; } y += d.H + RACK_GAP; }
+  const rk = $('#rack');
+  rk.style.transform = 'translate(-34px,-14px)';
+  rk.style.width = (S.rackW + 68) + 'px'; rk.style.height = (y + 28) + 'px';
+  return order;
+}
+function setMode(m) {
+  S.mode = m;
+  S.rackW = Math.max(RACK_MIN, ...devs.map((d) => naturalW(d, true)));
+  document.querySelectorAll('[data-mode]').forEach((b) => b.classList.toggle('on', b.dataset.mode === m));
+  $('#rack').classList.toggle('show', m === 'rack');
+  for (const d of devs) renderDevice(d);
+  if (m === 'rack') { if (!rackOrder.length) rackOrder = byFlow(); layoutRack(); }
+  else for (const d of devs) { d.tx = d.dx; d.ty = d.dy; }
+  fit(true);
+}
+function ranks() {
+  const r = new Map(devs.map((d) => [d, 0]));
+  for (let it = 0; it < devs.length; it++) for (const c of cables) {
+    if (!live(c)) continue;
+    const a = c.a.jack.dev, b = c.b.jack.dev;
+    if (a !== b && r.get(b) <= r.get(a)) r.set(b, Math.min(r.get(a) + 1, 4));
+  }
+  return r;
+}
+const byFlow = () => { const r = ranks(); return [...devs].sort((a, b) => r.get(a) - r.get(b) || a.dy - b.dy); };
+function arrange() {
+  if (S.mode === 'rack') { rackOrder = byFlow(); layoutRack(); fit(true); return; }
+  const r = ranks(), cols = [];
+  for (const d of devs) (cols[r.get(d)] ||= []).push(d);
+  let x = 40;
+  for (const col of cols.filter(Boolean)) {
+    col.sort((a, b) => a.dy - b.dy);
+    let y = 40;
+    for (const d of col) { d.dx = d.tx = x; d.dy = d.ty = y; y += d.H + 46; }
+    x += Math.max(...col.map((d) => d.W)) + 110;
+  }
+  fit(true);
+}
+function bounds() {
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  for (const d of devs) { x0 = Math.min(x0, d.tx); y0 = Math.min(y0, d.ty); x1 = Math.max(x1, d.tx + d.W); y1 = Math.max(y1, d.ty + d.H); }
+  return { x0, y0, x1, y1 };
+}
+function fit(anim) {
+  const b = bounds(), W = stage.clientWidth, H = stage.clientHeight, m = 60;
+  const s = clamp(Math.min((W - 2 * m) / (b.x1 - b.x0), (H - 2 * m) / (b.y1 - b.y0 + 60)), .3, 1.3);
+  const t = { s, x: (W - (b.x1 - b.x0) * s) / 2 - b.x0 * s, y: Math.max(m * .6, (H - (b.y1 - b.y0 + 60) * s) / 2) - b.y0 * s };
+  if (anim) S.vt = t; else S.view = t;
+}
+
+// ---------------- pointer ----------------
+let drag = null;
+const toWorld = (e) => {
+  const r = stage.getBoundingClientRect(), v = S.view;
+  return { x: (e.clientX - r.left - v.x) / v.s, y: (e.clientY - r.top - v.y) / v.s, sx: e.clientX - r.left, sy: e.clientY - r.top };
+};
+function hitPlug(w) {
+  let best = null;
+  for (const c of cables) {
+    if (c.dying) continue;
+    for (const s of ['a', 'b']) {
+      const e = c[s];
+      if (!e.jack || e.held || e.free) continue;
+      const d = dist(w, e);
+      if (d < 15 && (!best || d < best.d)) best = { c, s, d };
+    }
+  }
+  return best;
+}
+function hitJack(w) {
+  for (const j of jacks.values()) if (dist(w, spare(j)) < 16) return j;
+  return null;
+}
+function hitCable(w) {
+  for (let i = cables.length - 1; i >= 0; i--) {
+    const c = cables[i];
+    if (c.dying || S.cableMode === 2) continue;
+    const P = c.pts;
+    for (let k = 0; k < P.length - 1; k++) {
+      const a = P[k], b = P[k + 1], dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy || 1;
+      const t = clamp(((w.x - a.x) * dx + (w.y - a.y) * dy) / l2, 0, 1);
+      if (Math.hypot(w.x - a.x - dx * t, w.y - a.y - dy * t) < 7) return { c, k: clamp(k + Math.round(t), 1, P.length - 2) };
+    }
+  }
+  return null;
+}
+function hitDevice(w) {
+  for (let i = devs.length - 1; i >= 0; i--) {
+    const d = devs[i];
+    if (w.x >= d.x && w.x <= d.x + d.W && w.y >= d.y && w.y <= d.y + d.H) return d;
+  }
+  return null;
+}
+function hitSwitch(w, d) {
+  for (const g of d.groups) {
+    const b = g.btn;
+    if (b && w.x >= d.x + b.x && w.x <= d.x + b.x + b.w && w.y >= d.y + b.y && w.y <= d.y + b.y + b.h) return g;
+  }
+  return null;
+}
+const need = (side) => (side === 'b' ? 'in' : 'out');
+const canPlug = (j, side, t) => j.dir === need(side) && j.t === t;
+
+function startPlugDrag(w, ends, type) {
+  const e0 = ends[0].c[ends[0].s];
+  const p = { x: e0.x, y: e0.y };
+  for (const it of ends) {
+    const c = it.c, e = c[it.s];
+    e.off = { x: e.x - p.x, y: e.y - p.y };
+    e.held = true;
+    e.orig = e.jack; e.jack = null;
+    it.other = c[it.s === 'a' ? 'b' : 'a'].jack;
+    // lift the plug with its tip pointing away from the cord
+    const P = c.pts, n = P.length, p0 = it.s === 'a' ? P[0] : P[n - 1], p3 = it.s === 'a' ? P[4] : P[n - 5];
+    e.ang = dist(p0, p3) > 2 ? Math.atan2(p0.y - p3.y, p0.x - p3.x) : -Math.PI / 2;
+  }
+  const targets = [...jacks.values()].filter((j) => canPlug(j, ends[0].s, type));
+  drag = { type: 'plug', ends, p, v: { x: 0, y: 0 }, hand: w, targets, magnet: null, t: type, moved: 0, start: { ...w } };
+  drag.magnet = magnetAt(w);
+}
+function magnetAt(w) {
+  let best = null, bd = 34;
+  for (const j of drag.targets) { const d = dist(w, spare(j)); if (d < bd) { bd = d; best = j; } }
+  return best;
+}
+
+stage.addEventListener('pointerdown', (e) => {
+  audio();
+  const w = toWorld(e);
+  stage.setPointerCapture(e.pointerId);
+  if (e.button === 1 || e.button === 2) { drag = { type: 'pan', sx: w.sx, sy: w.sy, v0: { ...S.view } }; S.vt = null; return; }
+  const plug = hitPlug(w);
+  if (plug) {
+    const ends = [{ c: plug.c, s: plug.s, rel: 0 }];
+    const e0 = plug.c[plug.s], g = e0.jack.group, os = plug.s === 'a' ? 'b' : 'a';
+    if (e.shiftKey && g.jacks.length === 2 && g.stereo) {
+      // take the matching cord of the split pair with it
+      const sib = g.jacks[1 - e0.jack.gi], other = plug.c[os].jack;
+      const twin = cables.find((c) => live(c) && c !== plug.c && c[plug.s].jack === sib && c[os].jack.dev === other.dev);
+      if (twin) ends.push({ c: twin, s: plug.s, rel: sib.gi - e0.jack.gi });
+    }
+    startPlugDrag(w, ends, e0.jack.t);
+    return;
+  }
+  const jack = hitJack(w);
+  if (jack) {
+    const list = e.shiftKey && jack.group.stereo ? jack.group.jacks : [jack];
+    const ends = list.map((j) => {
+      const out = j.dir === 'out';
+      const c = newCable(out ? j : null, out ? null : j, out ? j.dev.color : '#8d9094');
+      const q = spare(j);
+      c.a.x = c.b.x = q.x; c.a.y = c.b.y = q.y;
+      return { c, s: out ? 'b' : 'a', rel: j.gi - jack.gi };
+    });
+    ends.sort((u, v) => Math.abs(u.rel) - Math.abs(v.rel));
+    startPlugDrag(w, ends, jack.t);
+    drag.fresh = true;
+    sndPlug('out');
+    return;
+  }
+  const cab = hitCable(w);
+  if (cab) { cab.c.grab = cab.k; drag = { type: 'rope', c: cab.c, hand: w }; return; }
+  const d = hitDevice(w);
+  if (d) {
+    const g = hitSwitch(w, d);
+    if (g) { toggleSplit(d, g); return; }
+    if (S.locked) { drag = { type: 'pan', sx: w.sx, sy: w.sy, v0: { ...S.view } }; S.vt = null; return; }
+    devs.splice(devs.indexOf(d), 1); devs.push(d); world.appendChild(d.el);
+    drag = { type: 'device', d, off: { x: w.x - d.x, y: w.y - d.y } };
+    return;
+  }
+  drag = { type: 'pan', sx: w.sx, sy: w.sy, v0: { ...S.view } }; S.vt = null;
+});
+
+function toggleSplit(d, g) {
+  g.split = !g.split;
+  buildJacks(d, g);
+  renderDevice(d);
+  reconcile(false);
+  sndPlug('in');
+}
+
+stage.addEventListener('pointermove', (e) => {
+  const w = toWorld(e);
+  if (!drag) { updateHover(w); return; }
+  if (drag.type === 'pan') {
+    S.view.x = drag.v0.x + w.sx - drag.sx; S.view.y = drag.v0.y + w.sy - drag.sy;
+  } else if (drag.type === 'device') {
+    const d = drag.d;
+    d.x = d.tx = w.x - drag.off.x; d.y = d.ty = w.y - drag.off.y;
+    if (S.mode === 'desk') { d.dx = d.x; d.dy = d.y; } else layoutRack(d);
+  } else {
+    drag.hand = w;
+    if (drag.type === 'plug') {
+      drag.moved = Math.max(drag.moved, dist(w, drag.start));
+      const best = drag.magnet = magnetAt(w);
+      showTip(w, best ? `${best.dev.title} · <b>${best.ports.map((p) => p.full).join(' + ')}</b>` : '');
+    }
+  }
+});
+
+stage.addEventListener('pointerup', () => {
+  if (!drag) return;
+  if (drag.type === 'plug') dropPlugs();
+  else if (drag.type === 'rope') drag.c.grab = -1;
+  else if (drag.type === 'device' && S.mode === 'rack') { rackOrder = layoutRack(drag.d); layoutRack(); }
+  drag = null;
+  showTip(null);
+});
+
+function dropPlugs() {
+  const before = new Set(links), T = drag.magnet;
+  let plugged = false, removed = false;
+  for (const it of drag.ends) {
+    const c = it.c, e = c[it.s];
+    const q = T ? T.group.jacks[T.gi + it.rel] : null;
+    const A = it.s === 'a' ? q : it.other, B = it.s === 'b' ? q : it.other;
+    const ok = q && canPlug(q, it.s, drag.t) && !cableBetween(A, B);
+    if (e.orig) unlink(it.s === 'a' ? e.orig : it.other, it.s === 'b' ? e.orig : it.other);
+    e.held = false;
+    if (ok) {
+      e.jack = q; e.ins = drag.moved > 6 ? 1 : 0;
+      if (q !== e.orig) e.slot = ++slotSeq; // it goes into the free jack at the end of the mult
+      if (it.s === 'a') c.color = q.dev.color;
+      link(c.a.jack, c.b.jack);
+      if (q !== e.orig) plugged = true;
+    } else {
+      e.jack = null;
+      kill(c, it.s);
+      removed = true;
+    }
+  }
+  if (plugged) sndPlug('in'); else if (removed && !drag.fresh) sndPlug('out');
+  commitDiff(before);
+}
+
+stage.addEventListener('dblclick', (e) => {
+  const w = toWorld(e);
+  const plug = hitPlug(w);
+  const c = plug ? plug.c : (hitCable(w) || {}).c;
+  if (!c || !live(c)) return;
+  const before = new Set(links);
+  unlink(c.a.jack, c.b.jack);
+  kill(c, plug ? plug.s : 'b');
+  commitDiff(before);
+  sndPlug('out');
+});
+stage.addEventListener('contextmenu', (e) => e.preventDefault());
+stage.addEventListener('wheel', (e) => {
+  e.preventDefault(); S.vt = null;
+  const w = toWorld(e), v = S.view, s = clamp(v.s * Math.exp(-e.deltaY * .0015), .25, 2.5);
+  v.x = w.sx - w.x * s; v.y = w.sy - w.y * s; v.s = s;
+}, { passive: false });
+
+const chan = (p) => p.full.slice(p.full.lastIndexOf('_') + 1);
+function cordText(c) {
+  const ls = linksOf(c.a.jack, c.b.jack).map(([p, q]) => `${chan(p)}→${chan(q)}`).join(', ');
+  return `${c.a.jack.dev.title} → ${c.b.jack.dev.title} · <b>${ls}</b>`;
+}
+function updateHover(w) {
+  focus = new Set();
+  let cur = 'default', text = '';
+  const plug = hitPlug(w), jack = plug ? null : hitJack(w), cab = plug || jack ? null : hitCable(w), dev = plug || jack || cab ? null : hitDevice(w);
+  const sw = dev && hitSwitch(w, dev);
+  if (plug) {
+    focus.add(plug.c); cur = 'grab'; text = cordText(plug.c);
+  } else if (jack) {
+    for (const c of cordsAt(jack)) focus.add(c);
+    cur = 'crosshair';
+    text = `${jack.dev.title} · <b>${jack.ports.map((p) => p.full).join(' + ')}</b> · ${jack.kind} ${jack.t === 'midi' ? '' : 'audio '}${jack.dir === 'in' ? 'input' : 'output'}`;
+  } else if (cab) {
+    focus.add(cab.c); cur = 'grab'; text = cordText(cab.c);
+  } else if (sw) {
+    cur = 'pointer'; text = sw.split ? 'Join L and R into one stereo jack' : 'Split into separate L and R jacks';
+  } else if (dev) {
+    for (const c of cables) if (live(c) && (c.a.jack.dev === dev || c.b.jack.dev === dev)) focus.add(c);
+    cur = S.locked ? 'default' : 'move';
+    text = dev.name;
+  }
+  for (const d of devs) d.el.classList.toggle('hl', d === dev && !sw);
+  stage.style.cursor = cur;
+  showTip(text ? w : null, text);
+  $('#st2').textContent = plug ? 'drag: unplug or move · double-click: remove'
+    : jack ? 'drag: pull out a cord' + (jack.group.jacks.length === 2 && jack.group.stereo ? ' · Shift: L and R together' : '')
+    : cab ? 'drag: swing the cord · double-click: pull it out'
+    : sw ? 'click: ' + (sw.split ? 'join' : 'split')
+    : dev ? `${dev.title} — ${S.locked ? 'locked (L to unlock)' : 'drag to move'}` : 'wheel: zoom · drag: pan';
+}
+function showTip(w, html) {
+  if (!w || !html) { tip.classList.remove('show'); return; }
+  tip.innerHTML = html;
+  tip.style.left = (w.sx + 16) + 'px'; tip.style.top = (w.sy + 18) + 'px';
+  tip.classList.add('show');
+}
+
+// ---------------- undo: steps are changes to the link list ----------------
+const undoStack = [], redoStack = [];
+function commitDiff(before) {
+  const add = [...links].filter((k) => !before.has(k)), del = [...before].filter((k) => !links.has(k));
+  if (add.length || del.length) { undoStack.push({ add, del }); redoStack.length = 0; S.edited = true; }
+  updateInfo();
+}
+function applyStep(st, inverse) {
+  for (const k of inverse ? st.add : st.del) links.delete(k);
+  for (const k of inverse ? st.del : st.add) links.add(k);
+  reconcile(false);
+  sndPlug(inverse ? 'out' : 'in');
+}
+function undo() { const st = undoStack.pop(); if (st) { applyStep(st, true); redoStack.push(st); } }
+function redo() { const st = redoStack.pop(); if (st) { applyStep(st, false); undoStack.push(st); } }
+
+// ---------------- sound ----------------
+let ac = null;
+function audio() {
+  if (!ac) { try { ac = new AudioContext(); } catch { return null; } }
+  if (ac.state === 'suspended') ac.resume();
+  return ac;
+}
+function sndPlug(kind) {
+  if (!S.sound || !ac) return;
+  const t = ac.currentTime, len = ac.sampleRate * .04;
+  const buf = ac.createBuffer(1, len, ac.sampleRate), d = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len) ** 5;
+  const src = ac.createBufferSource(); src.buffer = buf;
+  const f = ac.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = kind === 'in' ? 2100 : 3600; f.Q.value = 1.4;
+  const g = ac.createGain(); g.gain.value = kind === 'in' ? .7 : .4;
+  src.connect(f).connect(g).connect(ac.destination); src.start(t);
+  const o = ac.createOscillator(), og = ac.createGain();
+  o.frequency.setValueAtTime(kind === 'in' ? 150 : 260, t); o.frequency.exponentialRampToValueAtTime(55, t + .08);
+  og.gain.setValueAtTime(kind === 'in' ? .4 : .12, t); og.gain.exponentialRampToValueAtTime(.001, t + .1);
+  o.connect(og).connect(ac.destination); o.start(t); o.stop(t + .12);
+}
+
+// ---------------- top panel ----------------
+function drawKnob() {
+  const a = (-135 + 270 * S.sag) * Math.PI / 180;
+  let ticks = '';
+  for (let i = 0; i <= 10; i++) {
+    const t = (-135 + 27 * i) * Math.PI / 180;
+    ticks += `<path d="M${17 * Math.sin(t)},${-17 * Math.cos(t)} L${19.5 * Math.sin(t)},${-19.5 * Math.cos(t)}" stroke="#26272a" stroke-width="1.2"/>`;
+  }
+  $('#sag').innerHTML = `${ticks}
+    <defs><radialGradient id="gKnob" cx=".38" cy=".3" r=".8"><stop offset="0" stop-color="#5a5b5f"/><stop offset="1" stop-color="#151618"/></radialGradient></defs>
+    <circle r="14.5" fill="#111" opacity=".5" cy="1.5"/><circle r="14" fill="url(#gKnob)" stroke="#0c0c0d"/>
+    <circle r="10.5" fill="none" stroke="rgba(255,255,255,.08)"/>
+    <path d="M${4 * Math.sin(a)},${-4 * Math.cos(a)} L${12 * Math.sin(a)},${-12 * Math.cos(a)}" stroke="#ffb02e" stroke-width="2.4" stroke-linecap="round"/>`;
+}
+const knob = $('#sag');
+knob.addEventListener('pointerdown', (e) => {
+  knob.setPointerCapture(e.pointerId);
+  const y0 = e.clientY, s0 = S.sag;
+  const mv = (ev) => { S.sag = clamp(s0 + (y0 - ev.clientY) / 150, 0, 1); drawKnob(); };
+  const up = () => { knob.removeEventListener('pointermove', mv); knob.removeEventListener('pointerup', up); };
+  knob.addEventListener('pointermove', mv); knob.addEventListener('pointerup', up);
+});
+knob.addEventListener('wheel', (e) => { e.preventDefault(); S.sag = clamp(S.sag - e.deltaY * .0008, 0, 1); drawKnob(); }, { passive: false });
+function setCableMode(m) {
+  S.cableMode = m;
+  document.querySelectorAll('#cablesKey .tri i').forEach((i, k) => i.classList.toggle('on', k === m));
+}
+document.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)));
+$('#cablesKey').addEventListener('click', () => setCableMode((S.cableMode + 1) % 3));
+// ---------------- presets: named slots of patch + layout, kept in the config ----------------
+// The app keeps them in ~/.config/patchcord; the mockup stands in with browser storage (or memory).
+const STORE_KEY = 'patchcord.presets';
+let store = { current: null, slots: [] };
+try { const raw = localStorage.getItem(STORE_KEY); if (raw) store = JSON.parse(raw); } catch {}
+const persist = () => { try { localStorage.setItem(STORE_KEY, JSON.stringify(store)); } catch {} };
+function preset() {
+  return {
+    app: 'patchcord', version: 1,
+    links: [...links],
+    splits: Object.fromEntries(devs.map((d) => [d.id, d.groups.map((g, i) => (g.split ? i : -1)).filter((i) => i >= 0)])),
+    desk: Object.fromEntries(devs.map((d) => [d.id, { x: Math.round(d.dx), y: Math.round(d.dy) }])),
+    rack: rackOrder.map((d) => d.id),
+    mode: S.mode, sag: S.sag,
+  };
+}
+function saveSlot(name) {
+  const sl = { id: Date.now().toString(36), name: name.trim().toUpperCase() || `PRESET ${store.slots.length + 1}`, data: preset() };
+  store.slots.push(sl); store.current = sl.id; persist();
+  S.edited = false; updateInfo();
+  $('#st2').textContent = `saved preset ${store.slots.length} · ${sl.name}`;
+}
+function loadSlot(id) {
+  const sl = store.slots.find((x) => x.id === id);
+  if (!sl) return;
+  applyPreset(sl.data);
+  store.current = id; persist(); updateInfo();
+}
+function deleteSlot(id) {
+  store.slots = store.slots.filter((x) => x.id !== id);
+  if (store.current === id) { store.current = null; S.edited = true; }
+  persist(); updateInfo();
+}
+function applyPreset(p) {
+  if (!p || p.app !== 'patchcord' || !Array.isArray(p.links)) throw new Error('not a Patchcord preset');
+  const before = new Set(links);
+  for (const d of devs) d.groups.forEach((g, i) => {
+    const want = (p.splits?.[d.id] || []).includes(i);
+    if (!!g.split !== want) { g.split = want; buildJacks(d, g); }
+  });
+  for (const d of devs) { const q = p.desk?.[d.id]; if (q) { d.dx = q.x; d.dy = q.y; } }
+  if (Array.isArray(p.rack)) {
+    const byId = new Map(devs.map((d) => [d.id, d])), seen = p.rack.map((id) => byId.get(id)).filter(Boolean);
+    rackOrder = [...seen, ...devs.filter((d) => !seen.includes(d))];
+  }
+  if (typeof p.sag === 'number') { S.sag = clamp(p.sag, 0, 1); drawKnob(); }
+  // links to devices that are not here now are skipped, like PipeWire would
+  const known = p.links.filter((k) => { const [o, i] = String(k).split('>'); return ports.has(o) && ports.has(i); });
+  links.clear(); for (const k of known) links.add(k);
+  setMode(p.mode === 'rack' ? 'rack' : 'desk');
+  reconcile(false);
+  commitDiff(before);
+  S.edited = false; updateInfo();
+  sndPlug('in');
+  const miss = p.links.length - known.length;
+  $('#st2').textContent = `preset loaded · ${known.length} links` + (miss ? ` · ${miss} skipped (device not present)` : '');
+}
+// the drop-down under the LCD: a name field when saving, the slot list when loading
+const pop = $('#presets');
+const closePop = () => { pop.classList.add('hide'); pop.dataset.mode = ''; };
+function openSave() {
+  if (pop.dataset.mode === 'save') return closePop();
+  pop.dataset.mode = 'save';
+  pop.innerHTML = `<h2>SAVE AS NEW PRESET</h2><form><input maxlength="24" placeholder="PRESET ${store.slots.length + 1}" spellcheck="false"><button>SAVE</button></form>`;
+  pop.classList.remove('hide');
+  const inp = pop.querySelector('input');
+  inp.focus();
+  pop.querySelector('form').addEventListener('submit', (e) => { e.preventDefault(); saveSlot(inp.value); closePop(); });
+}
+function openLoad() {
+  if (pop.dataset.mode === 'load') return closePop();
+  pop.dataset.mode = 'load';
+  pop.innerHTML = '<h2>PRESETS</h2>' + (store.slots.length ? store.slots.map((sl, i) =>
+    `<div class="row${sl.id === store.current ? ' cur' : ''}" data-id="${sl.id}"><b>${String(i + 1).padStart(2, '0')}</b><span>${esc(sl.name)}</span><button class="del" title="Delete">✕</button></div>`).join('')
+    : '<div class="empty">No presets yet. Save one first.</div>');
+  pop.classList.remove('hide');
+}
+pop.addEventListener('click', (e) => {
+  const row = e.target.closest('.row');
+  if (!row) return;
+  if (e.target.closest('.del')) {
+    // deleting asks once: the cross turns into DEL?
+    const b = e.target.closest('.del');
+    if (b.textContent !== 'DEL?') { b.textContent = 'DEL?'; return; }
+    deleteSlot(row.dataset.id); pop.dataset.mode = ''; openLoad(); return;
+  }
+  loadSlot(row.dataset.id); closePop();
+});
+addEventListener('pointerdown', (e) => { if (!pop.contains(e.target) && !e.target.closest('#save, #load, #lcd')) closePop(); });
+$('#save').addEventListener('click', openSave);
+$('#load').addEventListener('click', openLoad);
+$('#lcd').addEventListener('click', openLoad);
+
+const toggleLock = () => { S.locked = !S.locked; $('#lock').classList.toggle('on', S.locked); };
+$('#lock').addEventListener('click', toggleLock);
+$('#undo').addEventListener('click', undo);
+$('#redo').addEventListener('click', redo);
+$('#arrange').addEventListener('click', arrange);
+$('#fit').addEventListener('click', () => fit(true));
+$('#snd').addEventListener('click', () => { S.sound = !S.sound; $('#snd').classList.toggle('on', S.sound); });
+$('#helpBtn').addEventListener('click', () => $('#help').classList.toggle('hide'));
+addEventListener('keydown', (e) => {
+  if (e.ctrlKey && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
+  if (e.ctrlKey && e.key.toLowerCase() === 's') { e.preventDefault(); openSave(); return; }
+  if (e.ctrlKey && e.key.toLowerCase() === 'o') { e.preventDefault(); openLoad(); return; }
+  if (e.key === 'Escape') { closePop(); return; }
+  if (e.ctrlKey || e.altKey || e.target.closest?.('input')) return;
+  const k = e.key.toLowerCase();
+  if (k === 'r') setMode(S.mode === 'rack' ? 'desk' : 'rack');
+  else if (k === 'c') setCableMode((S.cableMode + 1) % 3);
+  else if (k === 'l') toggleLock();
+  else if (k === 'f' || k === '0') fit(true);
+  else if (k === '?') $('#help').classList.toggle('hide');
+});
+
+// ---------------- main loop ----------------
+function resize() {
+  const dpr = devicePixelRatio || 1;
+  cv.width = stage.clientWidth * dpr; cv.height = stage.clientHeight * dpr;
+}
+addEventListener('resize', resize);
+
+function frame(now) {
+  if (S.vt) {
+    const v = S.view, t = S.vt;
+    v.x += (t.x - v.x) * .15; v.y += (t.y - v.y) * .15; v.s += (t.s - v.s) * .15;
+    if (Math.abs(t.s - v.s) < .001 && Math.abs(t.x - v.x) < .5) S.vt = null;
+  }
+  world.style.transform = `translate(${S.view.x}px,${S.view.y}px) scale(${S.view.s})`;
+  for (const d of devs) {
+    if (!(drag && drag.type === 'device' && drag.d === d)) { d.x += (d.tx - d.x) * .18; d.y += (d.ty - d.y) * .18; }
+    d.el.style.transform = `translate(${d.x}px,${d.y}px)`;
+  }
+  if (drag && drag.type === 'plug') {
+    // the plug is a weight on a critically damped spring to the hand; near a jack it is pulled in
+    const tgt = drag.magnet ? spare(drag.magnet) : drag.hand, v = drag.v, p = drag.p, dt = 1 / 60;
+    const k = drag.magnet ? 1200 : 650, damp = 2 * Math.sqrt(k);
+    v.x += ((tgt.x - p.x) * k - v.x * damp) * dt; v.y += ((tgt.y - p.y) * k - v.y * damp) * dt;
+    p.x += v.x * dt; p.y += v.y * dt;
+  }
+  buildSlots();
+  for (const c of [...cables]) updateCable(c, now);
+  draw(now);
+  updateSignal(now);
+  requestAnimationFrame(frame);
+}
+
+// ---------------- start ----------------
+for (const d of devs) renderDevice(d);
+for (const [a, b] of LINKS) links.add(a + '>' + b);
+reconcile(true);
+buildSlots();
+setMode('desk');
+fit(false);
+resize();
+drawKnob();
+setCableMode(0);
+$('#snd').classList.add('on');
+if (!store.slots.length) saveSlot('HOME STUDIO');
+else if (store.current) loadSlot(store.current);
+undoStack.length = 0; S.edited = false; updateInfo(); // opening the app is not an edit
+updateInfo();
+$('#st2').textContent = 'wheel: zoom · drag: pan';
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

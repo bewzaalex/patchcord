@@ -1,0 +1,22 @@
+[package]
+name = "patchcord"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+description = "PipeWire patchbay that looks like a rack of gear, patched with real cords"
+repository = "https://github.com/bewzaalex/patchcord"
+license = "MIT"
+
+[dependencies]
+# the PipeWire graph (needs libpipewire-0.3 and, to build, libclang)
+pipewire = "0.10"
+pollster = "1"
+resvg = { version = "0.45", default-features = false, features = ["text", "raster-images"] }
+# text widths, to fit long device names on the panel
+ttf-parser = "0.25"
+# Vulkan (Linux), OpenGL as the fallback
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "wgsl", "vulkan", "gles"] }
+winit = "0.30"
+
+[profile.release]
+lto = "thin"

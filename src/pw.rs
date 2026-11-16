@@ -1,0 +1,404 @@
+//! The PipeWire connection. PipeWire runs its own loop on a thread of its own; what it sees goes
+//! to the app over a channel, and the app sends commands back (see docs/research/pipewire).
+//!
+//! Besides the registry (objects appearing and going away) it binds every node and device, for
+//! their full properties and the nodes' state, and runs the signal meters: small passive capture
+//! streams that Patchcord links to the ports it wants to measure.
+
+use std::any::Any;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
+use std::rc::Rc;
+use std::sync::{Arc, mpsc};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
+
+use pipewire as pw;
+use pw::spa;
+use pw::types::ObjectType;
+
+pub type Props = BTreeMap<String, String>;
+
+/// The prefix of the meter streams' node names: Patchcord hides its own nodes.
+pub const METER_PREFIX: &str = "patchcord-meter-";
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Kind {
+    Device,
+    Node,
+    Port,
+    Link,
+}
+
+/// From PipeWire to the app.
+pub enum Event {
+    Added { id: u32, kind: Kind, props: Props },
+    Removed(u32),
+    /// A node's or device's full properties, and a node's state ("running", "idle", …).
+    Info { id: u32, props: Props, state: Option<&'static str> },
+    /// Peak level of each meter's channels since the last report, 0…1.
+    Levels(Vec<(u32, Vec<f32>)>),
+    /// A value of PipeWire's "settings" metadata (clock.rate, clock.quantum…).
+    Setting { key: String, value: String },
+    /// The PipeWire version.
+    Version(String),
+    /// Everything that existed when we connected has been reported.
+    Synced,
+    Error(String),
+}
+
+/// From the app to PipeWire.
+pub enum Cmd {
+    Link { out_node: u32, out_port: u32, in_node: u32, in_port: u32 },
+    Unlink(u32),
+    /// Measure these output ports, (node, port) in channel order, as meter `id`.
+    Meter { id: u32, ports: Vec<(u32, u32)>, channels: Vec<String> },
+    Unmeter(u32),
+    Quit,
+}
+
+pub struct Connection {
+    pub events: mpsc::Receiver<Event>,
+    cmds: pw::channel::Sender<Cmd>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Connection {
+    /// `wake` is called after every event, so the app's event loop can pick it up.
+    pub fn start(wake: Arc<dyn Fn() + Send + Sync>) -> Self {
+        let (ev_tx, events) = mpsc::channel();
+        let (cmds, cmd_rx) = pw::channel::channel();
+        let thread = thread::Builder::new()
+            .name("pipewire".into())
+            .spawn(move || run(Sender { tx: ev_tx, wake }, cmd_rx))
+            .expect("PipeWire thread");
+        Connection { events, cmds, thread: Some(thread) }
+    }
+
+    pub fn send(&self, cmd: Cmd) {
+        let _ = self.cmds.send(cmd);
+    }
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        self.send(Cmd::Quit);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+#[derive(Clone)]
+struct Sender {
+    tx: mpsc::Sender<Event>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl Sender {
+    fn send(&self, ev: Event) {
+        if self.tx.send(ev).is_ok() {
+            (self.wake)();
+        }
+    }
+}
+
+fn props_of(d: &spa::utils::dict::DictRef) -> Props {
+    d.iter().map(|(k, v)| (k.to_owned(), v.to_owned())).collect()
+}
+
+/// A signal meter: a capture stream, its ports once they exist, and the passive links to them.
+struct Meter {
+    _stream: pw::stream::StreamRc,
+    _listener: pw::stream::StreamListener<()>,
+    targets: Vec<(u32, u32)>,
+    node: Option<u32>,
+    /// our input ports: (port.id index, global id)
+    ports: Vec<(u32, u32)>,
+    links: Vec<pw::link::Link>,
+    peaks: Rc<RefCell<Vec<f32>>>,
+}
+
+fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
+    pw::init();
+    let mainloop = pw::main_loop::MainLoopRc::new(None).expect("PipeWire main loop");
+    let context = pw::context::ContextRc::new(&mainloop, None).expect("PipeWire context");
+    let core = match context.connect_rc(None) {
+        Ok(core) => core,
+        Err(e) => return events.send(Event::Error(format!("cannot connect to PipeWire: {e}"))),
+    };
+    let registry = core.get_registry_rc().expect("PipeWire registry");
+
+    // bound nodes and devices (proxy and listener), so their info keeps coming
+    let bound: Rc<RefCell<HashMap<u32, (Box<dyn Any>, Box<dyn Any>)>>> = Default::default();
+    let meters: Rc<RefCell<HashMap<u32, Meter>>> = Default::default();
+
+    let _registry_listener = registry
+        .add_listener_local()
+        .global({
+            let events = events.clone();
+            let registry = registry.clone();
+            let bound = bound.clone();
+            let meters = meters.clone();
+            let core = core.clone();
+            move |g| {
+                // the "settings" metadata: the clock rate and quantum
+                if g.type_ == ObjectType::Metadata
+                    && g.props.and_then(|p| p.get("metadata.name")) == Some("settings")
+                    && let Ok(md) = registry.bind::<pw::metadata::Metadata, _>(g)
+                {
+                    let ev = events.clone();
+                    let l = md
+                        .add_listener_local()
+                        .property(move |_, key, _, value| {
+                            if let Some(key) = key {
+                                ev.send(Event::Setting { key: key.to_owned(), value: value.unwrap_or("").to_owned() });
+                            }
+                            0
+                        })
+                        .register();
+                    bound.borrow_mut().insert(g.id, (Box::new(md), Box::new(l)));
+                    return;
+                }
+                let kind = match g.type_ {
+                    ObjectType::Device => Kind::Device,
+                    ObjectType::Node => Kind::Node,
+                    ObjectType::Port => Kind::Port,
+                    ObjectType::Link => Kind::Link,
+                    _ => return,
+                };
+                let props = g.props.map(props_of).unwrap_or_default();
+                let id = g.id;
+                match kind {
+                    Kind::Node => {
+                        if let Some(n) = props.get("node.name").and_then(|n| n.strip_prefix(METER_PREFIX)).and_then(|n| n.parse::<u32>().ok())
+                            && let Some(m) = meters.borrow_mut().get_mut(&n)
+                        {
+                            m.node = Some(id);
+                        }
+                        if let Ok(node) = registry.bind::<pw::node::Node, _>(g) {
+                            let ev = events.clone();
+                            let l = node
+                                .add_listener_local()
+                                .info(move |info| {
+                                    let state = match info.state() {
+                                        pw::node::NodeState::Running => "running",
+                                        pw::node::NodeState::Idle => "idle",
+                                        pw::node::NodeState::Suspended => "suspended",
+                                        pw::node::NodeState::Creating => "creating",
+                                        pw::node::NodeState::Error(_) => "error",
+                                    };
+                                    ev.send(Event::Info { id, props: info.props().map(props_of).unwrap_or_default(), state: Some(state) });
+                                })
+                                .register();
+                            bound.borrow_mut().insert(id, (Box::new(node), Box::new(l)));
+                        }
+                    }
+                    Kind::Device => {
+                        if let Ok(dev) = registry.bind::<pw::device::Device, _>(g) {
+                            let ev = events.clone();
+                            let l = dev
+                                .add_listener_local()
+                                .info(move |info| ev.send(Event::Info { id, props: info.props().map(props_of).unwrap_or_default(), state: None }))
+                                .register();
+                            bound.borrow_mut().insert(id, (Box::new(dev), Box::new(l)));
+                        }
+                    }
+                    Kind::Port => {
+                        // one of our meters' ports: once all are there, link them to what they measure
+                        let node: Option<u32> = props.get("node.id").and_then(|n| n.parse().ok());
+                        let index: u32 = props.get("port.id").and_then(|n| n.parse().ok()).unwrap_or(0);
+                        for m in meters.borrow_mut().values_mut() {
+                            if m.node.is_some() && m.node == node {
+                                m.ports.push((index, id));
+                                if m.ports.len() == m.targets.len() && m.links.is_empty() {
+                                    m.ports.sort();
+                                    let me = m.node.unwrap();
+                                    for (&(tn, tp), &(_, mine)) in m.targets.iter().zip(&m.ports) {
+                                        let p = pw::properties::properties! {
+                                            "link.output.node" => tn.to_string(),
+                                            "link.output.port" => tp.to_string(),
+                                            "link.input.node" => me.to_string(),
+                                            "link.input.port" => mine.to_string(),
+                                            // a meter never keeps a device awake
+                                            "link.passive" => "true",
+                                        };
+                                        if let Ok(l) = core.create_object::<pw::link::Link>("link-factory", &p) {
+                                            m.links.push(l);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Kind::Link => {}
+                }
+                events.send(Event::Added { id, kind, props });
+            }
+        })
+        .global_remove({
+            let events = events.clone();
+            let bound = bound.clone();
+            move |id| {
+                bound.borrow_mut().remove(&id);
+                events.send(Event::Removed(id));
+            }
+        })
+        .register();
+
+    // the answer to the first sync arrives after every object that already exists; the answer
+    // to a second one, after the full properties of the nodes and devices bound meanwhile
+    let pending = Rc::new(RefCell::new((core.sync(0).expect("PipeWire sync"), 0u8)));
+    let _core_listener = core
+        .add_listener_local()
+        .done({
+            let events = events.clone();
+            let core = core.clone();
+            move |id, seq| {
+                let mut p = pending.borrow_mut();
+                if id != pw::core::PW_ID_CORE || seq != p.0 || p.1 >= 2 {
+                    return;
+                }
+                p.1 += 1;
+                if p.1 == 1 {
+                    if let Ok(next) = core.sync(0) {
+                        p.0 = next;
+                    }
+                } else {
+                    events.send(Event::Synced);
+                }
+            }
+        })
+        .error({
+            let events = events.clone();
+            move |id, _seq, res, message| events.send(Event::Error(format!("object {id}: {message} ({res})")))
+        })
+        .info({
+            let events = events.clone();
+            move |info| events.send(Event::Version(info.version().to_owned()))
+        })
+        .register();
+
+    // meter levels go out 25 times a second, while there is something to show
+    let quiet = Rc::new(RefCell::new(true));
+    let timer = mainloop.loop_().add_timer({
+        let meters = meters.clone();
+        let events = events.clone();
+        move |_| {
+            let mut out = Vec::new();
+            let mut loud = false;
+            for (id, m) in meters.borrow().iter() {
+                let mut p = m.peaks.borrow_mut();
+                loud |= p.iter().any(|v| *v > 0.0005);
+                out.push((*id, p.clone()));
+                p.iter_mut().for_each(|v| *v = 0.0);
+            }
+            // one report of silence after the sound stops, then nothing until it comes back
+            if loud || !*quiet.borrow() {
+                events.send(Event::Levels(out));
+            }
+            *quiet.borrow_mut() = !loud;
+        }
+    });
+    timer.update_timer(Some(Duration::from_millis(40)), Some(Duration::from_millis(40)));
+
+    // links we made; with object.linger they stay after we quit, but we hold the proxies meanwhile
+    let made: RefCell<Vec<pw::link::Link>> = Default::default();
+    let _commands = cmds.attach(mainloop.loop_(), {
+        let mainloop = mainloop.clone();
+        let core = core.clone();
+        let registry = registry.clone();
+        let meters = meters.clone();
+        let events = events.clone();
+        move |cmd| match cmd {
+            Cmd::Link { out_node, out_port, in_node, in_port } => {
+                let props = pw::properties::properties! {
+                    "link.output.node" => out_node.to_string(),
+                    "link.output.port" => out_port.to_string(),
+                    "link.input.node" => in_node.to_string(),
+                    "link.input.port" => in_port.to_string(),
+                    "object.linger" => "true",
+                };
+                match core.create_object::<pw::link::Link>("link-factory", &props) {
+                    Ok(link) => made.borrow_mut().push(link),
+                    Err(e) => events.send(Event::Error(format!("cannot create link: {e}"))),
+                }
+            }
+            Cmd::Unlink(id) => {
+                registry.destroy_global(id);
+            }
+            Cmd::Meter { id, ports, channels } => match meter(&core, id, &channels) {
+                Ok((stream, listener, peaks)) => {
+                    meters.borrow_mut().insert(id, Meter { _stream: stream, _listener: listener, targets: ports, node: None, ports: Vec::new(), links: Vec::new(), peaks });
+                }
+                Err(e) => events.send(Event::Error(format!("cannot start meter: {e}"))),
+            },
+            Cmd::Unmeter(id) => {
+                meters.borrow_mut().remove(&id);
+            }
+            Cmd::Quit => mainloop.quit(),
+        }
+    });
+
+    mainloop.run();
+}
+
+/// A passive capture stream with one channel per measured port, not connected to anything:
+/// Patchcord links it itself once its ports appear.
+fn meter(core: &pw::core::CoreRc, id: u32, channels: &[String]) -> Result<(pw::stream::StreamRc, pw::stream::StreamListener<()>, Rc<RefCell<Vec<f32>>>), pw::Error> {
+    let props = pw::properties::properties! {
+        "media.type" => "Audio",
+        "media.category" => "Capture",
+        "media.role" => "Production",
+        "node.name" => format!("{METER_PREFIX}{id}"),
+        "node.description" => "Patchcord signal meter",
+        // tells PipeWire (and desktop volume panels) it only watches, like their peak meters
+        "stream.monitor" => "true",
+        "node.passive" => "true",
+        "node.dont-reconnect" => "true",
+    };
+    let stream = pw::stream::StreamRc::new(core.clone(), &format!("{METER_PREFIX}{id}"), props)?;
+    let n = channels.len().max(1);
+    let peaks = Rc::new(RefCell::new(vec![0.0f32; n]));
+    let listener = stream
+        .add_local_listener_with_user_data(())
+        .process({
+            let peaks = peaks.clone();
+            move |stream, _| {
+                let Some(mut buffer) = stream.dequeue_buffer() else { return };
+                let datas = buffer.datas_mut();
+                let Some(d) = datas.first_mut() else { return };
+                let size = d.chunk().size() as usize;
+                let Some(bytes) = d.data() else { return };
+                let mut pk = peaks.borrow_mut();
+                for (i, s) in bytes[..size.min(bytes.len())].chunks_exact(4).enumerate() {
+                    let v = f32::from_le_bytes([s[0], s[1], s[2], s[3]]).abs();
+                    let c = i % n;
+                    if v > pk[c] {
+                        pk[c] = v;
+                    }
+                }
+            }
+        })
+        .register()?;
+
+    let mut info = spa::param::audio::AudioInfoRaw::new();
+    info.set_format(spa::param::audio::AudioFormat::F32LE);
+    info.set_channels(n as u32);
+    let mut pos = [0u32; 64];
+    for (i, c) in channels.iter().enumerate().take(64) {
+        // SPA channel positions: MONO 2, FL 3, FR 4, AUX0 4096…
+        pos[i] = match c.as_str() {
+            "MONO" => 2,
+            "FL" => 3,
+            "FR" => 4,
+            _ => 4096 + i as u32,
+        };
+    }
+    info.set_position(pos);
+    let obj = spa::pod::Object { type_: spa::utils::SpaTypes::ObjectParamFormat.as_raw(), id: spa::param::ParamType::EnumFormat.as_raw(), properties: info.into() };
+    let values: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &spa::pod::Value::Object(obj)).map_err(|_| pw::Error::CreationFailed)?.0.into_inner();
+    let mut params = [spa::pod::Pod::from_bytes(&values).ok_or(pw::Error::CreationFailed)?];
+    stream.connect(spa::utils::Direction::Input, None, pw::stream::StreamFlags::MAP_BUFFERS, &mut params)?;
+    Ok((stream, listener, peaks))
+}
