@@ -472,6 +472,23 @@ pub fn status(w: f64, left: &str, right: &str, dpi: f64) -> Layer {
     Layer { id: next_id(), pm: rasterize(&text::svg_options(), &svg, dpi), x: 0.0, y: 0.0, w, h: STATUS_H }
 }
 
+/// A tooltip: a title in bold, then lines of PipeWire names in mono.
+pub fn tooltip(lines: &[String], dpi: f64) -> Layer {
+    let (title, rest) = lines.split_first().map_or(("", &[][..]), |(t, r)| (t.as_str(), r));
+    let w = rest.iter().map(|l| text::width(text::MONO, l, 11.0, 0.0)).fold(text::width(text::BOLD, title, 12.0, 0.0), f64::max) + 24.0;
+    let h = 30.0 + rest.len() as f64 * 16.0;
+    let mut body = format!(r##"<text x="12" y="20" font-size="12" font-weight="bold" fill="#eceded">{}</text>"##, esc(title));
+    for (i, l) in rest.iter().enumerate() {
+        body += &format!(r##"<text x="12" y="{}" font-family="Noto Sans Mono" font-size="11" fill="#a9acb0">{}</text>"##, 37.0 + i as f64 * 16.0, esc(l));
+    }
+    let svg = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" font-family="Noto Sans"><rect x=".5" y=".5" width="{}" height="{}" rx="7" fill="#141517" fill-opacity=".95" stroke="#000" stroke-opacity=".6"/>{body}</svg>"##,
+        w - 1.0,
+        h - 1.0
+    );
+    Layer { id: next_id(), pm: rasterize(&text::svg_options(), &svg, dpi), x: 0.0, y: 0.0, w, h }
+}
+
 /// A short notice, a dark pill with a line of text.
 pub fn notice(msg: &str, dpi: f64) -> Layer {
     let w = text::width(text::BOLD, msg, 13.0, 0.0) + 32.0;

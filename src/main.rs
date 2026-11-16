@@ -15,9 +15,10 @@ use winit::event_loop::EventLoop;
 use pw::Connection;
 use ui::scene::Scene;
 
-/// `patchcord --render out.png [rack] [held] [save | presets]`: draws the live graph to a PNG
+/// `patchcord --render out.png [rack] [hover | held] [save | presets]`: draws the live graph to a PNG
 /// without opening a window, after letting the cords settle (PATCHCORD_SCALE sets the scale, 1.5
-/// by default). "rack" puts the devices in the rack; "held" pulls a cord out of the first output
+/// by default). "rack" puts the devices in the rack; "hover" rests the pointer on the jack the
+/// first cord comes from; "held" pulls a cord out of the first output
 /// and holds its plug in the air; "save" or "presets" opens that drop-down.
 fn render_snapshot(path: &str, opts: &[String]) -> Result<(), String> {
     let menu = opts.iter().map(String::as_str).find(|o| matches!(*o, "save" | "presets"));
@@ -36,6 +37,11 @@ fn render_snapshot(path: &str, opts: &[String]) -> Result<(), String> {
         let (x, y) = scene.spare(&k)?;
         Some((scene.pull_new(&k)?, ui::cord::Held { x: x + 150.0, y: y + 110.0, vx: 0.0, lift: 1.0, kind: None }))
     });
+    // the pointer on the jack the first cord comes from: its cords light up, its tooltip shows
+    let hover = opts.iter().any(|o| o == "hover").then(|| scene.cords.first().and_then(|c| c.a.jack.clone())).flatten();
+    if let Some(k) = &hover {
+        scene.hover = ui::scene::Hover::Jack(k.clone());
+    }
     // let the cords settle
     for _ in 0..360 {
         scene.tick(1.0 / 60.0, None, held, false);
@@ -102,6 +108,15 @@ fn render_snapshot(path: &str, opts: &[String]) -> Result<(), String> {
         if let Some(pm) = &l.pm {
             let y = if std::ptr::eq(l, &status) { h as f64 - ui::panel::STATUS_H * s } else { l.y * s };
             out.draw_pixmap((l.x * s).round() as i32, y.round() as i32, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+        }
+    }
+    if let Some(k) = &hover
+        && let Some((x, y)) = scene.slot_pos(k, 0)
+    {
+        let tip = ui::panel::tooltip(&scene.tooltip(&scene.hover), s);
+        if let Some(pm) = &tip.pm {
+            let (px, py) = (x as f64 * s + view.x + 14.0 * s, y as f64 * s + view.y + 22.0 * s);
+            out.draw_pixmap(px.round() as i32, py.round() as i32, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
         }
     }
     save(&out, path)?;

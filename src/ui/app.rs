@@ -16,7 +16,7 @@ use super::face::LCD_CH;
 use super::gpu::{Gpu, Sprite};
 use super::panel::{self, Key, Menu, MenuHit, Panel};
 use crate::config::{self, Preset, Settings};
-use super::scene::{Layer, Scene, View, next_id};
+use super::scene::{Hover, Layer, Scene, View, next_id};
 use crate::pw::Connection;
 
 /// After zooming, faces are drawn sharp again once the zoom has been still this long.
@@ -45,6 +45,8 @@ enum Drag {
 
 /// How long a notice stays.
 const NOTICE: Duration = Duration::from_millis(1800);
+/// How long the pointer rests on something before its tooltip shows.
+const TIP_DELAY: Duration = Duration::from_millis(450);
 
 /// A second click this soon, this close, is a double-click.
 const DOUBLE: Duration = Duration::from_millis(350);
@@ -76,6 +78,9 @@ pub struct App {
     hint: String,
     status: Option<(String, Layer)>,
     notice: Option<(Instant, Layer)>,
+    /// since when the pointer is over what it is over, and that thing's tooltip once shown
+    hover_since: Instant,
+    tip: Option<Layer>,
     settings: Settings,
     presets: Vec<Preset>,
     /// the preset last saved or loaded
@@ -117,6 +122,8 @@ impl App {
             hint: String::new(),
             status: None,
             notice: None,
+            hover_since: now,
+            tip: None,
             settings,
             presets,
             current,
@@ -430,6 +437,12 @@ impl App {
         if self.notice.as_ref().is_some_and(|(t, _)| now >= *t) {
             self.notice = None;
         }
+        if self.tip.is_none() && self.drag.is_none() && self.scene.hover != Hover::None && now - self.hover_since >= TIP_DELAY {
+            let lines = self.scene.tooltip(&self.scene.hover);
+            if !lines.is_empty() {
+                self.tip = Some(panel::tooltip(&lines, dpi));
+            }
+        }
 
         let pulse = 0.5 + 0.5 * ((now - self.start).as_secs_f32() * 6.0).sin();
         let cords = self.scene.cord_layer(self.view, self.size, &rings, pulse);
@@ -472,6 +485,14 @@ impl App {
         for l in self.panel.layers() {
             sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (l.x * dpi).round(), y: (l.y * dpi).round(), w: l.w * dpi, h: l.h * dpi, alpha: 1.0 });
         }
+        if let Some(l) = &self.tip {
+            // below and right of the pointer; kept inside the window, above the pointer near the bottom
+            let (w, h) = (l.w * dpi, l.h * dpi);
+            let x = (self.cursor.0 + 14.0 * dpi).min(fw - w - 4.0 * dpi).max(4.0 * dpi);
+            let below = self.cursor.1 + 22.0 * dpi;
+            let y = if below + h > fh - panel::STATUS_H * dpi { self.cursor.1 - h - 10.0 * dpi } else { below };
+            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: x.round(), y: y.round(), w, h, alpha: 1.0 });
+        }
         sf.gpu.draw(&sprites);
         self.panel.uploaded();
         if let Some((_, l)) = &mut self.scene.rack_bg
@@ -479,7 +500,7 @@ impl App {
         {
             l.pm = None;
         }
-        for l in [self.status.as_mut().map(|(_, l)| l), self.notice.as_mut().map(|(_, l)| l)].into_iter().flatten() {
+        for l in [self.status.as_mut().map(|(_, l)| l), self.notice.as_mut().map(|(_, l)| l), self.tip.as_mut()].into_iter().flatten() {
             if sf.gpu.has(l.id) {
                 l.pm = None;
             }
@@ -493,10 +514,11 @@ impl App {
                 }
             }
         }
-        self.animating = moving || self.view_to.is_some() || self.drag.is_some() || self.rescale_at.is_some() || self.notice.is_some() || faces_waiting;
+        self.animating = moving || self.view_to.is_some() || self.drag.is_some() || self.rescale_at.is_some() || self.notice.is_some() || faces_waiting || (self.scene.hover != Hover::None && self.tip.is_none() && now - self.hover_since < 2 * TIP_DELAY);
     }
 
     fn press(&mut self, button: MouseButton) {
+        self.set_hover(Hover::None);
         let w = self.world(self.cursor);
         let (top, bottom) = self.field();
         // the preset drop-down takes the click; a click elsewhere closes it
@@ -700,6 +722,8 @@ impl App {
                 } else {
                     (self.field_cursor(w), self.scene.hint_at(w.0, w.1, self.panel.state.locked))
                 };
+                let on_field = self.cursor.1 >= top && self.cursor.1 <= bottom && self.panel.menu.is_none();
+                self.set_hover(if on_field { self.scene.hover_at(w.0, w.1) } else { Hover::None });
                 if hint != self.hint {
                     self.hint = hint;
                     self.redraw();
@@ -708,6 +732,16 @@ impl App {
                     sf.window.set_cursor(icon);
                 }
             }
+        }
+    }
+
+    /// What the pointer is over changed: its cords light up, and its tooltip waits a moment.
+    fn set_hover(&mut self, h: Hover) {
+        if h != self.scene.hover {
+            self.scene.hover = h;
+            self.hover_since = Instant::now();
+            self.tip = None;
+            self.redraw();
         }
     }
 
@@ -775,7 +809,7 @@ impl ApplicationHandler<()> for App {
             return;
         }
         let (w, h) = self.settings.window.unwrap_or((1400, 880));
-        let attrs = Window::default_attributes().with_title("Patchcord").with_inner_size(LogicalSize::new(w as f64, h as f64)).with_min_inner_size(LogicalSize::new(480.0, 320.0));
+        let attrs = with_app_id(Window::default_attributes().with_title("Patchcord").with_inner_size(LogicalSize::new(w as f64, h as f64)).with_min_inner_size(LogicalSize::new(480.0, 320.0)));
         let window = Arc::new(event_loop.create_window(attrs).expect("window"));
         let gpu = match Gpu::new(window.clone(), event_loop.owned_display_handle()) {
             Ok(g) => g,
@@ -831,6 +865,7 @@ impl ApplicationHandler<()> for App {
                 self.cursor = (position.x, position.y);
                 self.moved();
             }
+            WindowEvent::CursorLeft { .. } => self.set_hover(Hover::None),
             WindowEvent::MouseInput { state, button, .. } => match state {
                 ElementState::Pressed => self.press(button),
                 ElementState::Released => self.release(),
@@ -912,6 +947,16 @@ impl ApplicationHandler<()> for App {
 }
 
 /// The patch field: dark, a little lighter towards the top middle, with a fine dot grid.
+/// Desktop app ID (also the .desktop file and icon name). Wayland has no window icons:
+/// the compositor finds the icon through the installed `<APP_ID>.desktop` file.
+const APP_ID: &str = "io.github.bewzaalex.patchcord";
+
+fn with_app_id(attrs: winit::window::WindowAttributes) -> winit::window::WindowAttributes {
+    use winit::platform::{wayland::WindowAttributesExtWayland, x11::WindowAttributesExtX11};
+    let attrs = WindowAttributesExtWayland::with_name(attrs, APP_ID, APP_ID);
+    WindowAttributesExtX11::with_name(attrs, APP_ID, APP_ID)
+}
+
 pub fn background(w: u32, h: u32) -> Pixmap {
     let mut pm = Pixmap::new(w.max(1), h.max(1)).expect("background");
     pm.fill(Color::from_rgba8(0x15, 0x16, 0x18, 255));

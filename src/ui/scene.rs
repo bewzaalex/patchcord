@@ -17,6 +17,19 @@ use crate::config::Preset;
 use crate::graph::{Device, Dir, Graph, Group, Media};
 use crate::pw::{Cmd, Event};
 
+/// What the pointer is over, for highlighting cords and the tooltip.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub enum Hover {
+    #[default]
+    None,
+    /// a jack, or a plug in it: by jack key
+    Jack(String),
+    /// a cord, by number
+    Cord(u64),
+    /// a device, by key
+    Device(String),
+}
+
 /// A picture of something on the field: (x, y, w, h) is the world area it covers.
 pub struct Layer {
     /// unique for every picture made, so the GPU knows which textures it already has
@@ -122,6 +135,11 @@ pub struct Scene {
     /// pictures of a mono, a stereo and a MIDI jack and of the plus badge, laid over the faces
     pub jack_pics: [Option<Layer>; 4],
     pics_scale: f64,
+    /// what the pointer is over; its cords stand out, the others fade (`lit` eases in and out,
+    /// `lit_for` keeps what was hovered while it fades out)
+    pub hover: Hover,
+    lit_for: Hover,
+    lit: f32,
     /// the links changed since the last preset was saved or loaded
     pub edited: bool,
     /// PipeWire's settings (clock.rate, clock.quantum…) and version
@@ -166,6 +184,9 @@ impl Scene {
             rack_scale: 0.0,
             jack_pics: [None, None, None, None],
             pics_scale: 0.0,
+            hover: Hover::None,
+            lit_for: Hover::None,
+            lit: 0.0,
             edited: false,
             settings: HashMap::new(),
             version: None,
@@ -580,6 +601,14 @@ impl Scene {
             }
         }
         self.cords = kept;
+        // the hovered thing's cords light up quickly and fade back a little slower
+        if self.hover != Hover::None {
+            self.lit_for = self.hover.clone();
+        }
+        let to = if self.hover == Hover::None { 0.0 } else { 1.0 };
+        let was = self.lit;
+        self.lit = if to > self.lit { (self.lit + dt * 8.0).min(1.0) } else { (self.lit - dt * 5.0).max(0.0) };
+        moving |= self.lit != was;
         moving
     }
 
@@ -785,9 +814,24 @@ impl Scene {
         let mut pm = Pixmap::new((px1 - px0) as u32, (py1 - py0) as u32)?;
         let ts = Transform::from_row(s, 0.0, 0.0, s, view.x as f32 - px0 as f32, view.y as f32 - py0 as f32);
         paint::rings(&mut pm, rings, pulse, ts);
-        // faded or hidden cords; a cord in the hand always shows
+        // faded or hidden cords; a cord in the hand always shows, and so do the hovered thing's
+        // cords, while the others fade
         let fade = [1.0, 0.22, 0.0][self.cables.min(2) as usize];
-        paint::cords(&mut pm, &self.cords, |c| if c.a.held || c.b.held || c.grab.is_some() { c.alpha } else { c.alpha * fade }, ts);
+        paint::cords(
+            &mut pm,
+            &self.cords,
+            |c| {
+                let a = if c.a.held || c.b.held || c.grab.is_some() { c.alpha } else { c.alpha * fade };
+                if self.lit == 0.0 {
+                    a
+                } else if self.lights(c) {
+                    a + (c.alpha - a) * self.lit
+                } else {
+                    a * (1.0 - 0.75 * self.lit)
+                }
+            },
+            ts,
+        );
         Some((pm, px0, py0))
     }
 
@@ -1165,6 +1209,88 @@ impl Scene {
             }
             c.hit(x as f32, y as f32).filter(|(d, _)| *d < 7.0).map(|(_, k)| (i, k))
         })
+    }
+
+    /// What is under a world point: a plug or a jack (the jack, either way), a cord, a device.
+    pub fn hover_at(&self, x: f64, y: f64) -> Hover {
+        if let Some((ci, b)) = self.plug_at(x, y) {
+            let c = &self.cords[ci];
+            if let Some(k) = if b { &c.b.jack } else { &c.a.jack } {
+                return Hover::Jack(k.clone());
+            }
+        }
+        if let Some(k) = self.jack_at(x, y) {
+            return Hover::Jack(k);
+        }
+        if self.cables < 2
+            && let Some((ci, _)) = self.cord_at(x, y)
+        {
+            return Hover::Cord(self.cords[ci].seq);
+        }
+        match self.device_at(x, y) {
+            Some(i) => Hover::Device(self.devs[i].dev.key.clone()),
+            None => Hover::None,
+        }
+    }
+
+    /// Any jack of a mult (taken or free) under a world point, on the topmost device there.
+    fn jack_at(&self, x: f64, y: f64) -> Option<String> {
+        let di = self.device_at(x, y)?;
+        let d = &self.devs[di];
+        d.defs.iter().enumerate().find_map(|(ji, j)| {
+            let n = d.counts.get(ji).copied().unwrap_or(0);
+            (0..face::slots(n)).find_map(|s| {
+                let (sx, sy) = self.slot_pos(&j.key, s)?;
+                (((sx as f64 - x).powi(2) + (sy as f64 - y).powi(2)).sqrt() < 16.0).then(|| j.key.clone())
+            })
+        })
+    }
+
+    /// Whether a cord belongs to what was hovered last.
+    fn lights(&self, c: &Cord) -> bool {
+        // a plug in the hand still counts for the jack it came from
+        let mut ends = [&c.a, &c.b].into_iter().filter_map(|e| e.jack.as_ref().or(e.orig.as_ref()));
+        match &self.lit_for {
+            Hover::None => false,
+            Hover::Cord(seq) => c.seq == *seq,
+            Hover::Jack(key) => ends.any(|k| k == key),
+            Hover::Device(key) => ends.any(|k| self.jack(k).is_some_and(|(d, _)| d.dev.key == *key)),
+        }
+    }
+
+    /// The tooltip for what is hovered: lines of text, the first one a title, or none.
+    pub fn tooltip(&self, h: &Hover) -> Vec<String> {
+        let ports = |key: &str| -> Option<(String, String, String)> {
+            let (d, j) = self.jack(key)?;
+            let names: Vec<&str> = j.ports.iter().filter_map(|id| d.dev.groups.iter().flat_map(|g| &g.ports).find(|p| p.id == *id)).map(|p| p.name.as_str()).collect();
+            let group = d.dev.groups.get(j.group).map_or(String::new(), |g| g.label.clone());
+            Some((d.dev.name.clone(), group, names.join(" + ")))
+        };
+        match h {
+            Hover::None => Vec::new(),
+            Hover::Jack(key) => {
+                let Some((dev, group, names)) = ports(key) else { return Vec::new() };
+                let mut v = vec![dev, format!("{group} · {names}")];
+                let out = self.jack(key).is_some_and(|(_, j)| j.dir == Dir::Out);
+                for c in self.cords.iter().filter(|c| c.live()) {
+                    let (a, b) = (c.a.jack.as_deref().unwrap_or(""), c.b.jack.as_deref().unwrap_or(""));
+                    let other = if a == key { b } else if b == key { a } else { continue };
+                    if let Some((od, _, on)) = ports(other) {
+                        v.push(format!("{} {od}: {on}", if out { "to" } else { "from" }));
+                    }
+                }
+                v
+            }
+            Hover::Cord(seq) => {
+                let Some(c) = self.cords.iter().find(|c| c.seq == *seq) else { return Vec::new() };
+                let (Some((ad, _, an)), Some((bd, _, bn))) = (c.a.jack.as_deref().and_then(&ports), c.b.jack.as_deref().and_then(&ports)) else { return Vec::new() };
+                vec![format!("{ad} to {bd}"), format!("from {an}"), format!("to {bn}")]
+            }
+            Hover::Device(key) => {
+                let Some(d) = self.devs.iter().find(|d| d.dev.key == *key) else { return Vec::new() };
+                vec![d.dev.name.clone(), format!("{} · {}", d.dev.model, d.dev.state)]
+            }
+        }
     }
 
     /// The PipeWire names of a jack's ports: "Firefox: output_FL + output_FR".
