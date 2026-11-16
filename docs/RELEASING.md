@@ -25,17 +25,20 @@ newer C library and PipeWire. Their contents are set in `Cargo.toml` under
    `assets/io.github.bewzaalex.patchcord.metainfo.xml`, with the version, today's date and a short
    description. The GitHub release notes are made from it, with the install table added.
    Point the screenshot URLs in the same file at the new tag (`.../patchcord/vX.Y.Z/docs/...`).
-3. **Screenshots**, if the look changed. They show your own PipeWire graph, so patch a few cords
-   first. Each starts from fresh settings in a temporary folder, so your own settings stay as
-   they are:
+3. **Screenshots**, if the look changed. They show your own PipeWire devices, with a few cords
+   added to the picture only (`demo`: they aren't linked in PipeWire). Each starts from fresh
+   settings in a temporary folder, so your own settings stay as they are:
 
    ```sh
    cfg=$(mktemp -d)
-   XDG_CONFIG_HOME=$cfg PATCHCORD_SCALE=1.5 cargo run --release -- --render docs/screenshots/desk.png hover
-   XDG_CONFIG_HOME=$cfg PATCHCORD_SCALE=1.5 cargo run --release -- --render docs/screenshots/rack.png rack
+   XDG_CONFIG_HOME=$cfg PATCHCORD_SCALE=1.5 cargo run --release -- --render docs/screenshots/desk.png demo
+   XDG_CONFIG_HOME=$cfg PATCHCORD_SCALE=1.5 cargo run --release -- --render docs/screenshots/rack.png demo rack
    rm -rf $cfg
    for f in docs/screenshots/*.png; do magick $f -strip -define png:compression-level=9 $f; done
    ```
+
+   The `demo` cords and the desk layout name the devices in `src/main.rs`; change them there
+   for other devices.
 
 4. **Crates**, if `Cargo.lock` changed: `python3 packaging/flatpak/cargo-sources.py`.
 5. **Check** locally: `python3 .github/scripts/release.py version` must print the new version.

@@ -954,6 +954,19 @@ impl Scene {
         self.slots();
     }
 
+    /// Plugs a cord between two jacks in the picture only, without linking them in PipeWire:
+    /// for snapshots of a patch the graph doesn't have (`--render ... demo`).
+    pub fn show_cord(&mut self, out: &str, inp: &str) {
+        let (Some(pa), Some(pb)) = (self.spare(out), self.spare(inp)) else { return };
+        let (ka, kb) = (self.jack(out).map(|j| j.1.kind).unwrap(), self.jack(inp).map(|j| j.1.kind).unwrap());
+        let color = self.jack(out).map(|j| j.0.dev.color).unwrap();
+        self.seq += 1;
+        self.slot_seq += 2;
+        let c = Cord::new(self.seq, (self.slot_seq - 1, self.slot_seq), (out.to_owned(), ka, pa), (inp.to_owned(), kb, pb), color, self.sag);
+        self.cords.push(c);
+        self.slots();
+    }
+
     /// The first output jack, for snapshots that show a plug in the hand.
     pub fn first_output(&self) -> Option<String> {
         self.devs.iter().flat_map(|d| d.defs.iter()).find(|j| j.dir == Dir::Out).map(|j| j.key.clone())

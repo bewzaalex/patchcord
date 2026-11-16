@@ -146,8 +146,8 @@ layout, by PipeWire's node and port names). Loading a preset takes away the link
 devices it knows that it doesn't have; devices started later keep theirs. The Flatpak keeps them
 in `~/.var/app/io.github.bewzaalex.patchcord/config/patchcord` instead.
 
-`patchcord --render out.png [rack] [hover | held] [save | presets]` draws the current graph to a PNG without
-opening a window, optionally in the rack, with the pointer on a jack, with a plug in the hand or with a preset drop-down open (`PATCHCORD_SCALE` sets the scale, 1.5 by default). `PATCHCORD_DEBUG=1` prints which GPU it uses.
+`patchcord --render out.png [rack] [demo] [hover | held] [save | presets]` draws the current graph to a PNG without
+opening a window, optionally in the rack, with a few cords added to the picture only (`demo`, for screenshots), with the pointer on a jack, with a plug in the hand or with a preset drop-down open (`PATCHCORD_SCALE` sets the scale, 1.5 by default). `PATCHCORD_DEBUG=1` prints which GPU it uses.
 
 ## Development
 

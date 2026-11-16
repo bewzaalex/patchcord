@@ -12,12 +12,14 @@ use std::time::{Duration, Instant};
 use resvg::tiny_skia::{FilterQuality, Pixmap, PixmapPaint, Transform};
 use winit::event_loop::EventLoop;
 
+use graph::Dir;
 use pw::Connection;
 use ui::scene::Scene;
 
-/// `patchcord --render out.png [rack] [hover | held] [save | presets]`: draws the live graph to a PNG
+/// `patchcord --render out.png [rack] [demo] [hover | held] [save | presets]`: draws the live graph to a PNG
 /// without opening a window, after letting the cords settle (PATCHCORD_SCALE sets the scale, 1.5
-/// by default). "rack" puts the devices in the rack; "hover" rests the pointer on the jack the
+/// by default). "rack" puts the devices in the rack; "demo" adds a few cords to the picture (not
+/// to PipeWire); "hover" rests the pointer on the jack the
 /// first cord comes from; "held" pulls a cord out of the first output
 /// and holds its plug in the air; "save" or "presets" opens that drop-down.
 fn render_snapshot(path: &str, opts: &[String]) -> Result<(), String> {
@@ -37,6 +39,39 @@ fn render_snapshot(path: &str, opts: &[String]) -> Result<(), String> {
         let (x, y) = scene.spare(&k)?;
         Some((scene.pull_new(&k)?, ui::cord::Held { x: x + 150.0, y: y + 110.0, vx: 0.0, lift: 1.0, kind: None }))
     });
+    // a few more cords, in the picture only, for screenshots: (device, group) to (device, group)
+    if opts.iter().any(|o| o == "demo") {
+        let jack = |scene: &Scene, dev: &str, group: &str, dir: Dir| {
+            scene.devs.iter().filter(|d| d.dev.name.starts_with(dev)).flat_map(|d| d.defs.iter().map(move |j| (d, j))).find(|(d, j)| j.dir == dir && d.dev.groups.get(j.group).is_some_and(|g| g.label == group)).map(|(_, j)| j.key.clone())
+        };
+        let patch = [
+            (("Vivaldi", "OUTPUT"), ("Ryzen", "PLAYBACK")),
+            (("JLab GO Work 2", "CAPTURE"), ("Bluetooth internal", "INPUT")),
+            (("Midi-Bridge", "MIDI"), ("BLE MIDI", "MIDI")),
+            (("Ryzen", "CAPTURE"), ("JLab GO Work 2", "PLAYBACK")),
+        ];
+        for ((od, og), (id, ig)) in patch {
+            if let (Some(a), Some(b)) = (jack(&scene, od, og, Dir::Out), jack(&scene, id, ig, Dir::In)) {
+                scene.show_cord(&a, &b);
+            }
+        }
+        if scene.rack {
+            // the rack in the order of the signal flow
+            scene.arrange();
+        } else {
+            // on the desk: what plays on the left, what it plays into on the right, three rows
+            let place = [["Vivaldi", "Ryzen", "Midi-Bridge"], ["JLab GO Work 2", "Bluetooth internal", "BLE MIDI"]];
+            let key = |scene: &Scene, name: &str| scene.devs.iter().find(|d| d.dev.name.starts_with(name)).map(|d| (d.dev.key.clone(), d.geo.w));
+            let left_w = place[0].iter().filter_map(|n| key(&scene, n)).map(|(_, w)| w).fold(0.0, f64::max);
+            for (col, names) in place.iter().enumerate() {
+                for (row, name) in names.iter().enumerate() {
+                    if let Some((k, _)) = key(&scene, name) {
+                        scene.move_device(&k, col as f64 * (left_w + 170.0), row as f64 * 200.0);
+                    }
+                }
+            }
+        }
+    }
     // the pointer on the jack the first cord comes from: its cords light up, its tooltip shows
     let hover = opts.iter().any(|o| o == "hover").then(|| scene.cords.first().and_then(|c| c.a.jack.clone())).flatten();
     if let Some(k) = &hover {
@@ -48,6 +83,8 @@ fn render_snapshot(path: &str, opts: &[String]) -> Result<(), String> {
     }
     let s: f64 = std::env::var("PATCHCORD_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.5);
     let (x0, y0, x1, y1) = scene.bounds().ok_or("no devices")?;
+    // room for the cords that hang below the devices
+    let y1 = scene.cords.iter().flat_map(|c| c.pts.iter()).map(|p| p.y as f64 + 10.0).fold(y1, f64::max);
     let m = 60.0;
     // the field between the top panel and the status bar, as in the window
     let top = ui::panel::H * s;
