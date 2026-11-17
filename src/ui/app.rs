@@ -57,6 +57,17 @@ const NOTICE: Duration = Duration::from_millis(1800);
 /// How long the pointer rests on something before its tooltip shows.
 const TIP_DELAY: Duration = Duration::from_millis(450);
 
+/// The list of the outputs and inputs that can be the default, and which ones are.
+pub fn defaults_menu(scene: &Scene) -> Menu {
+    let (outs, ins) = (scene.ends(true), scene.ends(false));
+    let (dout, din) = (scene.default_name(true), scene.default_name(false));
+    let at = |v: &[(usize, usize, String, String)], n: &Option<String>| v.iter().position(|e| Some(&e.2) == n.as_ref());
+    Menu::Defaults { out: at(&outs, &dout), inp: at(&ins, &din), outs: outs.into_iter().map(|e| e.3).collect(), ins: ins.into_iter().map(|e| e.3).collect() }
+}
+
+/// How long a device found from the defaults list glows.
+const FOUND: Duration = Duration::from_millis(1600);
+
 /// A second click this soon, this close, is a double-click.
 const DOUBLE: Duration = Duration::from_millis(350);
 
@@ -65,6 +76,8 @@ const DOUBLE: Duration = Duration::from_millis(350);
 struct ProfileList {
     /// the device whose list it is
     key: String,
+    /// its ports and latency offsets (PORT) instead of its profiles
+    port: bool,
     /// what it was drawn from
     sig: u64,
     layer: Option<Layer>,
@@ -110,6 +123,8 @@ pub struct App {
     profiles: Option<ProfileList>,
     /// the glow around the device under the pointer: whose, and what it was drawn for
     glow: Option<(String, u64, Layer)>,
+    /// a device found from the defaults list: it glows a moment, fading
+    found: Option<(String, Instant, Layer)>,
     settings: Settings,
     presets: Vec<Preset>,
     /// the preset last saved or loaded
@@ -127,6 +142,7 @@ impl App {
         scene.saved_pos = settings.pos.clone().into_iter().collect();
         scene.rack = settings.rack;
         scene.align = settings.align;
+        scene.accents = settings.accents;
         scene.rack_order = settings.rack_order.clone();
         App {
             conn,
@@ -152,13 +168,14 @@ impl App {
             animating: true,
             next_frame: now,
             last_press: (now, (0.0, 0.0)),
-            panel: Panel::new(panel::State { rack: false, locked: settings.lock, align: settings.align, cables: settings.cables, sound: false, lcd: [String::new(), String::new()], pressed: None }),
+            panel: Panel::new(panel::State { rack: false, locked: settings.lock, align: settings.align, cables: settings.cables, sound: false, lcd: [String::new(), String::new()], defaults: [String::new(), String::new()], pressed: None }),
             hint: String::new(),
             status: None,
             notice: None,
             hover_since: now,
             tip: None,
             profiles: None,
+            found: None,
             glow: None,
             settings,
             presets,
@@ -172,6 +189,7 @@ impl App {
         s.cables = self.scene.cables;
         s.lock = self.panel.state.locked;
         s.align = self.scene.align;
+        s.accents = self.scene.accents;
         s.rack = self.scene.rack;
         s.rack_order = self.scene.rack_order.clone();
         s.preset = self.current.map(|i| self.presets[i].name.clone());
@@ -294,6 +312,33 @@ impl App {
         self.redraw();
     }
 
+    /// Opens the list of the outputs and inputs that can be the default (`toggle`: or closes it),
+    /// or draws it again with what is the default now.
+    fn open_defaults(&mut self, toggle: bool) {
+        if toggle && matches!(self.panel.menu, Some(Menu::Defaults { .. })) {
+            self.panel.menu = None;
+            return self.redraw();
+        }
+        self.panel.menu = Some(self.defaults_menu());
+        self.redraw();
+    }
+
+    fn defaults_menu(&self) -> Menu {
+        defaults_menu(&self.scene)
+    }
+
+    /// Glides the view to a device and makes it glow for a moment.
+    fn find_device(&mut self, di: usize) {
+        let dpi = self.dpi();
+        let (top, bottom) = self.field();
+        let Some(d) = self.scene.devs.get(di) else { return };
+        let s = self.view.s.max(0.8 * dpi);
+        let (cx, cy) = (d.x + d.geo.w / 2.0, d.y + DEV_H / 2.0);
+        self.view_to = Some(View { s, x: self.size.0 as f64 / 2.0 - cx * s, y: (top + bottom) / 2.0 - cy * s });
+        self.found = Some((d.dev.key.clone(), Instant::now(), glow_layer(d.geo.w, self.scene.rack, self.raster)));
+        self.redraw();
+    }
+
     /// What a panel key does.
     fn panel_key(&mut self, key: Key) {
         match key {
@@ -335,6 +380,7 @@ impl App {
             }
             Key::Save => self.open_menu(true),
             Key::Load | Key::Lcd => self.open_menu(false),
+            Key::Defaults => self.open_defaults(true),
             Key::Sound => self.say("Plug sounds are not implemented yet"),
         }
         self.redraw();
@@ -459,6 +505,14 @@ impl App {
         self.panel.state.align = self.scene.align;
         self.panel.state.rack = self.scene.rack;
         self.panel.state.lcd = self.lcd();
+        self.panel.state.defaults = [true, false].map(|output| self.scene.default_shown(output));
+        // the open defaults list follows what is the default
+        if let Some(Menu::Defaults { .. }) = &self.panel.menu {
+            let m = self.defaults_menu();
+            if self.panel.menu.as_ref() != Some(&m) {
+                self.panel.menu = Some(m);
+            }
+        }
         self.panel.layer(width, dpi);
         self.panel.menu_layer(width, dpi);
         let left = format!(
@@ -507,6 +561,12 @@ impl App {
                 && *k == d.dev.key
             {
                 sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (d.x + l.x) * v.s + v.x, y: (d.y + l.y) * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha: 1.0 });
+            }
+            if let Some((k, at, l)) = &self.found
+                && *k == d.dev.key
+            {
+                let alpha = (1.0 - at.elapsed().as_secs_f32() / FOUND.as_secs_f32()).clamp(0.0, 1.0);
+                sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (d.x + l.x) * v.s + v.x, y: (d.y + l.y) * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha });
             }
             for l in d.layers() {
                 sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (d.x + l.x) * v.s + v.x, y: (d.y + l.y) * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha: 1.0 });
@@ -573,14 +633,17 @@ impl App {
                 }
             }
         }
-        self.animating = moving || self.view_to.is_some() || self.drag.is_some() || self.rescale_at.is_some() || self.notice.is_some() || faces_waiting || self.scene.noting() || (self.scene.hover != Hover::None && self.tip.is_none() && now - self.hover_since < 2 * TIP_DELAY);
+        if self.found.as_ref().is_some_and(|(_, at, _)| at.elapsed() > FOUND) {
+            self.found = None;
+        }
+        self.animating = self.found.is_some() || moving || self.view_to.is_some() || self.drag.is_some() || self.rescale_at.is_some() || self.notice.is_some() || faces_waiting || self.scene.noting() || (self.scene.hover != Hover::None && self.tip.is_none() && now - self.hover_since < 2 * TIP_DELAY);
     }
 
     /// The glow around the device under the pointer (not while dragging, nor over its switches).
     fn update_glow(&mut self) {
         let w = self.world(self.cursor);
         let key = match &self.scene.hover {
-            Hover::Device(k) if self.drag.is_none() && self.scene.switch_at(w.0, w.1).is_none() && self.scene.profile_key_at(w.0, w.1).is_none() && !self.scene.mix_control_at(w.0, w.1) => k.clone(),
+            Hover::Device(k) if self.drag.is_none() && self.scene.switch_at(w.0, w.1).is_none() && self.scene.profile_key_at(w.0, w.1).is_none() && self.scene.port_key_at(w.0, w.1).is_none() && !self.scene.mix_control_at(w.0, w.1) => k.clone(),
             _ => {
                 self.glow = None;
                 return;
@@ -619,15 +682,16 @@ impl App {
             self.profiles = None;
             return;
         };
-        let (Some(card), Some([kx, ky, kw, kh])) = (&d.dev.card, d.geo.profile) else {
+        let (Some(card), Some([kx, ky, kw, kh])) = (&d.dev.card, if pl.port { d.geo.port } else { d.geo.profile }) else {
             self.profiles = None;
             return;
         };
+        let sections = if pl.port { self.scene.port_sections(self.scene.devs.iter().position(|x| x.dev.key == pl.key).unwrap_or(0)) } else { Vec::new() };
         let mut h = std::hash::DefaultHasher::new();
-        std::hash::Hash::hash(&(format!("{card:?}"), &d.dev.name, dpi.to_bits()), &mut h);
+        std::hash::Hash::hash(&(format!("{card:?}{sections:?}"), &d.dev.name, dpi.to_bits()), &mut h);
         let sig = std::hash::Hasher::finish(&h);
         if pl.sig != sig || pl.layer.is_none() {
-            let (layer, hits) = panel::profile_menu(&d.dev.name, card, dpi);
+            let (layer, hits) = if pl.port { panel::port_menu(&d.dev.name, &sections, dpi) } else { panel::profile_menu(&d.dev.name, card, dpi) };
             (pl.sig, pl.layer, pl.hits) = (sig, Some(layer), hits);
         }
         // under the key, its left edge at the key's, kept inside the window
@@ -655,9 +719,25 @@ impl App {
                     }
                     return;
                 }
+                Some(ProfileHit::Port(gi, index)) => {
+                    if let Some(di) = self.scene.devs.iter().position(|d| d.dev.key == pl.key) {
+                        self.scene.set_port(di, gi, index);
+                    }
+                    return self.after_patch();
+                }
+                Some(ProfileHit::Latency(gi, step)) => {
+                    // 1 ms a click, 10 with Shift
+                    if let Some(di) = self.scene.devs.iter().position(|d| d.dev.key == pl.key) {
+                        let now = self.scene.port_sections(di).into_iter().find(|s| s.0 == gi).map_or(0, |s| s.4);
+                        let ms = if self.mods.shift_key() { 10 } else { 1 };
+                        self.scene.set_latency(di, gi, now + step * ms * 1_000_000);
+                    }
+                    return self.after_patch();
+                }
                 Some(ProfileHit::Inside) => return,
                 None => {
-                    let own = self.scene.profile_key_at(w.0, w.1).is_some_and(|i| self.scene.devs[i].dev.key == pl.key);
+                    let key_at = if pl.port { self.scene.port_key_at(w.0, w.1) } else { self.scene.profile_key_at(w.0, w.1) };
+                    let own = key_at.is_some_and(|i| self.scene.devs[i].dev.key == pl.key);
                     self.profiles = None;
                     self.redraw();
                     if own {
@@ -678,11 +758,26 @@ impl App {
                         self.save_preset(&typed);
                     }
                 }
+                Some(MenuHit::Default(output, i)) => {
+                    if let Some(e) = self.scene.ends(output).get(i).cloned() {
+                        self.scene.set_default(output, &e.2);
+                        self.after_patch();
+                        // shown at once; PipeWire's answer follows
+                        if let Some(Menu::Defaults { out, inp, .. }) = &mut self.panel.menu {
+                            *(if output { out } else { inp }) = Some(i);
+                        }
+                    }
+                }
+                Some(MenuHit::Find(output, i)) => {
+                    if let Some(e) = self.scene.ends(output).get(i).cloned() {
+                        self.find_device(e.0);
+                    }
+                }
                 Some(MenuHit::Inside) => {}
                 None => {
                     // the keys that open it toggle it themselves
                     let key = self.panel.hit(self.cursor.0 / dpi, self.cursor.1 / dpi);
-                    if !matches!(key, Some(Key::Save | Key::Load | Key::Lcd)) {
+                    if !matches!(key, Some(Key::Save | Key::Load | Key::Lcd | Key::Defaults)) {
                         self.panel.menu = None;
                         self.redraw();
                         return;
@@ -753,9 +848,9 @@ impl App {
             self.scene.toggle_mute(at);
             return self.after_patch();
         }
-        // a card's PROFILE key opens its list under it
-        if let Some(di) = self.scene.profile_key_at(w.0, w.1) {
-            self.profiles = Some(ProfileList { key: self.scene.devs[di].dev.key.clone(), sig: 0, layer: None, hits: Vec::new(), at: (0.0, 0.0) });
+        // a card's PROFILE and PORT keys open their lists under them
+        if let Some((di, port)) = self.scene.port_key_at(w.0, w.1).map(|di| (di, true)).or(self.scene.profile_key_at(w.0, w.1).map(|di| (di, false))) {
+            self.profiles = Some(ProfileList { key: self.scene.devs[di].dev.key.clone(), port, sig: 0, layer: None, hits: Vec::new(), at: (0.0, 0.0) });
             self.redraw();
             return;
         }
@@ -917,6 +1012,8 @@ impl App {
                     match h {
                         ProfileHit::Row(_) => (CursorIcon::Pointer, "click: switch to this profile".to_owned()),
                         ProfileHit::Codec(_) => (CursorIcon::Pointer, "click: switch to this codec".to_owned()),
+                        ProfileHit::Port(..) => (CursorIcon::Pointer, "click: use this port".to_owned()),
+                        ProfileHit::Latency(..) => (CursorIcon::Pointer, "click: 1 ms earlier or later (Shift: 10 ms); this port's sound is delayed by its latency offset".to_owned()),
                         ProfileHit::Inside => (CursorIcon::Default, String::new()),
                     }
                 } else if self.cursor.1 < top {
@@ -960,7 +1057,7 @@ impl App {
             CursorIcon::Crosshair
         } else if self.scene.knob_at(w.0, w.1).is_some() || self.scene.bal_at(w.0, w.1).is_some_and(|(di, gi)| self.scene.devs[di].bal(gi) == BalKnob::Out) {
             CursorIcon::NsResize
-        } else if self.scene.switch_at(w.0, w.1).is_some() || self.scene.profile_key_at(w.0, w.1).is_some() || self.scene.mix_control_at(w.0, w.1) {
+        } else if self.scene.switch_at(w.0, w.1).is_some() || self.scene.profile_key_at(w.0, w.1).is_some() || self.scene.port_key_at(w.0, w.1).is_some() || self.scene.mix_control_at(w.0, w.1) {
             CursorIcon::Pointer
         } else if self.scene.device_at(w.0, w.1).is_some() && !self.panel.state.locked {
             CursorIcon::Move
@@ -998,6 +1095,13 @@ impl App {
             KeyCode::KeyA => self.panel_key(Key::Arrange),
             KeyCode::KeyL => self.panel_key(Key::Lock),
             KeyCode::KeyG => self.panel_key(Key::Align),
+            // the groups' colours, on and off
+            KeyCode::KeyK => {
+                self.scene.accents = !self.scene.accents;
+                self.say(if self.scene.accents { "Group colours on" } else { "Group colours off" });
+                self.save_settings();
+                self.redraw();
+            }
             KeyCode::KeyC => self.panel_key(Key::Cables),
             KeyCode::KeyR => self.panel_key(if self.scene.rack { Key::Desk } else { Key::Rack }),
             KeyCode::Escape => {

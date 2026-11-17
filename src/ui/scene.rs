@@ -18,7 +18,7 @@ use crate::config::Preset;
 
 /// A change to the links, for undo and redo: the (output, input) port pairs added and removed.
 type Change = (Vec<(u32, u32)>, Vec<(u32, u32)>);
-use crate::graph::{Device, Dir, Graph, Media, VOL_MAX, volume_text};
+use crate::graph::{Device, Dir, Graph, Media, PortChoice, VOL_MAX, volume_text};
 use crate::pw::{Cmd, Event};
 
 /// What the pointer is over, for highlighting cords and the tooltip.
@@ -165,13 +165,14 @@ fn bal_text(volume: f64, balance: f64) -> String {
 }
 
 /// What a meter measures for: a device's SIG meter, or a group's own one (`group`). One measuring
-/// what a recording app takes in (`input`) has its channels mapped to the app's (`map`), and the
-/// app's gain applied: that happens inside the app, where no meter can listen.
+/// what a recording app takes in has its channels mapped to the app's (`map`). `gain_of`: the
+/// group whose volume the level is multiplied by, where no meter can listen after it (inside a
+/// recording app; an output's monitor, which carries its sound before its volume).
 #[derive(Clone, Debug, PartialEq)]
 struct MeterFor {
     dev: String,
     group: Option<usize>,
-    input: Option<usize>,
+    gain_of: Option<usize>,
     map: Vec<usize>,
 }
 
@@ -220,6 +221,8 @@ pub struct Scene {
     /// devices dragged on the desk stick to each other's edges and centres (else they go
     /// exactly where they are held)
     pub align: bool,
+    /// each group on a band of its kind's colour (K)
+    pub accents: bool,
     rack_scale: f64,
     /// pictures of a mono, a stereo and a MIDI jack and of the plus badge, laid over the faces
     pub jack_pics: [Option<Layer>; 4],
@@ -298,6 +301,7 @@ impl Scene {
             guides: Vec::new(),
             snapped: (None, None),
             align: true,
+            accents: true,
             rack_scale: 0.0,
             jack_pics: [None, None, None, None],
             pics_scale: 0.0,
@@ -673,16 +677,24 @@ impl Scene {
         for d in &self.devs {
             let own = face::own_meters(&d.dev);
             for (gi, g) in d.dev.groups.iter().enumerate() {
-                let group = (own && g.mix.is_some()).then_some(gi);
-                if g.meter {
+                let gain = g.mix.as_ref().is_some_and(|m| m.gain);
+                // an output's monitor: its own output's volume applies, and in a frame of its own
+                // the level shows on that output (PLAYBACK)
+                let output = (g.label == "MONITOR")
+                    .then(|| d.dev.groups.iter().position(|o| o.dir == Dir::In && o.mix.is_some() && o.ports.first().map(|p| p.node) == g.ports.first().map(|p| p.node)))
+                    .flatten();
+                let group = if own { g.mix.is_some().then_some(gi).or(output) } else { None };
+                // what an app sends, what an output plays; and, in a frame of its own, what a
+                // device's input takes in (after its gain, which the card applies)
+                if g.meter || (own && gain && g.dir == Dir::Out) {
                     let ports: Vec<u32> = g.ports.iter().map(|p| p.id).collect();
                     let targets = g.ports.iter().map(|p| (p.node, p.id)).collect();
                     let channels = g.ports.iter().map(|p| if p.channel.is_empty() { "MONO".to_owned() } else { p.channel.clone() }).collect();
                     let map = (0..g.ports.len()).collect();
-                    want.insert(ports, (MeterFor { dev: d.dev.key.clone(), group, input: None, map }, targets, channels));
+                    want.insert(ports, (MeterFor { dev: d.dev.key.clone(), group, gain_of: output, map }, targets, channels));
                 }
                 // a recording app: what comes into it, every port linked to each of its channels
-                if g.dir == Dir::In && g.mix.is_some() {
+                if g.dir == Dir::In && gain {
                     let mut targets = Vec::new();
                     let mut map = Vec::new();
                     for (c, p) in g.ports.iter().enumerate() {
@@ -700,7 +712,7 @@ impl Scene {
                     let mut key: Vec<u32> = targets.iter().map(|(_, p)| *p).collect();
                     key.extend([u32::MAX, g.ports[0].node]);
                     let channels = (0..targets.len()).map(|i| format!("AUX{i}")).collect();
-                    want.insert(key, (MeterFor { dev: d.dev.key.clone(), group, input: Some(gi), map }, targets, channels));
+                    want.insert(key, (MeterFor { dev: d.dev.key.clone(), group, gain_of: Some(gi), map }, targets, channels));
                 }
             }
         }
@@ -870,7 +882,7 @@ impl Scene {
                 let c = m.map.get(i).copied().unwrap_or(i).min(1);
                 ch[c] = ch[c].max(*v);
             }
-            if let Some(gi) = m.input {
+            if let Some(gi) = m.gain_of {
                 let gains = index.get(m.dev.as_str()).and_then(|&di| {
                     let d = &self.devs[di];
                     let (vol, bal, mute) = d.mix(gi)?;
@@ -1058,13 +1070,13 @@ impl Scene {
         };
         for (di, d) in self.devs.iter_mut().enumerate() {
             let mut h = DefaultHasher::new();
-            (&d.counts, &d.split, &d.dev.name, &d.dev.model, d.dev.state, self.rack_w.map(f64::to_bits)).hash(&mut h);
+            (&d.counts, &d.split, &d.dev.name, &d.dev.model, d.dev.state, self.rack_w.map(f64::to_bits), self.accents).hash(&mut h);
             d.dev.groups.iter().for_each(|g| g.mix.as_ref().map(|m| m.volumes.len()).hash(&mut h));
             d.defs.iter().for_each(|j| (&j.key, &j.label).hash(&mut h));
             let sig = h.finish();
             let changed = d.face.is_none() || sig != d.face_sig;
             if changed || (d.face_scale != scale && may_rescale()) {
-                let (svg, geo) = face::face(&d.dev, &d.defs, &d.counts, &d.split, self.rack_w);
+                let (svg, geo) = face::face(&d.dev, &d.defs, &d.counts, &d.split, self.rack_w, self.accents);
                 d.geo = geo;
                 let pm = rasterize(&self.opt, &svg, scale);
                 d.face = Some(Layer { id: next_id(), pm, x: -SHADOW, y: -SHADOW, w: d.geo.w + 2.0 * SHADOW, h: DEV_H + 2.0 * SHADOW });
@@ -1319,15 +1331,22 @@ impl Scene {
         let Some(d) = self.devs.get_mut(di) else { return };
         let Some(g) = d.dev.groups.get(gi) else { return };
         let Some(m) = &g.mix else { return };
-        let input = g.dir == Dir::In;
+        let input = m.gain;
         // only a stereo pair has a balance
         let balance = if g.stereo { balance } else { 0.0 };
         let was = d.mix(gi);
-        self.outbox.push(Cmd::SetMix { node: m.node, volumes: m.volumes_for(volume, balance), mute });
+        let volumes = m.volumes_for(volume, balance);
+        // a card keeps it on its port in use (as pavucontrol sets it); an app or a virtual device
+        // on its node
+        self.outbox.push(match m.route {
+            Some(r) => Cmd::SetRoute { device: r.card, index: r.index, route_device: r.device, volumes: Some(volumes), mute: Some(mute), latency_ns: None },
+            None => Cmd::SetMix { node: m.node, volumes, mute },
+        });
         d.mix_local.insert(gi, (Instant::now(), (volume, balance, mute)));
         let mut note = if was.is_some_and(|(_, b, _)| (b - balance).abs() > 0.001) { bal_text(volume, balance) } else { vol_text(volume, mute, input) };
         if face::own_meters(&d.dev) {
-            note = format!("{} {note}", if input { "IN" } else { "OUT" });
+            // which one, by its frame's name: INPUT, OUTPUT, PLAYBACK, CAPTURE
+            note = format!("{} {note}", g.label);
         }
         d.mix_note = Some((Instant::now() + MIX_NOTE, note));
         self.edited = true;
@@ -1348,12 +1367,94 @@ impl Scene {
         self.set_mix(at, vol, bal, !mute);
     }
 
+    /// A card's outputs and inputs with ports to choose from, for its PORT list: group, label,
+    /// ports, the one in use and its latency offset (ns).
+    pub fn port_sections(&self, di: usize) -> Vec<(usize, String, Vec<PortChoice>, Option<u32>, i64)> {
+        let Some(d) = self.devs.get(di) else { return Vec::new() };
+        d.dev
+            .groups
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| g.ports_to.len() > 1)
+            .map(|(gi, g)| {
+                let r = g.mix.as_ref().and_then(|m| m.route);
+                (gi, g.label.clone(), g.ports_to.clone(), r.map(|r| r.index), r.map_or(0, |r| r.latency_ns))
+            })
+            .collect()
+    }
+
+    /// Switches a card's output or input to another of its ports.
+    pub fn set_port(&mut self, di: usize, gi: usize, index: u32) {
+        let Some(d) = self.devs.get_mut(di) else { return };
+        let Some(g) = d.dev.groups.get(gi) else { return };
+        let Some(r) = g.mix.as_ref().and_then(|m| m.route) else { return };
+        if let Some(p) = g.ports_to.iter().find(|p| p.index == index) {
+            d.mix_note = Some((Instant::now() + MIX_NOTE, format!("{}{}", p.description.to_uppercase(), if p.unplugged { " · UNPLUGGED" } else { "" })));
+        }
+        self.outbox.push(Cmd::SetRoute { device: r.card, index, route_device: r.device, volumes: None, mute: None, latency_ns: None });
+        self.edited = true;
+    }
+
+    /// Sets the latency offset of the port a card's output or input uses.
+    pub fn set_latency(&mut self, di: usize, gi: usize, ns: i64) {
+        let Some(d) = self.devs.get_mut(di) else { return };
+        let Some(r) = d.dev.groups.get(gi).and_then(|g| g.mix.as_ref()).and_then(|m| m.route) else { return };
+        d.mix_note = Some((Instant::now() + MIX_NOTE, format!("LATENCY {:+} ms", ns as f64 / 1e6)));
+        self.outbox.push(Cmd::SetRoute { device: r.card, index: r.index, route_device: r.device, volumes: None, mute: None, latency_ns: Some(ns) });
+        self.edited = true;
+    }
+
+    /// The default output's or input's node.name, as PipeWire's "default" metadata says.
+    pub fn default_name(&self, output: bool) -> Option<String> {
+        let v = self.settings.get(if output { "default.audio.sink" } else { "default.audio.source" })?;
+        json_name(v)
+    }
+
+    /// The outputs (devices' sinks) or inputs (their sources) that can be the default: device,
+    /// group, node.name, and how the list names it (with the group's when a device has several).
+    pub fn ends(&self, output: bool) -> Vec<(usize, usize, String, String)> {
+        let mut v = Vec::new();
+        for (di, d) in self.devs.iter().enumerate() {
+            let of = |g: &crate::graph::Group| g.mix.as_ref().is_some_and(|m| m.gain != output && (g.dir == Dir::In) == output);
+            let n = d.dev.groups.iter().filter(|g| of(g)).count();
+            for (gi, g) in d.dev.groups.iter().enumerate().filter(|(_, g)| of(g)) {
+                let Some(name) = g.ports.first().and_then(|p| self.graph.node_name(p.node)) else { continue };
+                let shown = if n > 1 { format!("{} · {}", d.dev.name, g.label) } else { d.dev.name.clone() };
+                v.push((di, gi, name.to_owned(), shown));
+            }
+        }
+        v
+    }
+
+    /// How the panel names the default output or input: the device (and group), or NONE.
+    pub fn default_shown(&self, output: bool) -> String {
+        match self.default_name(output) {
+            Some(n) => self.ends(output).into_iter().find(|e| e.2 == n).map_or(n, |e| e.3),
+            None => "NONE".to_owned(),
+        }
+    }
+
+    /// Makes a node the default output or input (PipeWire moves the apps that follow the default).
+    pub fn set_default(&mut self, output: bool, node_name: &str) {
+        let key = if output { "default.configured.audio.sink" } else { "default.configured.audio.source" };
+        self.outbox.push(Cmd::SetDefault { key: key.into(), node_name: node_name.to_owned() });
+        if let Some(d) = self.ends(output).into_iter().find(|e| e.2 == node_name).and_then(|e| self.devs.get_mut(e.0)) {
+            d.mix_note = Some((Instant::now() + MIX_NOTE, if output { "DEFAULT OUTPUT" } else { "DEFAULT INPUT" }.into()));
+        }
+        self.edited = true;
+    }
+
     /// The LCD still shows a volume just changed: it has to be drawn again when that ends.
     pub fn noting(&self) -> bool {
         self.devs.iter().any(|d| d.mix_note.as_ref().is_some_and(|(until, _)| Instant::now() < *until + Duration::from_millis(50)))
     }
 
     /// The SPLIT/JOIN switch under a world point: (device, group).
+    /// The device whose PORT key is under a world point.
+    pub fn port_key_at(&self, x: f64, y: f64) -> Option<usize> {
+        self.devs.iter().enumerate().rev().find_map(|(di, d)| d.geo.port.filter(|[kx, ky, kw, kh]| x >= d.x + kx && x <= d.x + kx + kw && y >= d.y + ky && y <= d.y + ky + kh).map(|_| di))
+    }
+
     /// The device whose PROFILE key is under a world point.
     pub fn profile_key_at(&self, x: f64, y: f64) -> Option<usize> {
         self.devs.iter().enumerate().rev().find_map(|(di, d)| d.geo.profile.filter(|[kx, ky, kw, kh]| x >= d.x + kx && x <= d.x + kx + kw && y >= d.y + ky && y <= d.y + ky + kh).map(|_| di))
@@ -1540,7 +1641,19 @@ impl Scene {
             .flat_map(|d| d.dev.groups.iter().enumerate().filter_map(move |(gi, g)| Some(((d.dev.key.clone(), g.label.clone(), if g.dir == Dir::In { "in" } else { "out" }.to_owned()), d.mix(gi)?))))
             .collect();
         let profiles = self.devs.iter().filter_map(|d| Some((d.dev.key.clone(), d.dev.card.as_ref()?.profile()?.description.clone()))).collect();
-        Preset { name: name.to_owned(), nodes: self.graph.node_names(), links, split, pos: self.positions().into_iter().collect(), mix, profiles }
+        let dir_of = |g: &crate::graph::Group| if g.dir == Dir::In { "in" } else { "out" }.to_owned();
+        let ports = self
+            .devs
+            .iter()
+            .flat_map(|d| {
+                d.dev.groups.iter().filter_map(move |g| {
+                    let r = g.mix.as_ref()?.route?;
+                    let p = g.ports_to.iter().find(|p| p.index == r.index)?;
+                    Some(((d.dev.key.clone(), g.label.clone(), dir_of(g)), (p.description.clone(), r.latency_ns)))
+                })
+            })
+            .collect();
+        Preset { name: name.to_owned(), nodes: self.graph.node_names(), links, split, pos: self.positions().into_iter().collect(), mix, profiles, ports, default_out: self.default_name(true), default_in: self.default_name(false) }
     }
 
     /// Puts a preset in place: split switches, device places and links, as one undo step. Links
@@ -1572,6 +1685,27 @@ impl Scene {
                 && Some(pr.index) != c.current
             {
                 self.outbox.push(Cmd::SetProfile { device: c.id, index: pr.index });
+            }
+        }
+        // cards' ports (by name) and their latency offsets, and the default output and input
+        for d in &self.devs {
+            for g in &d.dev.groups {
+                let key = (d.dev.key.clone(), g.label.clone(), if g.dir == Dir::In { "in" } else { "out" }.to_owned());
+                if let (Some((name, ns)), Some(r)) = (p.ports.get(&key), g.mix.as_ref().and_then(|m| m.route))
+                    && let Some(want) = g.ports_to.iter().find(|x| x.description == *name)
+                    && (want.index != r.index || *ns != r.latency_ns)
+                {
+                    self.outbox.push(Cmd::SetRoute { device: r.card, index: want.index, route_device: r.device, volumes: None, mute: None, latency_ns: Some(*ns) });
+                }
+            }
+        }
+        for (output, want) in [(true, &p.default_out), (false, &p.default_in)] {
+            if let Some(n) = want
+                && self.default_name(output).as_ref() != Some(n)
+                && self.ends(output).iter().any(|e| e.2 == *n)
+            {
+                let key = if output { "default.configured.audio.sink" } else { "default.configured.audio.source" };
+                self.outbox.push(Cmd::SetDefault { key: key.into(), node_name: n.clone() });
             }
         }
         for di in 0..self.devs.len() {
@@ -1830,7 +1964,7 @@ impl Scene {
             && let Some((v, _, mute)) = self.devs[di].mix(gi)
         {
             let g = &self.devs[di].dev.groups[gi];
-            let input = g.dir == Dir::In;
+            let input = g.mix.as_ref().is_some_and(|m| m.gain);
             return format!("{} · {} · {}  ·  drag up/down: {}, Shift: fine · wheel: 5% (Shift: 1%) · double-click: 100%", self.devs[di].dev.name, g.label, vol_text(v, mute, input), if input { "gain" } else { "volume" });
         }
         if let Some((di, gi)) = self.bal_at(x, y)
@@ -1848,6 +1982,10 @@ impl Scene {
             && let Some((_, _, mute)) = self.devs[di].mix(gi)
         {
             return format!("{} · {}  ·  click: {}", self.devs[di].dev.name, self.devs[di].dev.groups[gi].label, if mute { "unmute" } else { "mute" });
+        }
+        if let Some(di) = self.port_key_at(x, y) {
+            let now: Vec<String> = self.port_sections(di).iter().filter_map(|(_, label, ports, cur, _)| Some(format!("{label}: {}", ports.iter().find(|p| Some(p.index) == *cur)?.description))).collect();
+            return format!("{}  ·  click: choose its ports and latency offset", now.join(" · "));
         }
         if let Some(di) = self.profile_key_at(x, y) {
             let card = self.devs[di].dev.card.as_ref().map_or(String::new(), |c| c.summary());
@@ -1885,6 +2023,22 @@ impl Scene {
             }
         }
     }
+}
+
+/// The name in a default's value: `{ "name": "bluez_output.C9_C1_60_6A_FD_E3.1" }`.
+fn json_name(v: &str) -> Option<String> {
+    let rest = &v[v.find("\"name\"")? + 6..];
+    let rest = &rest[rest.find('"')? + 1..];
+    let mut out = String::new();
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(out),
+            '\\' => out.push(chars.next()?),
+            c => out.push(c),
+        }
+    }
+    None
 }
 
 /// The hover highlight one frame on, towards `to`: up quickly, down a little slower, and still
@@ -2041,6 +2195,7 @@ mod tests {
             stereo: true,
             meter: false,
             mix: None,
+            ports_to: Vec::new(),
         };
         let mut s = desk(&[(0.0, 0.0, 300.0), (400.0, 0.0, 300.0), (400.0, 200.0, 300.0)]);
         for (d, g) in s.devs.iter_mut().zip([group("OUTPUT", Dir::Out, [1, 2]), group("PLAYBACK", Dir::In, [3, 4]), group("PLAYBACK", Dir::In, [5, 6])]) {
@@ -2068,6 +2223,13 @@ mod tests {
     }
 
     /// The hover highlight eases to where it is going and stays there, frame after frame.
+    #[test]
+    fn a_default_is_read_by_its_node_name() {
+        assert_eq!(json_name(r#"{ "name": "bluez_output.C9_C1_60_6A_FD_E3.1" }"#).as_deref(), Some("bluez_output.C9_C1_60_6A_FD_E3.1"));
+        assert_eq!(json_name(r#"{"name":"a \"quoted\" sink"}"#).as_deref(), Some(r#"a "quoted" sink"#));
+        assert_eq!(json_name("{}"), None);
+    }
+
     #[test]
     fn the_hover_highlight_stays_still_once_there() {
         for to in [0.0, 1.0] {

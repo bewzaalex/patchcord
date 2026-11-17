@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::{Duration, Instant};
 
-use crate::pw::{Avail, Event, Kind, METER_PREFIX, Profile, Props};
+use crate::pw::{Avail, Event, Kind, METER_PREFIX, Profile, Props, Route};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Dir {
@@ -48,8 +48,31 @@ pub struct Group {
     pub stereo: bool,
     /// its signal is measured for the device's meter (what a sink plays, what an app sends)
     pub meter: bool,
-    /// an app stream's volume (its output) or gain (its input), set beside its jacks
+    /// an app stream's volume (its output) or gain (its input), or a device's (its output or
+    /// input), set beside its jacks
     pub mix: Option<Mix>,
+    /// a card's output or input: the ports it can use (Speakers, Headphones…), in PipeWire's order
+    pub ports_to: Vec<PortChoice>,
+}
+
+/// One of the ports a card's output or input can use.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PortChoice {
+    /// the card's route index
+    pub index: u32,
+    pub description: String,
+    /// nothing is plugged into it
+    pub unplugged: bool,
+}
+
+/// Where a card keeps an output's or input's volume: the port in use (its route) on the card.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RouteRef {
+    pub card: u32,
+    pub index: u32,
+    /// the card's sink or source the port is in use for (`card.profile.device`)
+    pub device: i32,
+    pub latency_ns: i64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -89,6 +112,10 @@ pub struct Mix {
     pub node: u32,
     pub volumes: Vec<f32>,
     pub mute: bool,
+    /// what comes in (an app that records, a microphone): its knob is a GAIN
+    pub gain: bool,
+    /// a card's output or input: its volume is on the port in use, not on the node
+    pub route: Option<RouteRef>,
 }
 
 impl Mix {
@@ -229,6 +256,8 @@ pub struct Graph {
     profiles: HashMap<u32, (Vec<Profile>, Option<u32>)>,
     /// each app stream's channel volumes and mute, by node
     mix: HashMap<u32, (Vec<f32>, bool)>,
+    /// each card's ports, and the ones in use (with the card's real volumes), by device
+    routes: HashMap<u32, (Vec<Route>, Vec<Route>)>,
     pub synced: bool,
 }
 
@@ -265,6 +294,10 @@ impl Graph {
                 let new = (list.clone(), *current);
                 self.profiles.insert(*id, new.clone()) != Some(new)
             }
+            Event::Routes { id, all, active } => {
+                let new = (all.clone(), active.clone());
+                self.routes.insert(*id, new.clone()) != Some(new)
+            }
             Event::Mix { id, volumes, mute } => {
                 let new = (volumes.clone(), *mute);
                 self.mix.insert(*id, new.clone()) != Some(new)
@@ -272,6 +305,7 @@ impl Graph {
             Event::Removed(id) => {
                 self.born.remove(id);
                 self.mix.remove(id);
+                self.routes.remove(id);
                 self.profiles.remove(id);
                 self.info.remove(id);
                 self.state.remove(id);
@@ -301,6 +335,11 @@ impl Graph {
 
     fn props(&self, id: u32) -> Option<&Props> {
         self.objects.get(&id).map(|(_, p)| p)
+    }
+
+    /// A node's `node.name`, as PipeWire's defaults name it.
+    pub fn node_name(&self, node: u32) -> Option<&str> {
+        self.props(node)?.get("node.name").map(|s| s.as_str())
     }
 
     pub fn links(&self) -> Vec<Link> {
@@ -507,6 +546,26 @@ impl Graph {
             || (class.starts_with("Stream/") && (!self.info.contains(&node) || self.born.get(&node).is_some_and(|t| t.elapsed() < YOUNG)))
     }
 
+    /// A card's output or input node: its port in use (route), if the card has one for it.
+    fn route_of(&self, np: &Props, dir: Dir) -> Option<(RouteRef, Route)> {
+        let card: u32 = np.get("device.id")?.parse().ok()?;
+        let device: i32 = np.get("card.profile.device")?.parse().ok()?;
+        let (_, active) = self.routes.get(&card)?;
+        let r = active.iter().find(|r| r.device == Some(device) && r.output == (dir == Dir::In))?;
+        Some((RouteRef { card, index: r.index, device, latency_ns: r.latency_ns }, r.clone()))
+    }
+
+    /// The ports a card's output or input can use now: of its direction, for its device, in the
+    /// card's profile.
+    fn ports_to(&self, r: RouteRef, dir: Dir) -> Vec<PortChoice> {
+        let profile = self.profiles.get(&r.card).and_then(|(_, cur)| *cur).map(|p| p as i32);
+        let Some((all, _)) = self.routes.get(&r.card) else { return Vec::new() };
+        all.iter()
+            .filter(|x| x.output == (dir == Dir::In) && x.devices.contains(&r.device) && profile.is_none_or(|p| x.profiles.contains(&p)))
+            .map(|x| PortChoice { index: x.index, description: x.description.clone(), unplugged: x.available == Avail::No })
+            .collect()
+    }
+
     /// Nodes still too young to show.
     pub fn young(&self) -> usize {
         self.born.values().filter(|t| t.elapsed() < YOUNG).count()
@@ -546,11 +605,23 @@ impl Graph {
             // what a sink plays (its monitor) and what an app sends; never a microphone, which
             // recording would switch on (and a Bluetooth headset into its low-quality mode)
             let meter = ps[0].media == Media::Audio && ((mon && class.ends_with("Sink")) || (dir == Dir::Out && class.starts_with("Stream/Output/Audio")));
-            // a stream's volume goes with its own ports: what it plays, or what it records
-            let mix = (ps[0].media == Media::Audio && !mon && ((dir == Dir::Out && class == "Stream/Output/Audio") || (dir == Dir::In && class == "Stream/Input/Audio")))
-                .then(|| self.mix.get(&node).map(|(volumes, mute)| Mix { node, volumes: volumes.clone(), mute: *mute }))
-                .flatten();
-            groups.push(Group { label: label.into(), dir, ports: ps, stereo, meter, mix });
+            // a volume goes with its own ports: what an app plays or records, what a device's output
+            // plays (its PLAYBACK) or its input takes in (its CAPTURE)
+            let audio = ps[0].media == Media::Audio && !mon;
+            let stream = (dir == Dir::Out && class == "Stream/Output/Audio") || (dir == Dir::In && class == "Stream/Input/Audio");
+            let device = (dir == Dir::In && class == "Audio/Sink") || (dir == Dir::Out && class == "Audio/Source");
+            let gain = dir == Dir::In && stream || dir == Dir::Out && device;
+            // a card keeps it on its port in use; a virtual device (and an app) on the node
+            let route = if audio && device { self.route_of(np, dir) } else { None };
+            let mix = if !audio || !(stream || device) {
+                None
+            } else if let Some((r, active)) = &route {
+                active.volumes.clone().map(|volumes| Mix { node, volumes, mute: active.mute, gain, route: Some(*r) })
+            } else {
+                self.mix.get(&node).map(|(volumes, mute)| Mix { node, volumes: volumes.clone(), mute: *mute, gain, route: None })
+            };
+            let ports_to = route.map(|(r, _)| self.ports_to(r, dir)).unwrap_or_default();
+            groups.push(Group { label: label.into(), dir, ports: ps, stereo, meter, mix, ports_to });
         }
         groups
     }
@@ -642,7 +713,7 @@ mod tests {
 
     #[test]
     fn volume_and_balance_read_as_in_pavucontrol() {
-        let m = Mix { node: 1, volumes: vec![0.85f32.powi(3), (0.85f32 * 0.6).powi(3)], mute: false };
+        let m = Mix { node: 1, volumes: vec![0.85f32.powi(3), (0.85f32 * 0.6).powi(3)], mute: false, gain: false, route: None };
         assert!((m.volume() - 0.85).abs() < 1e-4);
         assert!((m.balance() + 0.4).abs() < 1e-4, "{}", m.balance());
         let v = m.volumes_for(m.volume(), m.balance());

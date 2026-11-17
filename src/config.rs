@@ -17,6 +17,8 @@ pub struct Settings {
     pub lock: bool,
     /// devices dragged on the desk line up with each other
     pub align: bool,
+    /// each group of jacks on a band of its kind's colour
+    pub accents: bool,
     pub rack: bool,
     /// window size in logical pixels
     pub window: Option<(u32, u32)>,
@@ -30,7 +32,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { cables: 0, lock: false, align: true, rack: false, window: None, preset: None, pos: BTreeMap::new(), rack_order: Vec::new() }
+        Settings { cables: 0, lock: false, align: true, accents: true, rack: false, window: None, preset: None, pos: BTreeMap::new(), rack_order: Vec::new() }
     }
 }
 
@@ -51,6 +53,12 @@ pub struct Preset {
     pub mix: BTreeMap<(String, String, String), (f64, f64, bool)>,
     /// each card's profile, by device key: its full name, as PipeWire describes it
     pub profiles: BTreeMap<String, String>,
+    /// each card output's or input's port (its full name) and latency offset in ns, by device
+    /// key, group label and "in" or "out"
+    pub ports: BTreeMap<(String, String, String), (String, i64)>,
+    /// the default output and input, by node.name
+    pub default_out: Option<String>,
+    pub default_in: Option<String>,
 }
 
 const CABLES: [&str; 3] = ["show", "fade", "hide"];
@@ -120,6 +128,7 @@ impl Settings {
                 "cables" => s.cables = CABLES.iter().position(|c| *c == v).unwrap_or(0) as u8,
                 "lock" => s.lock = on(&v),
                 "align" => s.align = on(&v),
+                "accents" => s.accents = on(&v),
                 "layout" => s.rack = v == "rack",
                 "window" => {
                     s.window = v.split_once('x').and_then(|(w, h)| Some((w.trim().parse().ok()?, h.trim().parse().ok()?)));
@@ -140,7 +149,7 @@ impl Settings {
     pub fn save(&self) {
         let mut t = String::from("# Patchcord settings. Written by Patchcord; edit while it is not running.\n");
         let onoff = |b: bool| if b { "on" } else { "off" };
-        t += &format!("cables = {}\nlock = {}\nalign = {}\nlayout = {}\n", CABLES[self.cables.min(2) as usize], onoff(self.lock), onoff(self.align), if self.rack { "rack" } else { "desk" });
+        t += &format!("cables = {}\nlock = {}\nalign = {}\naccents = {}\nlayout = {}\n", CABLES[self.cables.min(2) as usize], onoff(self.lock), onoff(self.align), onoff(self.accents), if self.rack { "rack" } else { "desk" });
         if let Some((w, h)) = self.window {
             t += &format!("window = {w}x{h}\n");
         }
@@ -207,6 +216,19 @@ pub fn load_presets() -> Vec<Preset> {
                     p.profiles.insert(k.trim().to_owned(), name.trim().to_owned());
                 }
             }
+            "port" => {
+                let f = fields(&v);
+                if let [k, g, dir, name, ms] = &f[..]
+                    && let Ok(ms) = ms.parse::<f64>()
+                {
+                    p.ports.insert((k.clone(), g.clone(), dir.clone()), (name.clone(), (ms * 1e6).round() as i64));
+                }
+            }
+            "default" => match v.split_once(" | ") {
+                Some(("out", n)) => p.default_out = Some(n.trim().to_owned()),
+                Some(("in", n)) => p.default_in = Some(n.trim().to_owned()),
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -222,7 +244,9 @@ pub fn save_presets(presets: &[Preset]) {
          # pos   = device | x | y: where a device sits on the desk\n\
          # mix   = device | group | in or out | volume % | balance % (-100 L … 100 R) | mute on or off:\n\
          #         an app stream's volume (or gain, recording)\n\
-         # profile = device | profile: a card's profile, by its full name\n",
+         # profile = device | profile: a card's profile, by its full name\n\
+         # port  = device | group | in or out | port | latency offset in ms: a card's port\n\
+         # default = out or in | node: the default output or input\n",
     );
     for p in presets {
         t += &format!("\n[{}]\n", p.name);
@@ -244,6 +268,15 @@ pub fn save_presets(presets: &[Preset]) {
         for (k, name) in &p.profiles {
             t += &format!("profile = {k} | {name}\n");
         }
+        for ((k, g, dir), (name, ns)) in &p.ports {
+            t += &format!("port = {k} | {g} | {dir} | {name} | {}\n", *ns as f64 / 1e6);
+        }
+        if let Some(n) = &p.default_out {
+            t += &format!("default = out | {n}\n");
+        }
+        if let Some(n) = &p.default_in {
+            t += &format!("default = in | {n}\n");
+        }
     }
     write("presets.txt", &t);
 }
@@ -258,7 +291,7 @@ mod tests {
         // SAFETY: the only test that touches the environment
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
 
-        let mut s = Settings { cables: 2, lock: true, align: false, rack: true, window: Some((1600, 900)), preset: Some("HOME STUDIO".into()), pos: BTreeMap::new(), rack_order: vec!["node:Midi-Bridge".into(), "device:alsa_card.pci-0000_63_00.6".into()] };
+        let mut s = Settings { cables: 2, lock: true, align: false, accents: false, rack: true, window: Some((1600, 900)), preset: Some("HOME STUDIO".into()), pos: BTreeMap::new(), rack_order: vec!["node:Midi-Bridge".into(), "device:alsa_card.pci-0000_63_00.6".into()] };
         s.pos.insert("device:bluez_card.C9_C1_60_6A_FD_E3".into(), (40.0, 214.0));
         s.pos.insert("node:VLC media player (LibVLC 4.0.0-dev)".into(), (-12.0, 388.0));
         s.save();
@@ -275,6 +308,9 @@ mod tests {
             pos: s.pos.clone(),
             mix: BTreeMap::from([(("node:fooyin".into(), "OUTPUT".into(), "out".into()), (0.85, -0.3, false)), (("app:Audacity".into(), "INPUT".into(), "in".into()), (1.2, 0.0, true))]),
             profiles: BTreeMap::from([("device:bluez_card.C9_C1_60_6A_FD_E3".into(), "High Fidelity Playback (A2DP Sink, codec AAC)".into())]),
+            ports: BTreeMap::from([(("device:alsa_card.pci-0000_63_00.6".into(), "PLAYBACK".into(), "in".into()), ("Headphones".into(), 20_500_000))]),
+            default_out: Some("bluez_output.C9_C1_60_6A_FD_E3.1".into()),
+            default_in: Some("alsa_input.pci-0000_63_00.6.analog-stereo".into()),
         };
         let q = Preset { name: "EMPTY".into(), ..Default::default() };
         save_presets(&[p.clone(), q.clone()]);

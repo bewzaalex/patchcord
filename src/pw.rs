@@ -50,6 +50,26 @@ pub struct Profile {
     pub priority: i32,
 }
 
+/// One of a card's ports, as PipeWire calls them routes: where its sound goes (Speakers,
+/// Headphones) or comes from (Internal Microphone). The ones in use (`device` set) carry the
+/// card's real volume, mute and latency offset.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Route {
+    pub index: u32,
+    pub output: bool,
+    /// the card's device (its sink or source, `card.profile.device`) it is in use for
+    pub device: Option<i32>,
+    pub name: String,
+    pub description: String,
+    pub available: Avail,
+    /// the devices and profiles it can be used with
+    pub devices: Vec<i32>,
+    pub profiles: Vec<i32>,
+    pub volumes: Option<Vec<f32>>,
+    pub mute: bool,
+    pub latency_ns: i64,
+}
+
 /// From PipeWire to the app.
 pub enum Event {
     Added { id: u32, kind: Kind, props: Props },
@@ -58,6 +78,8 @@ pub enum Event {
     Info { id: u32, props: Props, state: Option<&'static str> },
     /// A card's profiles (in PipeWire's order) and the one it is in.
     Profiles { id: u32, list: Vec<Profile>, current: Option<u32> },
+    /// A card's ports (`all`, in PipeWire's order) and the ones in use, with their volumes.
+    Routes { id: u32, all: Vec<Route>, active: Vec<Route> },
     /// An app stream's volume (playing) or gain (recording): each channel's, linear as PipeWire
     /// keeps them, and its mute.
     Mix { id: u32, volumes: Vec<f32>, mute: bool },
@@ -83,6 +105,11 @@ pub enum Cmd {
     SetProfile { device: u32, index: u32 },
     /// Set an app stream's channel volumes (linear) and mute.
     SetMix { node: u32, volumes: Vec<f32>, mute: bool },
+    /// Switch card `device`'s sink or source `route_device` to its port `index`, or set that
+    /// port's volumes, mute or latency offset (remembered by PipeWire).
+    SetRoute { device: u32, index: u32, route_device: i32, volumes: Option<Vec<f32>>, mute: Option<bool>, latency_ns: Option<i64> },
+    /// Make a node the default output or input (`default.configured.audio.sink` / `.source`).
+    SetDefault { key: String, node_name: String },
     Quit,
 }
 
@@ -177,6 +204,75 @@ fn profile_param(index: u32) -> Option<Vec<u8>> {
 // keys of a props object (spa/param/props.h)
 const PROP_MUTE: u32 = 0x10004;
 const PROP_CHANNEL_VOLUMES: u32 = 0x10008;
+const PROP_LATENCY_OFFSET: u32 = 0x1000e;
+
+// keys of a route object (spa/param/route.h)
+const ROUTE_INDEX: u32 = 1;
+const ROUTE_DIRECTION: u32 = 2;
+const ROUTE_DEVICE: u32 = 3;
+const ROUTE_NAME: u32 = 4;
+const ROUTE_DESCRIPTION: u32 = 5;
+const ROUTE_AVAILABLE: u32 = 7;
+const ROUTE_PROFILES: u32 = 9;
+const ROUTE_PROPS: u32 = 10;
+const ROUTE_DEVICES: u32 = 11;
+const ROUTE_SAVE: u32 = 13;
+
+/// A route param, as PipeWire sends it.
+fn route_of(pod: &spa::pod::Pod) -> Option<Route> {
+    use spa::pod::{Value, ValueArray};
+    let (_, Value::Object(obj)) = spa::pod::deserialize::PodDeserializer::deserialize_any_from(pod.as_bytes()).ok()? else { return None };
+    let mut r = Route { index: u32::MAX, output: false, device: None, name: String::new(), description: String::new(), available: Avail::Unknown, devices: Vec::new(), profiles: Vec::new(), volumes: None, mute: false, latency_ns: 0 };
+    for prop in obj.properties {
+        match (prop.key, prop.value) {
+            (ROUTE_INDEX, Value::Int(v)) => r.index = v as u32,
+            // SPA_DIRECTION_OUTPUT is 1
+            (ROUTE_DIRECTION, Value::Id(id)) => r.output = id.0 == 1,
+            (ROUTE_DEVICE, Value::Int(v)) => r.device = Some(v),
+            (ROUTE_NAME, Value::String(v)) => r.name = v,
+            (ROUTE_DESCRIPTION, Value::String(v)) => r.description = v,
+            (ROUTE_AVAILABLE, Value::Id(id)) => r.available = [Avail::Unknown, Avail::No, Avail::Yes].get(id.0 as usize).copied().unwrap_or(Avail::Unknown),
+            (ROUTE_PROFILES, Value::ValueArray(ValueArray::Int(v))) => r.profiles = v,
+            (ROUTE_DEVICES, Value::ValueArray(ValueArray::Int(v))) => r.devices = v,
+            (ROUTE_PROPS, Value::Object(props)) => {
+                for p in props.properties {
+                    match (p.key, p.value) {
+                        (PROP_CHANNEL_VOLUMES, Value::ValueArray(ValueArray::Float(v))) if !v.is_empty() => r.volumes = Some(v),
+                        (PROP_MUTE, Value::Bool(m)) => r.mute = m,
+                        (PROP_LATENCY_OFFSET, Value::Long(n)) => r.latency_ns = n,
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    (r.index != u32::MAX).then_some(r)
+}
+
+/// The route param that switches a card's sink or source to a port, or sets its volume, mute or
+/// latency offset, and has PipeWire remember it.
+fn route_param(index: u32, device: i32, volumes: Option<Vec<f32>>, mute: Option<bool>, latency_ns: Option<i64>) -> Option<Vec<u8>> {
+    use spa::pod::{Property, PropertyFlags, Value, ValueArray};
+    let prop = |key, value| Property { key, flags: PropertyFlags::empty(), value };
+    let mut props = Vec::new();
+    if let Some(v) = volumes {
+        props.push(prop(PROP_CHANNEL_VOLUMES, Value::ValueArray(ValueArray::Float(v))));
+    }
+    if let Some(m) = mute {
+        props.push(prop(PROP_MUTE, Value::Bool(m)));
+    }
+    if let Some(n) = latency_ns {
+        props.push(prop(PROP_LATENCY_OFFSET, Value::Long(n)));
+    }
+    let mut properties = vec![prop(ROUTE_INDEX, Value::Int(index as i32)), prop(ROUTE_DEVICE, Value::Int(device))];
+    if !props.is_empty() {
+        properties.push(prop(ROUTE_PROPS, Value::Object(spa::pod::Object { type_: spa::utils::SpaTypes::ObjectParamProps.as_raw(), id: spa::param::ParamType::Route.as_raw(), properties: props })));
+    }
+    properties.push(prop(ROUTE_SAVE, Value::Bool(true)));
+    let obj = spa::pod::Object { type_: spa::utils::SpaTypes::ObjectParamRoute.as_raw(), id: spa::param::ParamType::Route.as_raw(), properties };
+    Some(spa::pod::serialize::PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &Value::Object(obj)).ok()?.0.into_inner())
+}
 
 /// A node's volumes and mute, from its props param (None when it has no channel volumes).
 fn mix_of(pod: &spa::pod::Pod) -> Option<(Vec<f32>, bool)> {
@@ -240,6 +336,8 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
     // devices whose profiles changed and app streams whose volume changed, to ask again
     let stale: Rc<RefCell<Vec<u32>>> = Default::default();
     let meters: Rc<RefCell<HashMap<u32, Meter>>> = Default::default();
+    // the "default" metadata, to set the default output and input
+    let default_md: Rc<std::cell::Cell<Option<u32>>> = Default::default();
 
     let _registry_listener = registry
         .add_listener_local()
@@ -250,12 +348,18 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
             let meters = meters.clone();
             let stale = stale.clone();
             let core = core.clone();
+            let default_md = default_md.clone();
             move |g| {
-                // the "settings" metadata: the clock rate and quantum
+                // the "settings" metadata (the clock rate and quantum) and the "default" one (the
+                // default output and input)
+                let md_name = g.props.and_then(|p| p.get("metadata.name"));
                 if g.type_ == ObjectType::Metadata
-                    && g.props.and_then(|p| p.get("metadata.name")) == Some("settings")
+                    && matches!(md_name, Some("settings" | "default"))
                     && let Ok(md) = registry.bind::<pw::metadata::Metadata, _>(g)
                 {
+                    if md_name == Some("default") {
+                        default_md.set(Some(g.id));
+                    }
                     let ev = events.clone();
                     let l = md
                         .add_listener_local()
@@ -288,8 +392,9 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                         }
                         if let Ok(node) = registry.bind::<pw::node::Node, _>(g) {
                             let ev = events.clone();
-                            // an app that plays or records: its volume and mute, now and whenever they change
-                            let app = props.get("media.class").is_some_and(|c| c == "Stream/Output/Audio" || c == "Stream/Input/Audio");
+                            // an app that plays or records, or a device's output or input: its volume and
+                            // mute, now and whenever they change (a card's real ones are on its routes)
+                            let app = props.get("media.class").is_some_and(|c| matches!(c.as_str(), "Stream/Output/Audio" | "Stream/Input/Audio" | "Audio/Sink" | "Audio/Source"));
                             let mev = events.clone();
                             let stale = stale.clone();
                             let l = node
@@ -329,6 +434,8 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                             let ev = events.clone();
                             // its profiles, as they come (one param each) and whenever they change
                             let profiles: RefCell<(BTreeMap<u32, Profile>, Option<u32>)> = Default::default();
+                            // its ports, and the ones in use by sink or source
+                            let routes: RefCell<(BTreeMap<u32, Route>, BTreeMap<i32, Route>)> = Default::default();
                             let pev = events.clone();
                             let stale = stale.clone();
                             let l = dev
@@ -336,7 +443,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                                 .info(move |info| {
                                     // its profile changed (or what is plugged in): ask again, on the
                                     // next tick (a listener can't reach its own device)
-                                    let profile = |p: &spa::param::ParamInfo| matches!(p.id(), spa::param::ParamType::Profile | spa::param::ParamType::EnumProfile);
+                                    let profile = |p: &spa::param::ParamInfo| matches!(p.id(), spa::param::ParamType::Profile | spa::param::ParamType::EnumProfile | spa::param::ParamType::Route | spa::param::ParamType::EnumRoute);
                                     if info.change_mask().contains(pw::device::DeviceChangeMask::PARAMS) && info.params().iter().any(profile) {
                                         let mut s = stale.borrow_mut();
                                         if !s.contains(&id) {
@@ -346,6 +453,23 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                                     ev.send(Event::Info { id, props: info.props().map(props_of).unwrap_or_default(), state: None })
                                 })
                                 .param(move |_, kind, index, _, pod| {
+                                    if matches!(kind, spa::param::ParamType::EnumRoute | spa::param::ParamType::Route) {
+                                        let Some(r) = pod.and_then(route_of) else { return };
+                                        let mut s = routes.borrow_mut();
+                                        if kind == spa::param::ParamType::EnumRoute {
+                                            if index == 0 {
+                                                s.0.clear();
+                                            }
+                                            s.0.insert(r.index, r);
+                                        } else {
+                                            if index == 0 {
+                                                s.1.clear();
+                                            }
+                                            s.1.insert(r.device.unwrap_or(-1), r);
+                                        }
+                                        pev.send(Event::Routes { id, all: s.0.values().cloned().collect(), active: s.1.values().cloned().collect() });
+                                        return;
+                                    }
                                     let Some(p) = pod.and_then(profile_of) else { return };
                                     let mut s = profiles.borrow_mut();
                                     match kind {
@@ -362,7 +486,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                                     pev.send(Event::Profiles { id, list: s.0.values().cloned().collect(), current: s.1 });
                                 })
                                 .register();
-                            dev.subscribe_params(&[spa::param::ParamType::EnumProfile, spa::param::ParamType::Profile]);
+                            dev.subscribe_params(&[spa::param::ParamType::EnumProfile, spa::param::ParamType::Profile, spa::param::ParamType::EnumRoute, spa::param::ParamType::Route]);
                             bound.borrow_mut().insert(id, (Box::new(dev), Box::new(l)));
                         }
                     }
@@ -465,8 +589,9 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                 let b = bound.borrow();
                 let Some((proxy, _)) = b.get(&id) else { continue };
                 if let Some(dev) = proxy.downcast_ref::<pw::device::Device>() {
-                    dev.enum_params(0, Some(spa::param::ParamType::EnumProfile), 0, u32::MAX);
-                    dev.enum_params(0, Some(spa::param::ParamType::Profile), 0, u32::MAX);
+                    for kind in [spa::param::ParamType::EnumProfile, spa::param::ParamType::Profile, spa::param::ParamType::EnumRoute, spa::param::ParamType::Route] {
+                        dev.enum_params(0, Some(kind), 0, u32::MAX);
+                    }
                 } else if let Some(node) = proxy.downcast_ref::<pw::node::Node>() {
                     node.enum_params(0, Some(spa::param::ParamType::Props), 0, u32::MAX);
                 }
@@ -497,6 +622,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
         let meters = meters.clone();
         let events = events.clone();
         let bound = bound.clone();
+        let default_md = default_md.clone();
         move |cmd| match cmd {
             Cmd::Link { out_node, out_port, in_node, in_port } => {
                 let props = pw::properties::properties! {
@@ -533,6 +659,28 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                         }
                     }
                     _ => events.send(Event::Error(format!("cannot switch the profile of device {device}"))),
+                }
+            }
+            Cmd::SetRoute { device, index, route_device, volumes, mute, latency_ns } => {
+                let b = bound.borrow();
+                let dev = b.get(&device).and_then(|(d, _)| d.downcast_ref::<pw::device::Device>());
+                match (dev, route_param(index, route_device, volumes, mute, latency_ns)) {
+                    (Some(dev), Some(bytes)) => {
+                        if let Some(pod) = spa::pod::Pod::from_bytes(&bytes) {
+                            dev.set_param(spa::param::ParamType::Route, 0, pod);
+                        }
+                    }
+                    _ => events.send(Event::Error(format!("cannot set the port of device {device}"))),
+                }
+            }
+            Cmd::SetDefault { key, node_name } => {
+                let b = bound.borrow();
+                match default_md.get().and_then(|id| b.get(&id)).and_then(|(m, _)| m.downcast_ref::<pw::metadata::Metadata>()) {
+                    Some(md) => {
+                        let name = node_name.replace('\\', "\\\\").replace('"', "\\\"");
+                        md.set_property(0, &key, Some("Spa:String:JSON"), Some(&format!("{{\"name\":\"{name}\"}}")));
+                    }
+                    None => events.send(Event::Error("cannot set the default device".into())),
                 }
             }
             Cmd::SetMix { node, volumes, mute } => {
@@ -617,6 +765,13 @@ fn meter(core: &pw::core::CoreRc, id: u32, channels: &[String]) -> Result<MeterS
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_route_sent_reads_back_the_same() {
+        let bytes = route_param(2, 3, Some(vec![0.25, 0.5]), Some(true), Some(-20_000_000)).expect("serialized");
+        let r = route_of(spa::pod::Pod::from_bytes(&bytes).expect("a pod")).expect("a route");
+        assert_eq!((r.index, r.device, r.volumes, r.mute, r.latency_ns), (2, Some(3), Some(vec![0.25, 0.5]), true, -20_000_000));
+    }
 
     #[test]
     fn a_volume_sent_reads_back_the_same() {

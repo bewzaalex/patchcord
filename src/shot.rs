@@ -139,7 +139,7 @@ fn compose(scene: &Scene, view: View, size: (u32, u32), dpi: f64, held: Option<(
 }
 
 fn new_panel(scene: &Scene) -> Panel {
-    Panel::new(panel::State { rack: scene.rack, locked: false, align: scene.align, cables: 0, sound: false, lcd: ["NO PRESET".into(), "48 kHz · 1024 · 21.3 ms".into()], pressed: None })
+    Panel::new(panel::State { rack: scene.rack, locked: false, align: scene.align, cables: 0, sound: false, defaults: [scene.default_shown(true), scene.default_shown(false)], lcd: ["NO PRESET".into(), "48 kHz · 1024 · 21.3 ms".into()], pressed: None })
 }
 
 fn status(scene: &Scene, width: f64, dpi: f64) -> Layer {
@@ -156,7 +156,7 @@ fn status(scene: &Scene, width: f64, dpi: f64) -> Layer {
 /// Bluetooth card's). "only" shows just the devices whose names start with those, arranged by
 /// signal flow; "size" makes the picture W×H pixels, with the devices fitted into it.
 pub fn render(path: &str, opts: &[String]) -> Result<(), String> {
-    let menu = opts.iter().map(String::as_str).find(|o| matches!(*o, "save" | "presets"));
+    let menu = opts.iter().map(String::as_str).find(|o| matches!(*o, "save" | "presets" | "defaults"));
     let opt = |name: &str| opts.iter().find_map(|o| o.strip_prefix(name)?.strip_prefix('='));
     let (mut scene, conn, synced) = live_scene()?;
     start_meters(&mut scene, &conn);
@@ -248,6 +248,7 @@ pub fn render(path: &str, opts: &[String]) -> Result<(), String> {
     panel.menu = match menu {
         Some("save") => Some(panel::Menu::Save { text: "LATE NIGHT".into(), placeholder: String::new() }),
         Some("presets") => Some(panel::Menu::Load { names: presets.iter().map(|p| p.name.clone()).collect(), current: (!presets.is_empty()).then_some(0), confirm: None }),
+        Some("defaults") => Some(crate::ui::app::defaults_menu(&scene)),
         _ => None,
     };
     let status = status(&scene, w as f64 / s, s);
@@ -258,6 +259,18 @@ pub fn render(path: &str, opts: &[String]) -> Result<(), String> {
         && let (Some(card), Some([kx, ky, _, kh])) = (&d.dev.card, d.geo.profile)
     {
         let (l, _) = panel::profile_menu(&d.dev.name, card, s);
+        if let Some(pm) = &l.pm {
+            let (px, py) = ((d.x + kx) * view.s + view.x, (d.y + ky + kh) * view.s + view.y + 4.0 * s);
+            out.draw_pixmap(px.round() as i32, py.round() as i32, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+        }
+    }
+    // a card's port list, open under its PORT key
+    if let Some(name) = opt("port").or(opts.iter().any(|o| o == "port").then_some(""))
+        && let Some(di) = scene.devs.iter().position(|d| d.geo.port.is_some() && d.dev.name.starts_with(name))
+        && let Some([kx, ky, _, kh]) = scene.devs[di].geo.port
+    {
+        let d = &scene.devs[di];
+        let (l, _) = panel::port_menu(&d.dev.name, &scene.port_sections(di), s);
         if let Some(pm) = &l.pm {
             let (px, py) = ((d.x + kx) * view.s + view.x, (d.y + ky + kh) * view.s + view.y + 4.0 * s);
             out.draw_pixmap(px.round() as i32, py.round() as i32, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);

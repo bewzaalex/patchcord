@@ -7,7 +7,7 @@ use super::face::paint_uri;
 use super::print::{SECTION, SMALL};
 use super::scene::{Layer, next_id, rasterize};
 use super::text;
-use crate::graph::Card;
+use crate::graph::{Card, PortChoice};
 
 /// height of the top panel; its shadow falls a little below
 pub const H: f64 = 64.0;
@@ -31,6 +31,8 @@ pub enum Key {
     Fit,
     Sound,
     Lcd,
+    /// the screen of the default output and input
+    Defaults,
 }
 
 impl Key {
@@ -53,6 +55,7 @@ impl Key {
             Key::Fit => "Fit everything in the window (F)",
             Key::Sound => "Plug sounds",
             Key::Lcd => "Presets",
+            Key::Defaults => "The default output and input, where new apps play and record: click to choose others or find them",
         }
     }
 }
@@ -69,6 +72,8 @@ pub struct State {
     /// 0…100
     pub sound: bool,
     pub lcd: [String; 2],
+    /// the defaults screen's lines: the default output's name and the default input's
+    pub defaults: [String; 2],
     pub pressed: Option<Key>,
 }
 
@@ -89,6 +94,8 @@ pub enum Menu {
     Save { text: String, placeholder: String },
     /// `confirm`: the row whose delete button was pressed once and now asks "DEL?"
     Load { names: Vec<String>, current: Option<usize>, confirm: Option<usize> },
+    /// the outputs and inputs that can be the default, by name, and which ones are
+    Defaults { outs: Vec<String>, ins: Vec<String>, out: Option<usize>, inp: Option<usize> },
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -96,11 +103,18 @@ pub enum MenuHit {
     Row(usize),
     Delete(usize),
     Save,
+    /// an output (true) or input to make the default, or to find on the desk
+    Default(bool, usize),
+    Find(bool, usize),
     /// somewhere else on the drop-down
     Inside,
 }
 
 const MENU_W: f64 = 300.0;
+/// the defaults' drop-down is wider: device names are long
+const DEFAULTS_W: f64 = 360.0;
+/// the defaults' screen on the panel
+const DEFAULTS_LCD_W: f64 = 250.0;
 /// width of a card's profile list
 pub const PROFILE_W: f64 = 360.0;
 
@@ -111,6 +125,9 @@ pub enum ProfileHit {
     Row(usize),
     /// a codec of the profile in use: that profile's index
     Codec(u32),
+    /// in a card's port list: a port (group, route index) and a latency step (group, ms)
+    Port(usize, u32),
+    Latency(usize, i64),
     Inside,
 }
 
@@ -174,6 +191,71 @@ pub fn profile_menu(title: &str, card: &Card, dpi: f64) -> (Layer, Vec<(ProfileH
         }
     }
     let h = y + 8.0;
+    hits.push((ProfileHit::Inside, [0.0, 0.0, w, h]));
+    let svg = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" font-family="Noto Sans Mono" font-weight="bold"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f7bb62"/><stop offset="1" stop-color="#e58f2c"/></linearGradient></defs><rect width="{w}" height="{h}" rx="5" fill="#121214"/><rect x="3" y="3" width="{}" height="{}" rx="3" fill="url(#g)"/>{o}</svg>"##,
+        w - 6.0,
+        h - 6.0
+    );
+    (Layer { id: next_id(), pm: rasterize(&text::svg_options(), &svg, dpi), x: 0.0, y: 0.0, w, h }, hits)
+}
+
+/// A card's port list, under its PORT key, as amber as the profile list: for each of its outputs
+/// and inputs with several ports, its name (when it has several), the ports (the one in use dark,
+/// the unplugged dimmed and marked), and its latency offset with − and + (10 ms steps with Shift).
+pub fn port_menu(title: &str, sections: &[(usize, String, Vec<PortChoice>, Option<u32>, i64)], dpi: f64) -> (Layer, Vec<(ProfileHit, [f64; 4])>) {
+    const INK: &str = "#3a2408";
+    let w = PROFILE_W;
+    let name = title.to_uppercase();
+    let name = if name.chars().count() > 37 { format!("{}…", name.chars().take(36).collect::<String>().trim_end()) } else { name };
+    let mut o = format!(r#"<text x="12" y="20" font-size="10" letter-spacing="1.5" fill="{INK}" opacity=".7">{} · PORT</text>"#, esc(&name));
+    let mut hits = Vec::new();
+    let mut y = 30.0;
+    for (gi, label, ports, current, latency) in sections {
+        if sections.len() > 1 {
+            let _ = write!(o, r#"<text x="12" y="{}" font-size="10" letter-spacing="1.5" fill="{INK}" opacity=".7">{}</text>"#, y + 12.0, esc(label));
+            y += 18.0;
+        }
+        for p in ports {
+            let cur = *current == Some(p.index);
+            let ink = if cur { "#f7bb62" } else { INK };
+            if cur {
+                let _ = write!(o, r#"<rect x="3" y="{y}" width="{}" height="24" fill="{INK}"/>"#, w - 6.0);
+            }
+            let room = if p.unplugged { 37 } else { 47 };
+            let shown: String = if p.description.chars().count() > room { format!("{}…", p.description.chars().take(room - 1).collect::<String>()) } else { p.description.clone() };
+            let _ = write!(o, r#"<text x="12" y="{}" font-size="11.5" fill="{ink}" opacity="{}" xml:space="preserve">{}</text>"#, y + 16.0, if p.unplugged && !cur { 0.55 } else { 1.0 }, esc(&shown));
+            if p.unplugged {
+                let tw = 70.0;
+                let _ = write!(
+                    o,
+                    r#"<rect x="{}" y="{}" width="{tw}" height="14" rx="2" fill="none" stroke="{ink}" stroke-opacity=".7"/><text x="{}" y="{}" font-size="8.5" letter-spacing=".8" fill="{ink}" opacity=".8" text-anchor="middle">UNPLUGGED</text>"#,
+                    w - 12.0 - tw,
+                    y + 5.0,
+                    w - 12.0 - tw / 2.0,
+                    y + 15.0
+                );
+            }
+            hits.push((ProfileHit::Port(*gi, p.index), [0.0, y, w, 24.0]));
+            y += 24.0;
+        }
+        // its latency offset: − value +
+        y += 4.0;
+        let _ = write!(o, r#"<path d="M12,{y} H{}" stroke="{INK}" stroke-opacity=".35"/>"#, w - 12.0);
+        let ly = y + 6.0;
+        let _ = write!(o, r#"<text x="12" y="{}" font-size="10" letter-spacing=".8" fill="{INK}" opacity=".75">LATENCY OFFSET</text>"#, ly + 13.0);
+        let ms = *latency as f64 / 1e6;
+        let value = if ms.fract().abs() < 1e-9 { format!("{ms:.0} ms") } else { format!("{ms:.1} ms") };
+        let (bm, bp) = (w - 12.0 - 22.0 - 70.0 - 22.0, w - 12.0 - 22.0);
+        for (bx, sign) in [(bm, "−"), (bp, "+")] {
+            let _ = write!(o, r##"<rect x="{bx}" y="{ly}" width="22" height="18" rx="3" fill="{INK}"/><text x="{}" y="{}" font-size="12" fill="#f7bb62" text-anchor="middle">{sign}</text>"##, bx + 11.0, ly + 13.5);
+        }
+        let _ = write!(o, r#"<text x="{}" y="{}" font-size="11.5" fill="{INK}" text-anchor="middle">{value}</text>"#, bm + 22.0 + 35.0, ly + 13.5);
+        hits.push((ProfileHit::Latency(*gi, -1), [bm, ly, 22.0, 18.0]));
+        hits.push((ProfileHit::Latency(*gi, 1), [bp, ly, 22.0, 18.0]));
+        y = ly + 26.0;
+    }
+    let h = y + 4.0;
     hits.push((ProfileHit::Inside, [0.0, 0.0, w, h]));
     let svg = format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" font-family="Noto Sans Mono" font-weight="bold"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f7bb62"/><stop offset="1" stop-color="#e58f2c"/></linearGradient></defs><rect width="{w}" height="{h}" rx="5" fill="#121214"/><rect x="3" y="3" width="{}" height="{}" rx="3" fill="url(#g)"/>{o}</svg>"##,
@@ -265,11 +347,17 @@ impl Panel {
         std::hash::Hash::hash(&(menu, width.to_bits(), dpi.to_bits()), &mut h);
         let sig = std::hash::Hasher::finish(&h);
         if self.menu_layer.as_ref().is_none_or(|(s, _)| *s != sig) {
-            let (x, y) = (width - 18.0 - MENU_W, H + 4.0);
+            // under its screen: the defaults' under theirs, the presets' against the right edge
+            let mw = if matches!(menu, Menu::Defaults { .. }) { DEFAULTS_W } else { MENU_W };
+            let x = match (menu, self.rect(Key::Defaults)) {
+                (Menu::Defaults { .. }, Some([dx, ..])) => dx.min(width - 6.0 - mw).max(6.0),
+                _ => width - 18.0 - mw,
+            };
+            let y = H + 4.0;
             let (svg, mh, rects) = menu_svg(menu);
-            self.menu_rects = std::iter::once((MenuHit::Inside, [x, y, MENU_W, mh])).chain(rects.into_iter().map(|(h, [rx, ry, rw, rh])| (h, [x + rx, y + ry, rw, rh]))).collect();
+            self.menu_rects = std::iter::once((MenuHit::Inside, [x, y, mw, mh])).chain(rects.into_iter().map(|(h, [rx, ry, rw, rh])| (h, [x + rx, y + ry, rw, rh]))).collect();
             let pm = rasterize(&text::svg_options(), &svg, dpi);
-            self.menu_layer = Some((sig, Layer { id: next_id(), pm, x, y, w: MENU_W, h: mh }));
+            self.menu_layer = Some((sig, Layer { id: next_id(), pm, x, y, w: mw, h: mh }));
         }
         self.menu_layer.as_ref().map(|(_, l)| l)
     }
@@ -356,8 +444,38 @@ impl Panel {
 
         group(&mut o, &mut rects, &mut x, &[(Key::Arrange, None, None), (Key::Fit, None, None), (Key::Sound, None, Some(st.sound))], "VIEW");
 
-        // the LCD, against the right edge, as wide as there is room for
+        // the LCD, against the right edge, as wide as there is room for; left of it, when there is
+        // room for both, the screen of the default output and input
+        let screen = |o: &mut String, lx: f64, lw: f64, lines: [&str; 2], bold2: bool| {
+            let chars = ((lw - 24.0) / 6.95) as usize;
+            let line = |t: &str| esc(&t.chars().take(chars).collect::<String>());
+            let _ = write!(
+                o,
+                r##"<rect x="{}" y="{}" width="{}" height="50" rx="6" fill="#fff" opacity=".2"/><rect x="{}" y="{}" width="{}" height="48" rx="5" fill="#121214"/>
+<rect x="{lx}" y="9" width="{lw}" height="42" rx="4" fill="url(#gPanelLcd)"/><rect x="{lx}" y="9" width="{lw}" height="42" rx="4" fill="none" stroke="#783200" stroke-opacity=".35" stroke-width="3"/>
+<g font-family="Noto Sans Mono" font-size="11.5" fill="#3a2408" xml:space="preserve"><text x="{}" y="26">{}</text><text x="{}" y="43" font-weight="{}">{}</text></g>"##,
+                lx - 4.0,
+                5.0,
+                lw + 8.0,
+                lx - 3.0,
+                6.0,
+                lw + 6.0,
+                lx + 12.0,
+                line(lines[0]),
+                lx + 12.0,
+                if bold2 { "bold" } else { "normal" },
+                line(lines[1])
+            );
+        };
+        let room = w - 18.0 - x;
+        if room >= 150.0 + 14.0 + DEFAULTS_LCD_W {
+            let lw = (room - 14.0 - DEFAULTS_LCD_W).min(340.0);
+            let dx = w - 18.0 - lw - 14.0 - DEFAULTS_LCD_W;
+            screen(&mut o, dx, DEFAULTS_LCD_W, [&format!("OUT ▸ {}", st.defaults[0]), &format!("IN  ▸ {}", st.defaults[1])], true);
+            rects.push((Key::Defaults, [dx, 9.0, DEFAULTS_LCD_W, 42.0]));
+        }
         let lw = (w - 18.0 - x).min(340.0);
+        let lw = if rects.iter().any(|(k, _)| *k == Key::Defaults) { (room - 14.0 - DEFAULTS_LCD_W).min(340.0) } else { lw };
         if lw >= 150.0 {
             let lx = w - 18.0 - lw;
             let chars = ((lw - 24.0) / 6.95) as usize;
@@ -414,7 +532,7 @@ fn menu_svg(menu: &Menu) -> (String, f64, Vec<(MenuHit, [f64; 4])>) {
     const INK: &str = "#3a2408";
     let mut o = String::new();
     let mut rects = Vec::new();
-    let w = MENU_W;
+    let w = if matches!(menu, Menu::Defaults { .. }) { DEFAULTS_W } else { MENU_W };
     let h;
     let title = |o: &mut String, t: &str| {
         let _ = write!(o, r#"<text x="12" y="20" font-size="10" letter-spacing="1.5" fill="{INK}" opacity=".7">{t}</text>"#);
@@ -438,6 +556,41 @@ fn menu_svg(menu: &Menu) -> (String, f64, Vec<(MenuHit, [f64; 4])>) {
             }
             let _ = write!(o, r##"<rect x="{}" y="30" width="62" height="26" rx="3" fill="{INK}"/><text x="{}" y="48" font-size="12" fill="#f7bb62" text-anchor="middle">SAVE</text>"##, w - 74.0, w - 43.0);
             rects.push((MenuHit::Save, [w - 74.0, 30.0, 62.0, 26.0]));
+        }
+        Menu::Defaults { outs, ins, out, inp } => {
+            let mut y = 8.0;
+            for (output, names, cur, head) in [(true, outs, out, "DEFAULT OUTPUT · NEW APPS PLAY HERE"), (false, ins, inp, "DEFAULT INPUT · NEW APPS RECORD HERE")] {
+                let _ = write!(o, r#"<text x="12" y="{}" font-size="10" letter-spacing="1.5" fill="{INK}" opacity=".7">{head}</text>"#, y + 12.0);
+                y += 22.0;
+                if names.is_empty() {
+                    let _ = write!(o, r#"<text x="12" y="{}" font-size="12" font-weight="normal" fill="{INK}" opacity=".7">none</text>"#, y + 16.0);
+                    y += 24.0;
+                }
+                for (i, name) in names.iter().enumerate() {
+                    let on = *cur == Some(i);
+                    let ink = if on { "#f7bb62" } else { INK };
+                    if on {
+                        let _ = write!(o, r#"<rect x="3" y="{y}" width="{}" height="24" fill="{INK}"/>"#, w - 6.0);
+                    }
+                    let shown: String = if name.chars().count() > 42 { format!("{}…", name.chars().take(41).collect::<String>()) } else { name.clone() };
+                    let _ = write!(o, r#"<text x="12" y="{}" font-size="12" fill="{ink}" xml:space="preserve">{}</text>"#, y + 16.5, esc(&shown));
+                    // find it on the desk: a crosshair
+                    let (cx, cy) = (w - 20.0, y + 12.0);
+                    let _ = write!(
+                        o,
+                        r#"<g stroke="{ink}" stroke-width="1.6" fill="none" opacity=".8"><circle cx="{cx}" cy="{cy}" r="5"/><path d="M{},{cy} h4 M{},{cy} h4 M{cx},{} v4 M{cx},{} v4"/></g>"#,
+                        cx - 9.0,
+                        cx + 5.0,
+                        cy - 9.0,
+                        cy + 5.0
+                    );
+                    rects.push((MenuHit::Find(output, i), [w - 40.0, y, 40.0, 24.0]));
+                    rects.push((MenuHit::Default(output, i), [0.0, y, w - 40.0, 24.0]));
+                    y += 24.0;
+                }
+                y += 6.0;
+            }
+            h = y + 2.0;
         }
         Menu::Load { names, current, confirm } => {
             title(&mut o, "PRESETS");

@@ -33,8 +33,10 @@ pub const LCD_W: f64 = IDW - 3.0;
 pub fn lcd_h(card: bool) -> f64 {
     if card { 46.0 } else { 57.0 }
 }
-/// a card's PROFILE key, under its LCD (centred, clear of the corner screws)
+/// a card's PROFILE key, under its LCD (centred, clear of the corner screws); with a PORT key
+/// beside it, the two share the width
 const KEY_W: f64 = 92.0;
+const KEY_W2: f64 = 84.0;
 const KEY_Y: f64 = 107.0;
 const KEY_H: f64 = 14.0;
 
@@ -109,6 +111,8 @@ pub struct Geometry {
     pub grille: Option<(f64, f64)>,
     /// a card's PROFILE key (x, y, w, h)
     pub profile: Option<[f64; 4]>,
+    /// beside it, the PORT key of a card whose output or input has ports to choose from
+    pub port: Option<[f64; 4]>,
     /// the controls of each app stream, by group
     pub mix: Vec<(usize, MixGeo)>,
 }
@@ -149,6 +153,27 @@ pub enum BalKnob {
 fn vol_angle(v: f64) -> f64 {
     -135.0 + 270.0 * v.clamp(0.0, VOL_MAX) / VOL_MAX
 }
+
+/// Each kind of group has its colour, on a band behind its name and a thin line around it, as
+/// the sections of a hardware effect: muted, with light lettering on the band.
+fn accent(dev: &Device, gi: usize) -> &'static str {
+    let g = &dev.groups[gi];
+    match g.label.as_str() {
+        _ if g.ports.first().is_some_and(|p| p.media == Media::Midi) => "#8f3f63",
+        // what an output plays, to record it
+        "MONITOR" => "#5d5390",
+        // a device's output: speakers, headphones, HDMI
+        "PLAYBACK" => "#2e8580",
+        // a device's input: a microphone
+        "CAPTURE" => "#3a6596",
+        // what an app plays, what it records
+        _ if g.dir == Dir::Out => "#b45a2e",
+        _ => "#a8862c",
+    }
+}
+
+/// The lettering on a coloured band.
+const BAND_INK: &str = "#f3efe6";
 
 /// The width of a group's controls, its meter included.
 fn mix_w(dev: &Device, gi: usize) -> f64 {
@@ -274,8 +299,14 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
     let natural = natural_w(dev, jd, counts, rack);
     let w = rack_w.map_or(natural, |r| r.max(natural));
     let mx = w - ear - PAD - 22.0;
-    let profile = dev.card.is_some().then(|| [ear + PAD + (IDW - KEY_W) / 2.0, KEY_Y, KEY_W, KEY_H]);
-    let mut geo = Geometry { w, jacks: vec![(0.0, 0.0); jd.len()], switches: Vec::new(), left: ear, groups: vec![(0.0, 0.0, 0.0); dev.groups.len()], meter: mx, sig: !own_meters(dev), grille: None, profile, mix: Vec::new() };
+    let ports = dev.card.is_some() && dev.groups.iter().any(|g| g.ports_to.len() > 1);
+    let (profile, port) = if ports {
+        let x = ear + PAD + (IDW - 2.0 * KEY_W2 - 6.0) / 2.0;
+        (Some([x, KEY_Y, KEY_W2, KEY_H]), Some([x + KEY_W2 + 6.0, KEY_Y, KEY_W2, KEY_H]))
+    } else {
+        (dev.card.is_some().then(|| [ear + PAD + (IDW - KEY_W) / 2.0, KEY_Y, KEY_W, KEY_H]), None)
+    };
+    let mut geo = Geometry { w, jacks: vec![(0.0, 0.0); jd.len()], switches: Vec::new(), left: ear, groups: vec![(0.0, 0.0, 0.0); dev.groups.len()], meter: mx, sig: !own_meters(dev), grille: None, profile, port, mix: Vec::new() };
     let place = |gi: usize, x: f64, geo: &mut Geometry| -> f64 {
         let (gw, jw) = (group_w(dev, gi, jd, counts), jacks_w(dev, gi, jd, counts));
         let n: usize = jd.iter().enumerate().filter(|(_, j)| j.group == gi).map(|(i, _)| slots(counts[i])).sum();
@@ -299,7 +330,7 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
             geo.mix.push((gi, MixGeo {
                 x: ox,
                 w,
-                input: dev.groups[gi].dir == Dir::In,
+                input: dev.groups[gi].mix.as_ref().is_some_and(|m| m.gain),
                 meter: own_meters(dev).then_some(ox + w + 1.0),
                 knob: (if stereo { ox + 33.0 } else { ox + w / 2.0 }, 60.0),
                 bal: stereo.then_some((ox + 75.0, 56.0)),
@@ -339,16 +370,18 @@ fn polar(x: f64, y: f64, a: f64, r: f64) -> String {
 /// the MUTE key and its own meter's dark LEDs (the knobs and the lit LEDs are pictures of their
 /// own, see `mix_pic`). On an output the knob is the VOLUME it plays at; on an input, the GAIN it
 /// records with, as on a mixer's input channel.
-fn mix_panel(m: &MixGeo, print: &str) -> String {
+fn mix_panel(m: &MixGeo, print: &str, band: bool) -> String {
     let name = if m.input { "GAIN" } else { "VOLUME" };
+    // on a coloured band the heading is in its light lettering, and the groove starts below it
+    let (ink, gy) = if band { (BAND_INK, 40.0) } else { (print, 26.0) };
     let mut s = format!(
-        r#"<path d="M{x},26 V102" stroke="rgba(0,0,0,.45)"/><path d="M{},26 V102" stroke="rgba(255,255,255,.1)"/>{}"#,
+        r#"<path d="M{x},{gy} V102" stroke="rgba(0,0,0,.45)"/><path d="M{},{gy} V102" stroke="rgba(255,255,255,.1)"/>{}"#,
         m.x + 1.0,
-        SECTION.text(m.x + m.w / 2.0, 31.0, print, "middle", &if m.bal.is_some() { format!("{name} · BAL") } else { name.to_owned() }),
+        SECTION.text(m.x + m.w / 2.0, 31.0, ink, "middle", &if m.bal.is_some() { format!("{name} · BAL") } else { name.to_owned() }),
         x = m.x
     );
     if let Some(mx) = m.meter {
-        s += &SMALL.text(mx + 7.0, 31.0, print, "middle", "SIG");
+        s += &SMALL.text(mx + 7.0, 31.0, ink, "middle", "SIG");
         s += &Leds::strip(mx).dark();
     }
     // VOLUME: silence to 153%, a long tick at 100% and red past it (louder than the app plays it:
@@ -485,8 +518,9 @@ pub fn jack_pic(kind: Option<JackKind>) -> String {
 pub const BADGE: (f64, f64) = (11.5, -11.5);
 
 /// The face as an SVG document, `SHADOW` larger on every side than the face itself.
-/// `rack_w`: in a rack, the rack's width (the face gets ears and fills it).
-pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack_w: Option<f64>) -> (String, Geometry) {
+/// `rack_w`: in a rack, the rack's width (the face gets ears and fills it). `accents`: each group
+/// on a band of its kind's colour.
+pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack_w: Option<f64>, accents: bool) -> (String, Geometry) {
     let f = fin(dev.finish);
     let rack = rack_w.is_some();
     let ear = if rack { EAR } else { 0.0 };
@@ -497,27 +531,38 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
     let mut body = String::new();
     for (gi, g) in dev.groups.iter().enumerate() {
         let (x, gw, jw) = geo.groups[gi];
+        let acc = accents.then(|| accent(dev, gi));
+        let ink = if acc.is_some() { BAND_INK } else { f.print };
         let _ = write!(
             body,
-            r#"<rect x="{x}" y="18" width="{gw}" height="92" rx="6" fill="rgba(0,0,0,.15)" stroke="rgba(0,0,0,.3)"/><path d="M{},110.6 h{}" stroke="rgba(255,255,255,.14)"/>{}"#,
+            r#"<rect x="{x}" y="18" width="{gw}" height="92" rx="6" fill="rgba(0,0,0,.15)" stroke="rgba(0,0,0,.3)"/><path d="M{},110.6 h{}" stroke="rgba(255,255,255,.14)"/>"#,
             x + 6.0,
             gw - 12.0,
-            SECTION.text(x + 8.0, 31.0, f.print, "start", &g.label)
         );
+        // the band behind its name, rounded at the top like the frame, and a line of its colour
+        if let Some(c) = acc {
+            let _ = write!(
+                body,
+                r#"<path d="M{x},36 V24 a6,6 0 0 1 6,-6 H{} a6,6 0 0 1 6,6 V36 Z" fill="{c}"/><path d="M{x},36.5 H{}" stroke="rgba(0,0,0,.35)"/><rect x="{}" y="18.6" width="{}" height="90.8" rx="5.6" fill="none" stroke="{c}" stroke-width="1.2" opacity=".9"/>"#,
+                x + gw - 6.0,
+                x + gw,
+                x + 0.6,
+                gw - 1.2
+            );
+        }
+        body.push_str(&SECTION.text(x + 8.0, 31.0, ink, "start", &g.label));
         let tx = x + jw - 30.0;
         if g.dir == Dir::In {
             let _ = write!(
                 body,
-                r#"<rect x="{tx}" y="22.5" width="23" height="11" rx="2" fill="none" stroke="{}" stroke-width=".9"/>{}"#,
-                f.print,
-                SMALL.text(tx + 11.5, 31.0, f.print, "middle", "IN")
+                r#"<rect x="{tx}" y="22.5" width="23" height="11" rx="2" fill="none" stroke="{ink}" stroke-width=".9"/>{}"#,
+                SMALL.text(tx + 11.5, 31.0, ink, "middle", "IN")
             );
         } else {
             let _ = write!(
                 body,
-                r#"<rect x="{tx}" y="22.5" width="23" height="11" rx="2" fill="{}"/>{}"#,
-                f.print,
-                SMALL.text(tx + 11.5, 31.0, f.inv, "middle", "OUT")
+                r#"<rect x="{tx}" y="22.5" width="23" height="11" rx="2" fill="{ink}"/>{}"#,
+                SMALL.text(tx + 11.5, 31.0, acc.unwrap_or(f.inv), "middle", "OUT")
             );
         }
         let rows = stacked(dev, gi, jd);
@@ -550,7 +595,7 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
         );
     }
     for (_, m) in &geo.mix {
-        body.push_str(&mix_panel(m, f.print));
+        body.push_str(&mix_panel(m, f.print, accents));
     }
     let mut grille = String::new();
     if let Some((gx0, gx1)) = geo.grille {
@@ -564,16 +609,18 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
 
     let r = if rack { 3.0 } else { 12.0 };
     let title = format!(r#"<text x="{x0}" y="33" font-size="{TITLE}">{}</text>"#, esc(&fit_title(&dev.name, IDW - 4.0)));
-    // a card's PROFILE key: a dark key with a small arrow, like the SPLIT switches
-    let key = geo.profile.map_or(String::new(), |[kx, ky, kw, kh]| {
-        let tx = kx + kw / 2.0 - 6.0;
+    // a card's PROFILE and PORT keys: dark keys with a small arrow, like the SPLIT switches
+    let key_pic = |[kx, ky, kw, kh]: [f64; 4], name: &str| {
+        let tw = SWITCH.width(name);
+        let tx = kx + kw / 2.0 - 3.0;
         format!(
             r##"<rect x="{kx}" y="{ky}" width="{kw}" height="{kh}" rx="2.5" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/>{}<path d="M{},{} l3.2,0 l-1.6,2.2 z" fill="#e6e7e8"/>"##,
-            SWITCH.text(tx, ky + 9.8, "#e6e7e8", "middle", "PROFILE"),
-            tx + 24.0,
+            SWITCH.text(tx, ky + 9.8, "#e6e7e8", "middle", name),
+            tx + tw / 2.0 + 3.0,
             ky + 6.0
         )
-    });
+    };
+    let key = geo.profile.map_or(String::new(), |r| key_pic(r, "PROFILE")) + &geo.port.map_or(String::new(), |r| key_pic(r, "PORT"));
     let screws: String = if rack {
         String::new()
     } else {

@@ -41,19 +41,39 @@
     font: bold 11.5px ui-monospace, "DejaVu Sans Mono", monospace; line-height: 1.35;
     background: linear-gradient(#f7bb62, #e58f2c); box-shadow: 0 0 0 3px #121214, 0 0 0 4px rgba(255,255,255,.2), inset 0 0 12px rgba(120,50,0,.35); }
   .lcd div { overflow: hidden; text-overflow: ellipsis; }
+  /* the defaults: where new apps play and record, a setting of the whole system */
+  #dlcd { width: 250px; }
+  #dlcd + .lcd { margin-left: 14px; }
+  #dlcd div:last-child { font-weight: bold; }
+  #dlcd i { font-style: normal; opacity: .65; }
+  #defaults { right: auto; top: calc(100% + 6px); width: 330px; }
+  #defaults h2 { margin-top: 6px; }
+  #defaults .row button { border: 0; background: none; color: inherit; font: inherit; font-size: 14px; line-height: 1; cursor: pointer; opacity: .6; padding: 0 2px; }
+  #defaults .row button:hover { opacity: 1; }
+  #defaults .row b { font-size: 10px; letter-spacing: .8px; opacity: .75; }
+  .dev.find { animation: find 1.6s ease-out; }
+  @keyframes find { 0%, 40% { box-shadow: 0 0 0 3px rgba(255,190,90,.95), 0 0 34px rgba(255,170,60,.6); } 100% { box-shadow: 0 0 0 0 rgba(255,190,90,0), 0 0 0 rgba(255,170,60,0); } }
   .lcd div:last-child { font-weight: normal; }
   /* the preset list drops out of the LCD and looks like more of it */
-  #presets, #profiles { position: absolute; right: 18px; top: calc(100% + 6px); width: 300px; padding: 8px 0; border-radius: 4px; z-index: 5;
+  #presets, #profiles, #ports, #defaults { position: absolute; right: 18px; top: calc(100% + 6px); width: 300px; padding: 8px 0; border-radius: 4px; z-index: 5;
     color: #3a2408; font: bold 12px ui-monospace, "DejaVu Sans Mono", monospace; white-space: nowrap;
     background: linear-gradient(#f7bb62, #e58f2c); box-shadow: 0 0 0 3px #121214, 0 0 0 4px rgba(255,255,255,.2), 0 14px 30px rgba(0,0,0,.6); }
-  #presets.hide, #profiles.hide { display: none; }
-  #presets h2, #profiles h2 { margin: 0 12px 6px; font-size: 10px; letter-spacing: 1.5px; opacity: .7; }
-  #presets .row, #profiles .row { display: flex; align-items: center; gap: 8px; padding: 4px 12px; cursor: pointer; }
-  #presets .row:hover, #profiles .row:hover { background: rgba(58,36,8,.15); }
-  #presets .row.cur, #profiles .row.cur { background: #3a2408; color: #f7bb62; }
-  #presets .row span, #profiles .row span { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  #presets.hide, #profiles.hide, #ports.hide, #defaults.hide { display: none; }
+  #presets h2, #profiles h2, #ports h2, #defaults h2 { margin: 0 12px 6px; font-size: 10px; letter-spacing: 1.5px; opacity: .7; }
+  #presets .row, #profiles .row, #ports .row, #defaults .row { display: flex; align-items: center; gap: 8px; padding: 4px 12px; cursor: pointer; }
+  #presets .row:hover, #profiles .row:hover, #ports .row:hover, #defaults .row:hover { background: rgba(58,36,8,.15); }
+  #presets .row.cur, #profiles .row.cur, #ports .row.cur, #defaults .row.cur { background: #3a2408; color: #f7bb62; }
+  #presets .row span, #profiles .row span, #ports .row span, #defaults .row span { flex: 1; overflow: hidden; text-overflow: ellipsis; }
   /* the profile list drops out of a card's PROFILE key: same amber as the LCDs */
   #profiles { right: auto; top: auto; width: 330px; z-index: 6; }
+  /* a device output's ports, out of its PORT key: the same amber list, and the latency offset */
+  #ports { right: auto; top: auto; width: 300px; z-index: 6; }
+  #ports .row.off span { opacity: .5; }
+  #ports .row i { font-style: normal; font-size: 9px; letter-spacing: .8px; padding: 0 4px; border-radius: 2px; outline: 1px solid currentColor; opacity: .7; }
+  #ports .lat { display: flex; align-items: center; gap: 6px; margin: 6px 12px 2px; padding-top: 7px; border-top: 1px solid rgba(58,36,8,.35); }
+  #ports .lat b { flex: 1; font-size: 10px; letter-spacing: .8px; opacity: .75; }
+  #ports .lat button { font: inherit; font-weight: bold; width: 22px; height: 18px; padding: 0; border: 0; border-radius: 3px; background: #3a2408; color: #f7bb62; cursor: pointer; }
+  #ports .lat span { min-width: 56px; text-align: center; }
   #profiles .row b { min-width: 58px; font-size: 10px; letter-spacing: .8px; opacity: .75; }
   #profiles .row.cur b { opacity: 1; }
   #profiles .row.off span, #profiles .row.off b { opacity: .5; }
@@ -117,10 +137,13 @@
     <button class="key ico on" id="align" title="Line devices up while dragging them on the desk; off: place them freely (G)"><span class="led"></span><svg viewBox="0 0 24 24"><path d="M4 3v18"/><rect x="7.5" y="5" width="12" height="5" rx="1"/><rect x="7.5" y="14" width="7.5" height="5" rx="1"/></svg></button></div><label>LAYOUT</label></div>
   <div class="grp"><svg id="cablesKnob" width="96" height="60" viewBox="-48 -26.5 96 60" style="cursor:pointer;touch-action:none"></svg></div>
   <div class="grp"><div class="keys"><button class="key ico" id="arrange" title="Arrange by signal flow"><svg viewBox="0 0 24 24"><rect x="3.5" y="4" width="7" height="5" rx="1"/><rect x="3.5" y="15" width="7" height="5" rx="1"/><rect x="13.5" y="9.5" width="7" height="5" rx="1"/><path d="M10.5 6.5h1.5v11h-1.5M12 12h1.5"/></svg></button><button class="key ico" id="fit" title="Fit to window (F)"><svg viewBox="0 0 24 24"><path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/></svg></button><button class="key ico" id="snd" title="Plug sounds"><span class="led"></span><svg viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7"/><path d="M19 6a8.5 8.5 0 0 1 0 12"/></svg></button></div><label>VIEW</label></div>
+  <div class="lcd" id="dlcd" title="Default output and input: where new apps play and record"><div id="dout"></div><div id="din"></div></div>
+  <div id="defaults" class="hide"></div>
   <div class="lcd" id="lcd" title="Presets"><div id="lcd1"></div><div id="lcd2"></div></div>
   <div id="presets" class="hide"></div>
 </header>
 <div id="profiles" class="hide"></div>
+<div id="ports" class="hide"></div>
 
 <div id="stage">
   <div id="world"><div id="rack"></div></div>
@@ -138,6 +161,9 @@
       <tr><td>BAL knob</td><td>a stereo app's balance, L to R: press to pop it out, then turn it; press again to push it in</td></tr>
       <tr><td>SIG in a frame</td><td>on an app that records and plays, each frame has its own meter: what it records, what it plays</td></tr>
       <tr><td>MUTE key</td><td>silences the app; its LED lights red</td></tr>
+      <tr><td>PORT key ▾</td><td>beside PROFILE, on a card whose output or input has several: where it plays (speakers, headphones) or records from (internal or plugged-in microphone), and each one's latency offset</td></tr>
+      <tr><td><kbd>K</kbd></td><td>group colours on/off (to compare)</td></tr>
+      <tr><td>OUT ▸ / IN ▸ screen</td><td>on the top panel: the default output and input, where new apps play and record. Click: pick another; ⌖ finds it on the desk</td></tr>
       <tr><td>PROFILE key</td><td>under a card's screen: its profiles (and codec)</td></tr>
       <tr><td>Drag a cord</td><td>grab it and swing it</td></tr>
       <tr><td>Double-click</td><td>pull a cord out</td></tr>
@@ -212,8 +238,12 @@ const stereo = (pre) => [P('L', pre + '_FL'), P('R', pre + '_FR')];
 // a Bluetooth hi-fi profile also has codecs. `unplugged`: nothing is connected for it now (an HDMI
 // output without a screen with speakers): it can still be picked, its outputs just play nowhere. `short` names it in the list, beside the full name.
 const MONO = (pre) => [P('MONO', pre + '_MONO')];
-const RYZEN_DUPLEX = [{ label: 'PLAYBACK', dir: 'in', stereo: true, ports: stereo('playback') },
-                      { label: 'CAPTURE', dir: 'out', stereo: true, ports: stereo('capture') },
+// a device's output (PipeWire's sink): VOLUME, BAL, MUTE and DEFAULT in its frame, and its ports
+// (`routes`: where the sound goes on the card, as pavucontrol's Port drop-down)
+const RYZEN_DUPLEX = [{ label: 'PLAYBACK', dir: 'in', stereo: true, mix: true, sink: true, vol: .6, ports: stereo('playback'),
+                        routes: [{ name: 'Speakers', short: 'SPEAKERS' }, { name: 'Headphones', short: 'HEADPHONES', unplugged: true }] },
+                      { label: 'CAPTURE', dir: 'out', stereo: true, src: true, mix: true, ports: stereo('capture'),
+                        routes: [{ name: 'Internal Microphone', short: 'INTERNAL MIC' }, { name: 'Microphone', short: 'MIC', unplugged: true }] },
                       { label: 'MONITOR', dir: 'out', stereo: true, ports: stereo('monitor') }];
 const DEVICES = [
   { id: 'cpal', title: 'cpal-pulseaudio-1293852', name: 'cpal-pulseaudio-1293852', model: 'APP · PULSEAUDIO CLIENT', finish: 'black', color: '#e8742a', gen: .6, x: 40, y: 40,
@@ -221,11 +251,11 @@ const DEVICES = [
   { id: 'jlab', title: 'JLab GO Work 2', name: 'JLab GO Work 2 [JLab GO Work 2]', model: 'BLUETOOTH HEADSET', finish: 'metal', color: '#5b7fe0', gen: .3, pass: true, x: 540, y: 40,
     profile: 0, codec: 'AAC', profiles: [
       { short: 'HI-FI', name: 'High Fidelity Playback (A2DP Sink)', codecs: ['SBC', 'SBC-XQ', 'AAC'],
-        groups: [{ label: 'PLAYBACK', dir: 'in', stereo: true, ports: stereo('playback') },
+        groups: [{ label: 'PLAYBACK', dir: 'in', stereo: true, mix: true, sink: true, vol: .45, ports: stereo('playback'), routes: [{ name: 'Headphones', short: 'HEADPHONES' }] },
                  { label: 'MONITOR', dir: 'out', stereo: true, ports: stereo('monitor') }] },
       { short: 'HEADSET', name: 'Headset Head Unit (HSP/HFP)', codecs: ['CVSD', 'mSBC'],
-        groups: [{ label: 'PLAYBACK', dir: 'in', ports: MONO('playback') },
-                 { label: 'MIC', dir: 'out', ports: MONO('capture') },
+        groups: [{ label: 'PLAYBACK', dir: 'in', mix: true, sink: true, vol: .45, ports: MONO('playback') },
+                 { label: 'MIC', dir: 'out', src: true, mix: true, ports: MONO('capture') },
                  { label: 'MONITOR', dir: 'out', ports: MONO('monitor') }] },
       { short: 'OFF', name: 'Off', groups: [] }] },
   { id: 'btcap', title: 'Bluetooth internal capture stream', name: 'Bluetooth internal capture stream', model: 'BLUEZ · STREAM', finish: 'cream', color: '#3fae5a', pass: true, x: 540, y: 220,
@@ -239,8 +269,8 @@ const DEVICES = [
       { short: 'OFF', name: 'Off', groups: [] }] },
   { id: 'radeon', title: 'Radeon High Definition Audio Controller', name: 'Radeon High Definition Audio Controller', model: 'ALSA · PCI · HDMI', finish: 'metal', color: '#9b5bd0', pass: true, x: 540, y: 580,
     profile: 2, profiles: [
-      { short: 'HDMI', name: 'Digital Stereo (HDMI) Output', unplugged: true, groups: [{ label: 'HDMI', dir: 'in', stereo: true, ports: stereo('playback') }, { label: 'MONITOR', dir: 'out', stereo: true, ports: stereo('monitor') }] },
-      { short: 'HDMI 2', name: 'Digital Stereo (HDMI 2) Output', unplugged: true, groups: [{ label: 'HDMI 2', dir: 'in', stereo: true, ports: stereo('playback-2') }, { label: 'MONITOR', dir: 'out', stereo: true, ports: stereo('monitor-2') }] },
+      { short: 'HDMI', name: 'Digital Stereo (HDMI) Output', unplugged: true, groups: [{ label: 'HDMI', dir: 'in', stereo: true, mix: true, sink: true, ports: stereo('playback') }, { label: 'MONITOR', dir: 'out', stereo: true, ports: stereo('monitor') }] },
+      { short: 'HDMI 2', name: 'Digital Stereo (HDMI 2) Output', unplugged: true, groups: [{ label: 'HDMI 2', dir: 'in', stereo: true, mix: true, sink: true, ports: stereo('playback-2') }, { label: 'MONITOR', dir: 'out', stereo: true, ports: stereo('monitor-2') }] },
       { short: 'OFF', name: 'Off', groups: [] }] },
   { id: 'alsamidi', title: '14:Midi Through', name: '14:Midi Through', model: 'ALSA MIDI · CLIENT 14', finish: 'navy', color: '#c05bd0', x: 40, y: 220,
     groups: [{ label: 'MIDI', dir: 'in', ports: [P('PORT 0', '0:Midi Through Port-0', 'midi')] }, { label: 'MIDI', dir: 'out', ports: [P('PORT 0', '0:Midi Through Port-0', 'midi')] }] },
@@ -273,7 +303,8 @@ const FINISH = {
 
 // ---------------- state ----------------
 const RACK_MIN = 1000, RACK_GAP = 3, DEV_H = 128, JP = 48;
-const S = { locked: false, align: true, mode: 'desk', rackW: RACK_MIN, cableMode: 0, sound: true, view: { x: 0, y: 0, s: 1 }, vt: null, edited: false };
+// the default output and input, where new apps play and record (pavucontrol's green check): "device:group"
+const S = { accent: true, defOut: 'jlab:PLAYBACK', defIn: 'ryzen:CAPTURE', locked: false, align: true, mode: 'desk', rackW: RACK_MIN, cableMode: 0, sound: true, view: { x: 0, y: 0, s: 1 }, vt: null, edited: false };
 const devs = DEVICES.map((d) => ({ volUntil: 0, mixText: '', ...d, dx: d.x, dy: d.y, tx: d.x, ty: d.y, W: 0, H: DEV_H, lvl: [0, 0], shown: '', running: null }));
 const ports = new Map(), jacks = new Map(), links = new Set();
 // a device's groups: its own, or those of its card's profile (fresh copies: a group keeps its SPLIT
@@ -282,7 +313,8 @@ function setGroups(d) {
   for (const g of d.groups || []) for (const p of g.ports) ports.delete(p.key);
   for (const g of d.groups || []) for (const j of g.jacks || []) jacks.delete(j.key);
   const src = d.profiles ? d.profiles[d.profile].groups : d.groups;
-  d.groups = src.map((g) => ({ vol: 1, bal: 0, mute: false, balOut: false, balHeld: false, ...g, ports: g.ports.map((p) => ({ ...p })), jacks: null, split: false }));
+  d.groups = src.map((g) => ({ vol: 1, bal: 0, mute: false, balOut: false, balHeld: false, route: 0, ...g, ports: g.ports.map((p) => ({ ...p })),
+    routes: g.routes && g.routes.map((r) => ({ lat: 0, ...r })), jacks: null, split: false }));
   d.ownMeters = d.groups.filter((g) => g.mix).length > 1;
   for (const g of d.groups) { g.ownMeter = d.ownMeters && g.mix; g.lvl = [0, 0]; g.shown = ''; }
   for (const g of d.groups) for (const p of g.ports) {
@@ -355,7 +387,23 @@ const SMW = 22; // a frame's own meter: two thin LED columns right of its knobs
 const MIXW = (g) => (g.mix ? (g.stereo ? 96 : 58) + (g.ownMeter ? SMW : 0) : 0);
 const groupW = (g) => jacksW(g) + MIXW(g);
 const naturalW = (d, rack) => 2 * (rack ? 30 : 0) + 32 + IDW_ + 14 + d.groups.reduce((s, g) => s + groupW(g) + 10, 0) - 10 + 40;
-const faceSig = (d) => S.mode + (S.mode === 'rack' ? S.rackW : '') + d.groups.map((g) => g.jacks.map(slots).join(',')).join('|') + '|' + (d.profiles ? d.profile + d.codec : '');
+// ---------------- accents ----------------
+// Each group's kind has its colour, on a band behind its name and a thin line around it, as the
+// sections of a hardware effect: muted, with light lettering on the band. ACCENT off (or the K
+// key) brings back the plain frames.
+const ACCENT_COLORS = {
+  playback: '#2e8580', // a device's output: speakers, headphones, HDMI
+  capture: '#3a6596',  // a device's input: a microphone
+  monitor: '#5d5390',  // what an output plays, to record it
+  output: '#b45a2e',   // what an app plays
+  input: '#a8862c',    // what an app records
+  midi: '#8f3f63',
+};
+const BAND_INK = '#f3efe6';
+const kindOf = (g) => (g.ports[0].t === 'midi' ? 'midi' : g.label === 'MONITOR' ? 'monitor' : g.sink ? 'playback' : g.src ? 'capture'
+  : g.label === 'PLAYBACK' || g.label.startsWith('HDMI') ? 'playback' : g.label === 'CAPTURE' || g.label === 'MIC' ? 'capture' : g.dir === 'out' ? 'output' : 'input');
+const accentOf = (g) => (S.accent ? ACCENT_COLORS[kindOf(g)] : null);
+const faceSig = (d) => (S.accent ? 'A' : '') + S.mode + (S.mode === 'rack' ? S.rackW : '') + d.groups.map((g) => g.jacks.map(slots).join(',')).join('|') + '|' + (d.profiles ? d.profile + d.codec : '');
 function renderDevice(d) {
   const rack = S.mode === 'rack', f = FINISH[d.finish];
   const EAR = rack ? 30 : 0, PAD = 16, IDW = IDW_, H = DEV_H;
@@ -372,11 +420,11 @@ function renderDevice(d) {
   // app plays it: it can clip), and a MUTE key with a red LED under it; a groove parts it from
   // the jacks, the frame around both says they belong together
   function mixStrip(g, ox) {
-    const MW = MIXW(g) - (g.ownMeter ? SMW : 0), st = g.stereo, cx = ox + (st ? 33 : MW / 2), cy = 60, gi = d.groups.indexOf(g);
+    const MW = MIXW(g) - (g.ownMeter ? SMW : 0), st = g.stereo, sh = st ? (MW - 96) / 2 : 0, cx = ox + (st ? 33 + sh : MW / 2), cy = 60, gi = d.groups.indexOf(g);
     if (g.ownMeter) {
       // its own level: what it records (after the gain) or what it plays (after the volume)
       const lx = ox + MW + 1;
-      body += `<text x="${lx + 7}" y="31" font-size="6.5" fill="${f.print}" text-anchor="middle" letter-spacing=".5">SIG</text>`;
+      body += `<text x="${lx + 7}" y="31" font-size="6.5" fill="${accentOf(g) ? BAND_INK : f.print}" text-anchor="middle" letter-spacing=".5">SIG</text>`;
       for (let c = 0; c < 2; c++) for (let i = 0; i < 10; i++)
         body += `<rect class="sled${gi}" x="${lx + c * 8}" y="${96 - i * 6.6}" width="6" height="4.6" rx=".8" fill="rgba(0,0,0,.5)"/>`;
     }
@@ -387,8 +435,9 @@ function renderDevice(d) {
       `<g class="${cls}" transform="translate(${x},${y}) rotate(${a})"><path d="M0,${-r * .29} L0,${-r * .86}" stroke="#ffb02e" stroke-width="${r > 12 ? 2.4 : 2}" stroke-linecap="round"/></g>`;
     g.knob = { x: cx, y: cy, r: 21 };
     g.muteK = { x: ox + 7, y: 89, w: MW - 14, h: 14 };
-    body += `<path d="M${ox},26 V102" stroke="rgba(0,0,0,.45)"/><path d="M${ox + 1},26 V102" stroke="rgba(255,255,255,.1)"/>` +
-      `<text x="${ox + MW / 2}" y="31" font-size="8.5" fill="${f.print}" letter-spacing=".8" text-anchor="middle">${knobName(g)}${st ? ' · BAL' : ''}</text>`;
+    const gy = accentOf(g) ? 40 : 26;
+    body += `<path d="M${ox},${gy} V102" stroke="rgba(0,0,0,.45)"/><path d="M${ox + 1},${gy} V102" stroke="rgba(255,255,255,.1)"/>` +
+      `<text x="${ox + MW / 2}" y="31" font-size="8.5" fill="${accentOf(g) ? BAND_INK : f.print}" letter-spacing=".8" text-anchor="middle">${knobName(g)}${st ? ' · BAL' : ''}</text>`;
     // VOLUME: silence to 153%, a long tick at 100% and red past it (louder than the app plays it:
     // it can clip)
     const a1 = rad(volAngle(1)), aE = rad(volAngle(VMAX));
@@ -400,7 +449,7 @@ function renderDevice(d) {
     body += `<path d="M${pt(cx, cy, a1, 16.5)} L${pt(cx, cy, a1, 23.5)}" stroke="${f.print}" stroke-width="1.6"/>` + knob(cx, cy, 14, volAngle(g.vol), 'kn' + gi);
     // BAL: a smaller knob, centre straight up with a long tick, L and R at the ends
     if (st) {
-      const bx = ox + 75, by = 56;
+      const bx = ox + 75 + sh, by = 56;
       g.balK = { x: bx, y: by, r: 15 };
       for (let i = -4; i <= 4; i++) {
         const a = rad(i * 33.75);
@@ -428,12 +477,18 @@ function renderDevice(d) {
   }
   const group = (g, x) => {
     const n = g.jacks.reduce((s, j) => s + slots(j), 0), gw = groupW(g), jw = jacksW(g);
+    const acc = accentOf(g), ink = acc ? BAND_INK : f.print;
     body += `<rect x="${x}" y="18" width="${gw}" height="92" rx="6" fill="rgba(0,0,0,.15)" stroke="rgba(0,0,0,.3)"/>` +
-      `<path d="M${x + 6},110.6 h${gw - 12}" stroke="rgba(255,255,255,.14)"/>` +
-      `<text x="${x + 8}" y="31" font-size="8.5" fill="${f.print}" letter-spacing=".8">${g.label}</text>`;
+      `<path d="M${x + 6},110.6 h${gw - 12}" stroke="rgba(255,255,255,.14)"/>`;
+    // the band behind its name, rounded at the top like the frame, and a line of the same colour
+    if (acc) body += `<path d="M${x},36 V24 a6,6 0 0 1 6,-6 H${x + gw - 6} a6,6 0 0 1 6,6 V36 Z" fill="${acc}"/>` +
+      `<path d="M${x},36.5 H${x + gw}" stroke="rgba(0,0,0,.35)"/>` +
+      `<rect x="${x + .6}" y="18.6" width="${gw - 1.2}" height="90.8" rx="5.6" fill="none" stroke="${acc}" stroke-width="1.2" opacity=".9"/>`;
+    body += `<text x="${x + 8}" y="31" font-size="8.5" fill="${ink}" letter-spacing=".8">${g.label}</text>`;
+
     body += g.dir === 'in'
-      ? `<rect x="${x + jw - 30}" y="22.5" width="23" height="11" rx="2" fill="none" stroke="${f.print}" stroke-width=".9"/><text x="${x + jw - 18.5}" y="31" font-size="7.5" fill="${f.print}" text-anchor="middle">IN</text>`
-      : `<rect x="${x + jw - 30}" y="22.5" width="23" height="11" rx="2" fill="${f.print}"/><text x="${x + jw - 18.5}" y="31" font-size="7.5" fill="${inv}" text-anchor="middle">OUT</text>`;
+      ? `<rect x="${x + jw - 30}" y="22.5" width="23" height="11" rx="2" fill="none" stroke="${ink}" stroke-width=".9"/><text x="${x + jw - 18.5}" y="31" font-size="7.5" fill="${ink}" text-anchor="middle">IN</text>`
+      : `<rect x="${x + jw - 30}" y="22.5" width="23" height="11" rx="2" fill="${ink}"/><text x="${x + jw - 18.5}" y="31" font-size="7.5" fill="${acc || inv}" text-anchor="middle">OUT</text>`;
     let jx = x + (jw - n * JP) / 2 + JP / 2;
     const rows = stacked(g);
     g.jacks.forEach((j, r) => {
@@ -481,12 +536,19 @@ function renderDevice(d) {
 
   const r = rack ? 3 : 12;
   const title = `<text x="${x0}" y="33" font-size="${TITLE}">${esc(fitTitle(d.name, IDW - 4))}</text>`;
-  // a card's PROFILE key, under its screen: the list of its profiles drops out of it
-  // (centred under it, clear of the corner screws)
-  const kx = x0 + (IDW - 92) / 2;
-  d.prof = d.profiles ? { x: kx, y: 107, w: 92, h: 14 } : null;
-  const profKey = d.prof ? `<rect x="${kx}" y="107" width="92" height="14" rx="2.5" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/>` +
-    `<text x="${kx + 46}" y="116.8" font-size="7.6" fill="#e6e7e8" text-anchor="middle" letter-spacing=".7">PROFILE ▾</text>` : '';
+  // a card's PROFILE key, under its screen: the list of its profiles drops out of it; beside it
+  // the PORT key, when one of its outputs has ports to choose from (speakers, headphones…). One
+  // key is centred, two share the width, clear of the corner screws
+  const keys = [d.profiles && 'PROFILE', hasPorts(d) && 'PORT'].filter(Boolean);
+  const KW = keys.length > 1 ? 84 : 92, kx0 = x0 + (IDW - keys.length * KW - (keys.length - 1) * 6) / 2;
+  d.prof = d.port = null;
+  const profKey = keys.map((name, i) => {
+    const r = { x: kx0 + i * (KW + 6), y: 107, w: KW, h: 14 };
+    if (name === 'PROFILE') d.prof = r; else d.port = r;
+    return `<rect x="${r.x}" y="107" width="${KW}" height="14" rx="2.5" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/>` +
+      `<text x="${r.x + KW / 2}" y="116.8" font-size="7.6" fill="#e6e7e8" text-anchor="middle" letter-spacing=".7">${name} ▾</text>`;
+  }).join('');
+  const keyRow = keys.length > 0;
   const screws = (rack ? [] : [[11, 11], [W - 11, 11], [11, H - 11], [W - 11, H - 11]])
     .map(([sx, sy], i) => `<use href="#screw" transform="translate(${sx},${sy}) rotate(${(i * 37 + d.name.length * 11) % 90})"/>`).join('');
   // paint: solid base, then the texture on top, so the face stays painted even if the texture fails
@@ -513,13 +575,13 @@ function renderDevice(d) {
     <g font-family="${BLACK}" font-weight="900" fill="${f.print}">${title}</g>
     <text x="${x0}" y="46" font-size="7.8" fill="${f.sub}" letter-spacing="1">${esc(d.model)}</text>
     <circle class="st" cx="${x0 + IDW - 5}" cy="43" r="3.2" fill="#2a1d0a" stroke="rgba(0,0,0,.6)" stroke-width=".8"/>
-    <rect x="${x0 - 1.5}" y="51" width="${IDW + 3}" height="${d.prof ? 52 : 63}" rx="4" fill="#111214"/>
-    <rect x="${x0 + 1.5}" y="54" width="${IDW - 3}" height="${d.prof ? 46 : 57}" rx="2" fill="url(#gLcd)"/>
-    <rect x="${x0 + 1.5}" y="54" width="${IDW - 3}" height="${d.prof ? 46 : 57}" rx="2" fill="none" stroke="rgba(110,45,0,.35)" stroke-width="3"/>
+    <rect x="${x0 - 1.5}" y="51" width="${IDW + 3}" height="${keyRow ? 52 : 63}" rx="4" fill="#111214"/>
+    <rect x="${x0 + 1.5}" y="54" width="${IDW - 3}" height="${keyRow ? 46 : 57}" rx="2" fill="url(#gLcd)"/>
+    <rect x="${x0 + 1.5}" y="54" width="${IDW - 3}" height="${keyRow ? 46 : 57}" rx="2" fill="none" stroke="rgba(110,45,0,.35)" stroke-width="3"/>
     <g font-family="ui-monospace, 'DejaVu Sans Mono', monospace" fill="#3a2408" style="white-space:pre">
-      <text class="lcd1" x="${x0 + 9}" y="${d.prof ? 67 : 70}" font-size="10.5"></text>
-      <text class="lcd2" x="${x0 + 9}" y="${d.prof ? 80.5 : 86}" font-size="10.5" font-weight="normal">48 kHz  IDLE</text>
-      <text class="lcd3" x="${x0 + 9}" y="${d.prof ? 94 : 102}" font-size="10.5" font-weight="normal"></text>
+      <text class="lcd1" x="${x0 + 9}" y="${keyRow ? 67 : 70}" font-size="10.5"></text>
+      <text class="lcd2" x="${x0 + 9}" y="${keyRow ? 80.5 : 86}" font-size="10.5" font-weight="normal">48 kHz  IDLE</text>
+      <text class="lcd3" x="${x0 + 9}" y="${keyRow ? 94 : 102}" font-size="10.5" font-weight="normal"></text>
     </g>
     ${profKey}
     ${body}${grille}${leds}
@@ -1054,6 +1116,8 @@ const hitMute = (w, d) => d.groups.find((g) => {
   const r = g.muteK;
   return r && w.x >= d.x + r.x && w.x <= d.x + r.x + r.w && w.y >= d.y + r.y && w.y <= d.y + r.y + r.h;
 }) || null;
+const hitRect = (w, d, r) => r && w.x >= d.x + r.x && w.x <= d.x + r.x + r.w && w.y >= d.y + r.y && w.y <= d.y + r.y + r.h;
+const hitPort = (w, d) => hitRect(w, d, d.port);
 const strip = (d, dir) => d.groups.find((g) => g.mix && g.dir === dir) || null;
 
 // ---------------- volume and mute ----------------
@@ -1065,12 +1129,16 @@ const chanGain = (g, ch) => (g && g.mix ? Math.min(1, 1 - (ch ? -1 : 1) * g.bal)
 const dB = (v) => (v <= 0 ? '-∞ dB' : (60 * Math.log10(v)).toFixed(2).replace(/^-?0\.00$/, '0.00') + ' dB');
 // on an output the knob is the VOLUME it plays at; on an input it is the GAIN it records with, as
 // on a mixer's input channel
-const knobName = (g) => (g.dir === 'in' ? 'GAIN' : 'VOLUME');
-const volText = (g) => (g.mute ? 'MUTED' : `${g.dir === 'in' ? 'GAIN' : 'VOL'} ${String(Math.round(g.vol * 100)).padStart(3)}%  ${dB(g.vol)}`);
+// what comes in: an app that records, or a device's input (a microphone)
+const recording = (g) => (g.dir === 'in' && !g.sink) || g.src;
+const knobName = (g) => (recording(g) ? 'GAIN' : 'VOLUME');
+const volText = (g) => (g.mute ? 'MUTED' : `${recording(g) ? 'GAIN' : 'VOL'} ${String(Math.round(g.vol * 100)).padStart(3)}%  ${dB(g.vol)}`);
+
 const balText = (g) => (Math.abs(g.bal) < .005 ? 'BAL CENTRE' : `BAL ${g.bal < 0 ? 'L' : 'R'} ${Math.round(Math.abs(g.bal) * 100)}%  ` +
   `${g.bal < 0 ? 'R' : 'L'} ${dB(Math.min(g.vol, g.vol * (1 - Math.abs(g.bal))))}`);
-// on a device with two sets of controls the LCD says which one: IN or OUT
-const stripText = (d, g, s) => (d.groups.filter((x) => x.mix).length > 1 ? (g.dir === 'in' ? 'IN ' : 'OUT ') : '') + s;
+// on a device with two sets of controls the LCD says which one
+// (by the frame's name: INPUT, OUTPUT, PLAYBACK, CAPTURE…, as a card's jacks point the other way)
+const stripText = (d, g, s) => (d.groups.filter((x) => x.mix).length > 1 ? g.label + ' ' : '') + s;
 function paintMix(g) {
   if (!g.knob) return;
   g.knEl.setAttribute('transform', `translate(${g.knob.x},${g.knob.y}) rotate(${volAngle(g.vol)})`);
@@ -1078,6 +1146,7 @@ function paintMix(g) {
   g.muteEl.setAttribute('fill', g.mute ? '#ff3b2f' : '#3a1411');
   g.muteEl.style.filter = g.mute ? 'drop-shadow(0 0 2.5px #ff3b2f)' : '';
 }
+
 // the LCD's line 2 shows the change for a moment; a preset now differs from what is saved
 function mixNote(d, text) {
   d.volUntil = performance.now() + 1500; d.mixText = text;
@@ -1122,9 +1191,99 @@ function setProfile(d, i, codec) {
   crowded = true;
   $('#st2').textContent = `${d.title} · profile: ${pr.name}${pr.codecs ? ' · codec ' + d.codec : ''}`;
   if (!prof.classList.contains('hide')) openProfiles(d, true);
+  showDefaults();
 }
 // the list drops out of the PROFILE key, amber like the LCDs: the full names, the short ones
 // printed on the face beside them, and the codecs of the current one when it has some
+const ports_ = $('#ports');
+const closePorts = () => { ports_.classList.add('hide'); ports_.dataset.at = ''; };
+// a device output's ports: where on the card the sound goes. One that nothing is plugged into is
+// marked (it can still be picked); the latency offset delays this port's sound (Bluetooth,
+// HDMI with a slow TV), set here because it is rarely touched
+const hasPorts = (d) => d.groups.some((g) => g.routes && g.routes.length > 1);
+function openPorts(d, keep) {
+  if (!d.port) return;
+  if (!keep && ports_.dataset.at === d.id) return closePorts();
+  ports_.dataset.at = d.id;
+  // a section per output with ports: its name when there are several, its ports, its latency
+  const outs = d.groups.filter((g) => g.routes && g.routes.length > 1);
+  ports_.innerHTML = `<h2>${esc(d.title.toUpperCase())} · PORT</h2>` + outs.map((g) => {
+    const gi = d.groups.indexOf(g), r = g.routes[g.route];
+    return (outs.length > 1 ? `<h2>${g.label}</h2>` : '') + g.routes.map((x, i) =>
+      `<div class="row${i === g.route ? ' cur' : ''}${x.unplugged ? ' off' : ''}" data-g="${gi}" data-i="${i}"><span>${esc(x.name)}</span>${x.unplugged ? '<i>UNPLUGGED</i>' : ''}</div>`).join('') +
+      `<div class="lat"><b>LATENCY OFFSET</b><button data-g="${gi}" data-l="-1" title="Shift: 10 ms">−</button><span>${r.lat.toFixed(0)} ms</span><button data-g="${gi}" data-l="1" title="Shift: 10 ms">+</button></div>`;
+  }).join('');
+  const rr = stage.getBoundingClientRect(), v = S.view;
+  const x = rr.left + v.x + (d.x + d.port.x) * v.s, y = rr.top + v.y + (d.y + d.port.y + d.port.h) * v.s;
+  ports_.style.left = Math.max(8, Math.min(innerWidth - 310, x)) + 'px';
+  ports_.style.top = (y + 6) + 'px';
+  ports_.classList.remove('hide');
+}
+ports_.addEventListener('click', (e) => {
+  const d = devs.find((x) => x.id === ports_.dataset.at);
+  const el = e.target.closest('[data-g]'), g = d && el && d.groups[+el.dataset.g];
+  if (!g) return;
+  if (el.classList.contains('row')) {
+    g.route = +el.dataset.i;
+    const r = g.routes[g.route];
+    renderDevice(d); sndPlug('in');
+    mixNote(d, `${r.short}${r.unplugged ? ' · UNPLUGGED' : ''}`);
+    $('#st2').textContent = `${d.title} · ${g.label} ${g.src ? 'records from' : 'plays to'}: ${r.name}${r.unplugged ? ' (nothing plugged in)' : ''}`;
+  } else {
+    const r = g.routes[g.route];
+    r.lat = clamp(r.lat + +el.dataset.l * (e.shiftKey ? 10 : 1), -500, 2000);
+    $('#st2').textContent = `${d.title} · ${r.name}: latency offset ${r.lat} ms`;
+  }
+  openPorts(d, true);
+});
+addEventListener('pointerdown', (e) => { if (!ports_.contains(e.target) && !e.target.closest?.('#stage')) closePorts(); });
+// ---------------- defaults ----------------
+// Where new apps play and record is one setting of the whole system (PipeWire's default sink and
+// source), so it lives on the top panel, not on a device: its screen always says which they are,
+// and its list picks others and finds them on the desk.
+const dlist = $('#defaults');
+const outputs = () => devs.flatMap((d) => d.groups.filter((g) => g.sink).map((g) => ({ d, g })));
+const inputs = () => devs.flatMap((d) => d.groups.filter((g) => g.src).map((g) => ({ d, g })));
+// a device with several outputs (or inputs) names the one: "Radeon … · HDMI 2"
+const endName = (d, g, all) => d.title + (all.filter((x) => x.d === d).length > 1 ? ` · ${g.label}` : '');
+const findEnd = (key, all) => all.find(({ d, g }) => `${d.id}:${g.label}` === key);
+function showDefaults() {
+  const o = findEnd(S.defOut, outputs()), i = findEnd(S.defIn, inputs());
+  $('#dout').innerHTML = `<i>OUT ▸</i> ${o ? esc(endName(o.d, o.g, outputs())) : 'NONE'}`;
+  $('#din').innerHTML = `<i>IN&nbsp; ▸</i> ${i ? esc(endName(i.d, i.g, inputs())) : 'NONE'}`;
+}
+function openDefaults(keep) {
+  if (!keep && !dlist.classList.contains('hide')) { dlist.classList.add('hide'); return; }
+  const rows = (all, cur, kind) => all.map(({ d, g }) => {
+    const key = `${d.id}:${g.label}`;
+    return `<div class="row${key === cur ? ' cur' : ''}" data-k="${kind}|${key}"><span>${esc(endName(d, g, all))}</span>` +
+      `<b>${g.stereo ? 'STEREO' : 'MONO'}</b><button data-find="${d.id}" title="Show it on the desk">⌖</button></div>`;
+  }).join('') || '<div class="row"><span>none</span></div>';
+  dlist.innerHTML = `<h2>DEFAULT OUTPUT · NEW APPS PLAY HERE</h2>${rows(outputs(), S.defOut, 'out')}<h2>DEFAULT INPUT · NEW APPS RECORD FROM HERE</h2>${rows(inputs(), S.defIn, 'in')}`;
+  dlist.style.left = $('#dlcd').offsetLeft + 'px';
+  dlist.classList.remove('hide');
+}
+// glides the view to a device and makes it glow for a moment
+function findDevice(d) {
+  const v = S.view, s = Math.max(v.s, .8);
+  S.vt = { x: stage.clientWidth / 2 - (d.x + d.W / 2) * s, y: stage.clientHeight / 2 - (d.y + d.H / 2) * s, s };
+  d.el.classList.remove('find'); void d.el.offsetWidth; d.el.classList.add('find');
+}
+dlist.addEventListener('click', (e) => {
+  const f = e.target.closest('[data-find]');
+  if (f) { const d = devs.find((x) => x.id === f.dataset.find); if (d) findDevice(d); return; }
+  const row = e.target.closest('[data-k]');
+  if (!row) return;
+  const [kind, key] = row.dataset.k.split('|');
+  if (kind === 'out') S.defOut = key; else S.defIn = key;
+  const [id] = key.split(':'), d = devs.find((x) => x.id === id);
+  showDefaults(); openDefaults(true); sndPlug('in');
+  if (!S.edited) { S.edited = true; updateInfo(); }
+  if (d) mixNote(d, kind === 'out' ? 'DEFAULT OUTPUT' : 'DEFAULT INPUT');
+  $('#st2').textContent = `${row.querySelector('span').textContent}: the default ${kind === 'out' ? 'output, where new apps play' : 'input, where new apps record from'}`;
+});
+$('#dlcd').addEventListener('click', () => openDefaults());
+addEventListener('pointerdown', (e) => { if (!dlist.contains(e.target) && !e.target.closest('#dlcd')) dlist.classList.add('hide'); });
 const prof = $('#profiles');
 function openProfiles(d, keep) {
   if (!keep && prof.dataset.dev === d.id) { prof.classList.add('hide'); prof.dataset.dev = ''; return; }
@@ -1184,6 +1343,7 @@ stage.addEventListener('pointerdown', (e) => {
   // a click anywhere but on the key it came from closes the profile list
   const pd = hitDevice(w);
   if (prof.dataset.dev && !(pd && pd.id === prof.dataset.dev && hitProfile(w, pd))) { prof.classList.add('hide'); prof.dataset.dev = ''; }
+  if (ports_.dataset.at && !(pd && ports_.dataset.at === pd.id && hitPort(w, pd))) closePorts();
   stage.setPointerCapture(e.pointerId);
   if (e.button === 1 || e.button === 2) { drag = { type: 'pan', sx: w.sx, sy: w.sy, v0: { ...S.view } }; S.vt = null; return; }
   const plug = hitPlug(w);
@@ -1224,6 +1384,7 @@ stage.addEventListener('pointerdown', (e) => {
     if (bg) { drag = { type: 'bal', d, g: bg, sy: w.sy, sy0: w.sy, raw: bg.bal, turned: false }; holdBal(d, bg, true); sndPlug('in'); return; }
     if (mg) { setMute(d, mg, !mg.mute); return; }
     if (hitProfile(w, d)) { openProfiles(d); return; }
+    if (hitPort(w, d)) { openPorts(d); return; }
     const g = hitSwitch(w, d);
     if (g) { toggleSplit(d, g); return; }
     if (S.locked) { drag = { type: 'pan', sx: w.sx, sy: w.sy, v0: { ...S.view } }; S.vt = null; return; }
@@ -1336,7 +1497,7 @@ stage.addEventListener('wheel', (e) => {
   if (kg) { setVol(kd, kg, kg.vol - Math.sign(e.deltaY) * (e.shiftKey ? .01 : .05)); showTip(kw, `${kd.title} · ${kg.label} · <b>${volText(kg)}</b>`); return; }
   if (bg) { if (bg.balOut) { setBal(kd, bg, bg.bal - Math.sign(e.deltaY) * (e.shiftKey ? .02 : .1)); showTip(kw, `${kd.title} · ${bg.label} · <b>${balText(bg)}</b>`); } return; }
   S.vt = null;
-  prof.classList.add('hide'); prof.dataset.dev = '';
+  prof.classList.add('hide'); prof.dataset.dev = ''; closePorts();
   const w = toWorld(e), v = S.view, s = clamp(v.s * Math.exp(-e.deltaY * .0015), .25, 2.5);
   v.x = w.sx - w.x * s; v.y = w.sy - w.y * s; v.s = s;
 }, { passive: false });
@@ -1351,6 +1512,7 @@ function updateHover(w) {
   let cur = 'default', text = '';
   const plug = hitPlug(w), jack = plug ? null : hitJack(w), cab = plug || jack ? null : hitCable(w), dev = plug || jack || cab ? null : hitDevice(w);
   const bk = dev && hitBal(w, dev), kn = dev && !bk && hitKnob(w, dev), mk = dev && !kn && !bk && hitMute(w, dev);
+  const ok = dev && hitPort(w, dev);
   const sw = dev && !kn && !mk && !bk && hitSwitch(w, dev), pk = dev && !kn && !mk && !bk && !sw && hitProfile(w, dev);
   if (plug) {
     focus.add(plug.c); cur = 'grab'; text = cordText(plug.c);
@@ -1368,6 +1530,8 @@ function updateHover(w) {
     cur = bk.balOut ? 'ns-resize' : 'pointer'; text = `${dev.title} · ${bk.label} · <b>${balText(bk)}</b>`;
   } else if (mk) {
     cur = 'pointer'; text = `${dev.title} · ${mk.label} · ${mk.mute ? '<b>muted</b>' : 'not muted'}`;
+  } else if (ok) {
+    cur = 'pointer'; text = `${dev.title} · ` + dev.groups.filter((g) => g.routes && g.routes.length > 1).map((g) => `${g.label} ${g.src ? 'records from' : 'plays to'} <b>${esc(g.routes[g.route].name)}</b>${g.routes[g.route].unplugged ? ' (unplugged)' : ''}`).join(' · ');
   } else if (pk) {
     const pr = dev.profiles[dev.profile];
     cur = 'pointer'; text = `${dev.title} · profile <b>${esc(pr.name)}</b>${pr.codecs ? ' · codec <b>' + dev.codec + '</b>' : ''}`;
@@ -1376,13 +1540,14 @@ function updateHover(w) {
     cur = S.locked ? 'default' : 'move';
     text = dev.name;
   }
-  for (const d of devs) d.el.classList.toggle('hl', d === dev && !sw && !pk && !kn && !mk && !bk);
+  for (const d of devs) d.el.classList.toggle('hl', d === dev && !sw && !pk && !kn && !mk && !bk && !ok);
   stage.style.cursor = cur;
   showTip(text ? w : null, text);
   $('#st2').textContent = plug ? 'drag: unplug or move · double-click: remove'
     : jack ? 'drag: pull out a cord' + (jack.group.jacks.length === 2 && jack.group.stereo ? ' · Shift: L and R together' : '')
     : cab ? 'drag: swing the cord · double-click: pull it out'
     : sw ? 'click: ' + (sw.split ? 'join' : 'split')
+    : ok ? 'click: choose where it plays (speakers, headphones…) and its latency offset'
     : pk ? 'click: choose a profile'
     : kn ? `drag up/down: ${knobName(kn).toLowerCase()} · Shift: fine · wheel: 5% (Shift 1%) · double-click: 100%`
     : bk ? (bk.balOut ? 'drag up/down: balance (up is right) · Shift: fine · wheel · click: push it in' : 'click: pop the balance knob out to turn it')
@@ -1480,6 +1645,9 @@ function preset() {
     // what the faces set: volume, balance, mute; a card's profile and codec
     mix: Object.fromEntries(devs.flatMap((d) => d.groups.filter((g) => g.mix).map((g) => [`${d.id}:${g.dir}:${g.label}`, { vol: g.vol, bal: g.bal, mute: g.mute }]))),
     profiles: Object.fromEntries(devs.filter((d) => d.profiles).map((d) => [d.id, { name: d.profiles[d.profile].name, codec: d.codec }])),
+    // each device output's port (by name) and its latency offset, and the default output
+    routes: Object.fromEntries(devs.flatMap((d) => d.groups.filter((g) => g.routes).map((g) => [`${d.id}:${g.label}`, { name: g.routes[g.route].name, lat: g.routes[g.route].lat }]))),
+    defOut: S.defOut, defIn: S.defIn,
   };
 }
 function saveSlot(name) {
@@ -1517,6 +1685,8 @@ function applyPreset(p) {
     for (const g of d.groups) {
       const q = g.mix && p.mix?.[`${d.id}:${g.dir}:${g.label}`];
       if (q) { g.vol = clamp(+q.vol || 0, 0, VMAX); g.bal = clamp(+q.bal || 0, -1, 1); g.mute = !!q.mute; paintMix(g); }
+      const r = g.routes && p.routes?.[`${d.id}:${g.label}`], i = r ? g.routes.findIndex((x) => x.name === r.name) : -1;
+      if (i >= 0) { g.route = i; g.routes[i].lat = clamp(+r.lat || 0, -500, 2000); renderDevice(d); }
     }
   }
   if (Array.isArray(p.rack)) {
@@ -1526,6 +1696,9 @@ function applyPreset(p) {
   // links to devices that are not here now are skipped, like PipeWire would
   const known = p.links.filter((k) => { const [o, i] = String(k).split('>'); return ports.has(o) && ports.has(i); });
   links.clear(); for (const k of known) links.add(k);
+  if (typeof p.defOut === 'string') S.defOut = p.defOut;
+  if (typeof p.defIn === 'string') S.defIn = p.defIn;
+  showDefaults();
   setMode(p.mode === 'rack' ? 'rack' : 'desk');
   reconcile(false);
   commitDiff(before);
@@ -1584,7 +1757,7 @@ addEventListener('keydown', (e) => {
   if (e.ctrlKey && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if (e.ctrlKey && e.key.toLowerCase() === 's') { e.preventDefault(); openSave(); return; }
   if (e.ctrlKey && e.key.toLowerCase() === 'o') { e.preventDefault(); openLoad(); return; }
-  if (e.key === 'Escape') { closePop(); prof.classList.add('hide'); prof.dataset.dev = ''; return; }
+  if (e.key === 'Escape') { closePop(); prof.classList.add('hide'); prof.dataset.dev = ''; closePorts(); dlist.classList.add('hide'); return; }
   if (e.ctrlKey || e.altKey || e.target.closest?.('input')) return;
   const k = e.key.toLowerCase();
   if (k === 'r') setMode(S.mode === 'rack' ? 'desk' : 'rack');
@@ -1593,6 +1766,7 @@ addEventListener('keydown', (e) => {
   else if (k === 'g') toggleAlign();
   else if (k === 'a') arrange();
   else if (k === 'f' || k === '0') fit(true);
+  else if (k === 'k') { S.accent = !S.accent; for (const d of devs) renderDevice(d); $('#st2').textContent = `group colours ${S.accent ? 'on' : 'off'} (K)`; }
   else if (k === '?') $('#help').classList.toggle('hide');
 });
 
@@ -1648,6 +1822,7 @@ else if (store.current) loadSlot(store.current);
 undoStack.length = 0; S.edited = false; updateInfo(); // opening the app is not an edit
 updateInfo();
 $('#st2').textContent = 'wheel: zoom · drag: pan';
+showDefaults();
 requestAnimationFrame(frame);
 </script>
 </body>
