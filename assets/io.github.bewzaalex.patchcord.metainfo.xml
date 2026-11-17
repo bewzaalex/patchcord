@@ -47,8 +47,10 @@
       <li>Pull a cord from a jack and plug it into another to connect; pull it out to disconnect</li>
       <li>Stereo jacks that split into separate left and right jacks</li>
       <li>Signal meters and the state of each device</li>
+      <li>Each app's volume or recording gain, balance and mute, beside its jacks</li>
+      <li>Sound card profiles, such as Bluetooth hi-fi or headset and its codec</li>
       <li>Devices on a desk, or in a 19" rack</li>
-      <li>Presets of connections and layouts, undo and redo</li>
+      <li>Presets of connections, layouts, volumes and profiles, undo and redo</li>
       <li>Hover a jack or cord for its full PipeWire names</li>
     </ul>
   </description>

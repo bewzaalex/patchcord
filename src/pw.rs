@@ -28,6 +28,8 @@ pub enum Kind {
     Node,
     Port,
     Link,
+    /// a program connected to PipeWire: which process its streams belong to
+    Client,
 }
 
 /// Whether a card's profile can work now (an HDMI output with nothing plugged in can't).
@@ -56,6 +58,9 @@ pub enum Event {
     Info { id: u32, props: Props, state: Option<&'static str> },
     /// A card's profiles (in PipeWire's order) and the one it is in.
     Profiles { id: u32, list: Vec<Profile>, current: Option<u32> },
+    /// An app stream's volume (playing) or gain (recording): each channel's, linear as PipeWire
+    /// keeps them, and its mute.
+    Mix { id: u32, volumes: Vec<f32>, mute: bool },
     /// Peak level of each meter's channels since the last report, 0…1.
     Levels(Vec<(u32, Vec<f32>)>),
     /// A value of PipeWire's "settings" metadata (clock.rate, clock.quantum…).
@@ -76,6 +81,8 @@ pub enum Cmd {
     Unmeter(u32),
     /// Switch card `device` to its profile `index` (remembered by PipeWire for next time).
     SetProfile { device: u32, index: u32 },
+    /// Set an app stream's channel volumes (linear) and mute.
+    SetMix { node: u32, volumes: Vec<f32>, mute: bool },
     Quit,
 }
 
@@ -167,6 +174,37 @@ fn profile_param(index: u32) -> Option<Vec<u8>> {
     Some(spa::pod::serialize::PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &Value::Object(obj)).ok()?.0.into_inner())
 }
 
+// keys of a props object (spa/param/props.h)
+const PROP_MUTE: u32 = 0x10004;
+const PROP_CHANNEL_VOLUMES: u32 = 0x10008;
+
+/// A node's volumes and mute, from its props param (None when it has no channel volumes).
+fn mix_of(pod: &spa::pod::Pod) -> Option<(Vec<f32>, bool)> {
+    use spa::pod::{Value, ValueArray};
+    let (_, Value::Object(obj)) = spa::pod::deserialize::PodDeserializer::deserialize_any_from(pod.as_bytes()).ok()? else { return None };
+    let (mut vols, mut mute) = (None, false);
+    for prop in obj.properties {
+        match (prop.key, prop.value) {
+            (PROP_CHANNEL_VOLUMES, Value::ValueArray(ValueArray::Float(v))) if !v.is_empty() => vols = Some(v),
+            (PROP_MUTE, Value::Bool(m)) => mute = m,
+            _ => {}
+        }
+    }
+    Some((vols?, mute))
+}
+
+/// The props param that sets a node's channel volumes and mute.
+fn mix_param(volumes: Vec<f32>, mute: bool) -> Option<Vec<u8>> {
+    use spa::pod::{Property, PropertyFlags, Value, ValueArray};
+    let prop = |key, value| Property { key, flags: PropertyFlags::empty(), value };
+    let obj = spa::pod::Object {
+        type_: spa::utils::SpaTypes::ObjectParamProps.as_raw(),
+        id: spa::param::ParamType::Props.as_raw(),
+        properties: vec![prop(PROP_CHANNEL_VOLUMES, Value::ValueArray(ValueArray::Float(volumes))), prop(PROP_MUTE, Value::Bool(mute))],
+    };
+    Some(spa::pod::serialize::PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &Value::Object(obj)).ok()?.0.into_inner())
+}
+
 /// A signal meter: a capture stream, its ports once they exist, and the passive links to them.
 /// A node or device bound to keep its info coming: its proxy and listener.
 type Bound = (Box<dyn Any>, Box<dyn Any>);
@@ -199,7 +237,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
 
     // bound nodes and devices (proxy and listener), so their info keeps coming
     let bound: Rc<RefCell<HashMap<u32, Bound>>> = Default::default();
-    // devices whose profiles changed, to ask for them again
+    // devices whose profiles changed and app streams whose volume changed, to ask again
     let stale: Rc<RefCell<Vec<u32>>> = Default::default();
     let meters: Rc<RefCell<HashMap<u32, Meter>>> = Default::default();
 
@@ -236,6 +274,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                     ObjectType::Node => Kind::Node,
                     ObjectType::Port => Kind::Port,
                     ObjectType::Link => Kind::Link,
+                    ObjectType::Client => Kind::Client,
                     _ => return,
                 };
                 let props = g.props.map(props_of).unwrap_or_default();
@@ -249,9 +288,26 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                         }
                         if let Ok(node) = registry.bind::<pw::node::Node, _>(g) {
                             let ev = events.clone();
+                            // an app that plays or records: its volume and mute, now and whenever they change
+                            let app = props.get("media.class").is_some_and(|c| c == "Stream/Output/Audio" || c == "Stream/Input/Audio");
+                            let mev = events.clone();
+                            let stale = stale.clone();
                             let l = node
                                 .add_listener_local()
+                                .param(move |_, kind, _, _, pod| {
+                                    if kind == spa::param::ParamType::Props
+                                        && let Some((volumes, mute)) = pod.and_then(mix_of)
+                                    {
+                                        mev.send(Event::Mix { id, volumes, mute });
+                                    }
+                                })
                                 .info(move |info| {
+                                    if app && info.change_mask().contains(pw::node::NodeChangeMask::PARAMS) && info.params().iter().any(|p| p.id() == spa::param::ParamType::Props) {
+                                        let mut s = stale.borrow_mut();
+                                        if !s.contains(&id) {
+                                            s.push(id);
+                                        }
+                                    }
                                     let state = match info.state() {
                                         pw::node::NodeState::Running => "running",
                                         pw::node::NodeState::Idle => "idle",
@@ -262,6 +318,9 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                                     ev.send(Event::Info { id, props: info.props().map(props_of).unwrap_or_default(), state: Some(state) });
                                 })
                                 .register();
+                            if app {
+                                node.subscribe_params(&[spa::param::ParamType::Props]);
+                            }
                             bound.borrow_mut().insert(id, (Box::new(node), Box::new(l)));
                         }
                     }
@@ -340,7 +399,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                             }
                         }
                     }
-                    Kind::Link => {}
+                    Kind::Link | Kind::Client => {}
                 }
                 events.send(Event::Added { id, kind, props });
             }
@@ -403,9 +462,13 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
         let bound = bound.clone();
         move |_| {
             for id in std::mem::take(&mut *stale.borrow_mut()) {
-                if let Some(dev) = bound.borrow().get(&id).and_then(|(d, _)| d.downcast_ref::<pw::device::Device>()) {
+                let b = bound.borrow();
+                let Some((proxy, _)) = b.get(&id) else { continue };
+                if let Some(dev) = proxy.downcast_ref::<pw::device::Device>() {
                     dev.enum_params(0, Some(spa::param::ParamType::EnumProfile), 0, u32::MAX);
                     dev.enum_params(0, Some(spa::param::ParamType::Profile), 0, u32::MAX);
+                } else if let Some(node) = proxy.downcast_ref::<pw::node::Node>() {
+                    node.enum_params(0, Some(spa::param::ParamType::Props), 0, u32::MAX);
                 }
             }
             let mut out = Vec::new();
@@ -470,6 +533,18 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                         }
                     }
                     _ => events.send(Event::Error(format!("cannot switch the profile of device {device}"))),
+                }
+            }
+            Cmd::SetMix { node, volumes, mute } => {
+                let b = bound.borrow();
+                let n = b.get(&node).and_then(|(n, _)| n.downcast_ref::<pw::node::Node>());
+                match (n, mix_param(volumes, mute)) {
+                    (Some(n), Some(bytes)) => {
+                        if let Some(pod) = spa::pod::Pod::from_bytes(&bytes) {
+                            n.set_param(spa::param::ParamType::Props, 0, pod);
+                        }
+                    }
+                    _ => events.send(Event::Error(format!("cannot set the volume of node {node}"))),
                 }
             }
             Cmd::Quit => mainloop.quit(),
@@ -537,4 +612,16 @@ fn meter(core: &pw::core::CoreRc, id: u32, channels: &[String]) -> Result<MeterS
     let mut params = [spa::pod::Pod::from_bytes(&values).ok_or(pw::Error::CreationFailed)?];
     stream.connect(spa::utils::Direction::Input, None, pw::stream::StreamFlags::MAP_BUFFERS, &mut params)?;
     Ok((stream, listener, peaks))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_volume_sent_reads_back_the_same() {
+        let bytes = mix_param(vec![0.6141, 0.1327], true).expect("serialized");
+        let pod = spa::pod::Pod::from_bytes(&bytes).expect("a pod");
+        assert_eq!(mix_of(pod), Some((vec![0.6141, 0.1327], true)));
+    }
 }

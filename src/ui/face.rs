@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 
 use super::print::{JACK, SECTION, SMALL, SWITCH};
 use super::text;
-use crate::graph::{Device, Dir, Finish, Media};
+use crate::graph::{Device, Dir, Finish, Media, VOL_MAX};
 
 pub const DEV_H: f64 = 128.0;
 /// distance between jacks
@@ -99,14 +99,109 @@ pub struct Geometry {
     pub switches: Vec<(usize, [f64; 4])>,
     /// left edge of the panel proper (after a rack ear)
     pub left: f64,
-    /// each group's left edge and width
-    pub groups: Vec<(f64, f64)>,
+    /// each group's left edge, width, and the width of its jacks part (the rest is its controls)
+    pub groups: Vec<(f64, f64, f64)>,
     /// left edge of the signal meter
     pub meter: f64,
+    /// the SIG meter at the right edge: not when each group with controls has its own
+    pub sig: bool,
     /// the free space between inputs and outputs in a rack, for the grille
     pub grille: Option<(f64, f64)>,
     /// a card's PROFILE key (x, y, w, h)
     pub profile: Option<[f64; 4]>,
+    /// the controls of each app stream, by group
+    pub mix: Vec<(usize, MixGeo)>,
+}
+
+/// An app stream's controls, right of its jacks inside its group's frame: a VOLUME knob (GAIN
+/// on an input), a BAL knob for stereo, a MUTE key under them, and on a device with two streams
+/// a meter of its own.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MixGeo {
+    pub x: f64,
+    /// the knobs' part (its meter, when it has one, is right of it)
+    pub w: f64,
+    pub input: bool,
+    /// its own meter's left edge
+    pub meter: Option<f64>,
+    /// the knobs' centres
+    pub knob: (f64, f64),
+    pub bal: Option<(f64, f64)>,
+    /// the MUTE key (x, y, w, h)
+    pub mute: [f64; 4],
+}
+
+/// How far from its centre a knob takes the pointer.
+pub const KNOB_R: f64 = 21.0;
+pub const BAL_R: f64 = 15.0;
+
+/// The BAL knob is a push-push knob, as on an old car stereo: pushed in, it sits flush in its
+/// well and can't be turned; held down, it sinks below flush; out, it stands up and turns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum BalKnob {
+    #[default]
+    In,
+    Held,
+    Out,
+}
+
+/// The knob's angle for a volume: from -135° (silence) to 135° (153%).
+fn vol_angle(v: f64) -> f64 {
+    -135.0 + 270.0 * v.clamp(0.0, VOL_MAX) / VOL_MAX
+}
+
+/// The width of a group's controls, its meter included.
+fn mix_w(dev: &Device, gi: usize) -> f64 {
+    // a BAL knob only for a stereo pair of jacks (a stream may report two volumes for one port)
+    let g = &dev.groups[gi];
+    match &g.mix {
+        Some(_) => (if g.stereo { 96.0 } else { 58.0 }) + if own_meters(dev) { STRIP_METER } else { 0.0 },
+        None => 0.0,
+    }
+}
+
+/// A device with two app streams (one plays, one records) shows a meter in each of their frames
+/// instead of the SIG meter at its edge.
+pub fn own_meters(dev: &Device) -> bool {
+    dev.groups.iter().filter(|g| g.mix.is_some()).count() > 1
+}
+
+/// Room for a group's own meter.
+const STRIP_METER: f64 = 22.0;
+
+/// Where a meter's LEDs are: the left one's x, the bottom LED's y, one LED's size, the step up
+/// and the step to the right column.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Leds {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    pub step: f64,
+    pub col: f64,
+}
+
+impl Leds {
+    /// The SIG meter at a face's right edge.
+    pub fn sig(x: f64) -> Leds {
+        Leds { x, y: 92.0, w: 8.0, h: 5.4, step: 7.6, col: 11.0 }
+    }
+
+    /// A group's own meter, right of its knobs.
+    pub fn strip(x: f64) -> Leds {
+        Leds { x, y: 96.0, w: 6.0, h: 4.6, step: 6.6, col: 8.0 }
+    }
+
+    /// The dark LEDs, printed on the face.
+    fn dark(&self) -> String {
+        let mut s = String::new();
+        for c in 0..2 {
+            for i in 0..10 {
+                let _ = write!(s, r#"<rect x="{}" y="{}" width="{}" height="{}" rx="1" fill="rgba(0,0,0,.5)"/>"#, self.x + c as f64 * self.col, self.y - i as f64 * self.step, self.w, self.h);
+            }
+        }
+        s
+    }
 }
 
 struct Fin {
@@ -147,7 +242,12 @@ fn stacked(dev: &Device, gi: usize, jd: &[JackDef]) -> bool {
     dev.groups[gi].stereo && jd.iter().filter(|j| j.group == gi).count() == 2
 }
 
+/// A group's whole width: its jacks and its controls.
 fn group_w(dev: &Device, gi: usize, jd: &[JackDef], counts: &[usize]) -> f64 {
+    jacks_w(dev, gi, jd, counts) + mix_w(dev, gi)
+}
+
+fn jacks_w(dev: &Device, gi: usize, jd: &[JackDef], counts: &[usize]) -> f64 {
     let g = &dev.groups[gi];
     let mine = || jd.iter().enumerate().filter(|(_, j)| j.group == gi).map(|(i, _)| slots(counts[i]));
     let jacks = if stacked(dev, gi, jd) {
@@ -162,7 +262,9 @@ fn group_w(dev: &Device, gi: usize, jd: &[JackDef], counts: &[usize]) -> f64 {
 /// Width the face needs; a rack is as wide as its widest device.
 pub fn natural_w(dev: &Device, jd: &[JackDef], counts: &[usize], rack: bool) -> f64 {
     let groups: f64 = (0..dev.groups.len()).map(|gi| group_w(dev, gi, jd, counts) + 10.0).sum();
-    2.0 * if rack { EAR } else { 0.0 } + 2.0 * PAD + IDW + 14.0 + groups - 10.0 + 40.0
+    // the SIG meter and the room before it
+    let sig = if own_meters(dev) { 0.0 } else { 40.0 };
+    2.0 * if rack { EAR } else { 0.0 } + 2.0 * PAD + IDW + 14.0 + groups - 10.0 + sig
 }
 
 /// Where everything goes, without drawing it.
@@ -173,11 +275,11 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
     let w = rack_w.map_or(natural, |r| r.max(natural));
     let mx = w - ear - PAD - 22.0;
     let profile = dev.card.is_some().then(|| [ear + PAD + (IDW - KEY_W) / 2.0, KEY_Y, KEY_W, KEY_H]);
-    let mut geo = Geometry { w, jacks: vec![(0.0, 0.0); jd.len()], switches: Vec::new(), left: ear, groups: vec![(0.0, 0.0); dev.groups.len()], meter: mx, grille: None, profile };
+    let mut geo = Geometry { w, jacks: vec![(0.0, 0.0); jd.len()], switches: Vec::new(), left: ear, groups: vec![(0.0, 0.0, 0.0); dev.groups.len()], meter: mx, sig: !own_meters(dev), grille: None, profile, mix: Vec::new() };
     let place = |gi: usize, x: f64, geo: &mut Geometry| -> f64 {
-        let gw = group_w(dev, gi, jd, counts);
+        let (gw, jw) = (group_w(dev, gi, jd, counts), jacks_w(dev, gi, jd, counts));
         let n: usize = jd.iter().enumerate().filter(|(_, j)| j.group == gi).map(|(i, _)| slots(counts[i])).sum();
-        let mut jx = x + (gw - n as f64 * JP) / 2.0 + JP / 2.0;
+        let mut jx = x + (jw - n as f64 * JP) / 2.0 + JP / 2.0;
         let rows = stacked(dev, gi, jd);
         for (r, (i, _)) in jd.iter().enumerate().filter(|(_, j)| j.group == gi).enumerate() {
             if rows {
@@ -188,21 +290,36 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
             }
         }
         if dev.groups[gi].stereo {
-            geo.switches.push((gi, [x + gw - 42.0, 95.0, 36.0, 14.0]));
+            geo.switches.push((gi, [x + jw - 42.0, 95.0, 36.0, 14.0]));
         }
-        geo.groups[gi] = (x, gw);
+        // a stream's controls, right of its jacks
+        if dev.groups[gi].mix.is_some() {
+            let (ox, stereo) = (x + jw, dev.groups[gi].stereo);
+            let w = if stereo { 96.0 } else { 58.0 };
+            geo.mix.push((gi, MixGeo {
+                x: ox,
+                w,
+                input: dev.groups[gi].dir == Dir::In,
+                meter: own_meters(dev).then_some(ox + w + 1.0),
+                knob: (if stereo { ox + 33.0 } else { ox + w / 2.0 }, 60.0),
+                bal: stereo.then_some((ox + 75.0, 56.0)),
+                mute: [ox + 7.0, 89.0, w - 14.0, 14.0],
+            }));
+        }
+        geo.groups[gi] = (x, gw, jw);
         x + gw + 10.0
     };
     // inputs on the left, outputs on the right; in a rack the outputs sit against the meter
     let ins: Vec<usize> = (0..dev.groups.len()).filter(|g| dev.groups[*g].dir == Dir::In).collect();
     let outs: Vec<usize> = (0..dev.groups.len()).filter(|g| dev.groups[*g].dir == Dir::Out).collect();
-    let span: f64 = outs.iter().map(|g| group_w(dev, *g, jd, counts) + 10.0).sum();
+    let span: f64 = outs.iter().map(|g| group_w(dev, *g, jd, counts) + 10.0).sum::<f64>();
     let mut x = ear + PAD + IDW + 14.0;
     for g in &ins {
         x = place(*g, x, &mut geo);
     }
     let gx0 = x;
-    let mut ox = if rack { mx - 4.0 - span } else { x };
+    // (against the right edge when there is no SIG meter)
+    let mut ox = if !rack { x } else if geo.sig { mx - 4.0 - span } else { w - ear - PAD + 10.0 - span };
     if rack && ox - 10.0 - gx0 > 50.0 {
         geo.grille = Some((gx0, ox - 10.0));
     }
@@ -211,6 +328,102 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
     }
     geo
 }
+
+/// A point `r` from (x, y) at angle `a` (degrees, 0 straight up, clockwise).
+fn polar(x: f64, y: f64, a: f64, r: f64) -> String {
+    let a = a.to_radians();
+    format!("{:.2},{:.2}", x + r * a.sin(), y - r * a.cos())
+}
+
+/// The printed part of a stream's controls, inside its group's frame after a groove: the scales,
+/// the MUTE key and its own meter's dark LEDs (the knobs and the lit LEDs are pictures of their
+/// own, see `mix_pic`). On an output the knob is the VOLUME it plays at; on an input, the GAIN it
+/// records with, as on a mixer's input channel.
+fn mix_panel(m: &MixGeo, print: &str) -> String {
+    let name = if m.input { "GAIN" } else { "VOLUME" };
+    let mut s = format!(
+        r#"<path d="M{x},26 V102" stroke="rgba(0,0,0,.45)"/><path d="M{},26 V102" stroke="rgba(255,255,255,.1)"/>{}"#,
+        m.x + 1.0,
+        SECTION.text(m.x + m.w / 2.0, 31.0, print, "middle", &if m.bal.is_some() { format!("{name} · BAL") } else { name.to_owned() }),
+        x = m.x
+    );
+    if let Some(mx) = m.meter {
+        s += &SMALL.text(mx + 7.0, 31.0, print, "middle", "SIG");
+        s += &Leds::strip(mx).dark();
+    }
+    // VOLUME: silence to 153%, a long tick at 100% and red past it (louder than the app plays it:
+    // it can clip)
+    let (cx, cy) = m.knob;
+    let _ = write!(s, r##"<path d="M{} A19.5,19.5 0 0 1 {}" fill="none" stroke="#d2402f" stroke-width="2.2" opacity=".85"/>"##, polar(cx, cy, vol_angle(1.0), 19.5), polar(cx, cy, vol_angle(VOL_MAX), 19.5));
+    for i in 0..=12 {
+        let a = vol_angle(i as f64 / 12.0 * VOL_MAX);
+        let _ = write!(s, r#"<path d="M{} L{}" stroke="{print}" stroke-width=".9" opacity=".6"/>"#, polar(cx, cy, a, 17.5), polar(cx, cy, a, if i % 4 == 0 { 21.0 } else { 19.5 }));
+    }
+    let _ = write!(s, r#"<path d="M{} L{}" stroke="{print}" stroke-width="1.6"/>"#, polar(cx, cy, vol_angle(1.0), 16.5), polar(cx, cy, vol_angle(1.0), 23.5));
+    // BAL: centre straight up with a long tick, L and R at the ends, and the knob's well
+    if let Some((bx, by)) = m.bal {
+        for i in -4i32..=4 {
+            let a = i as f64 * 33.75;
+            let _ = write!(s, r#"<path d="M{} L{}" stroke="{print}" stroke-width="{}" opacity="{}"/>"#, polar(bx, by, a, 11.5), polar(bx, by, a, if i == 0 { 16.0 } else { 13.5 }), if i == 0 { 1.5 } else { 0.9 }, if i == 0 { 1.0 } else { 0.6 });
+        }
+        let _ = write!(s, r#"<circle cx="{bx}" cy="{by}" r="10.8" fill="url(#gHole)" stroke="rgba(255,255,255,.12)" stroke-width=".7"/>{}{}"#, SMALL.text(bx - 12.0, by + 17.0, print, "middle", "L"), SMALL.text(bx + 12.0, by + 17.0, print, "middle", "R"));
+    }
+    // MUTE: a dark key, its LED at the left (lit in `mix_pic`); the label centred on the key, or
+    // beside the LED on a narrow one
+    let [kx, ky, kw, kh] = m.mute;
+    let _ = write!(
+        s,
+        r##"<rect x="{kx}" y="{ky}" width="{kw}" height="{kh}" rx="2.5" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/><circle cx="{}" cy="{}" r="2.6" fill="#3a1411" stroke="rgba(0,0,0,.6)" stroke-width=".6"/>{}"##,
+        kx + 8.0,
+        ky + kh / 2.0,
+        SWITCH.text(kx + kw / 2.0 + if m.bal.is_some() { 0.0 } else { 5.0 }, ky + 9.6, "#e6e7e8", "middle", "MUTE")
+    );
+    s
+}
+
+/// The knobs and the MUTE LED of a VOLUME section, as an SVG document covering the section
+/// (`MIX_Y` down from the face's top, `MIX_H` high): drawn again whenever they move, without the
+/// face.
+pub fn mix_pic(m: &MixGeo, volume: f64, balance: f64, mute: bool, bal: BalKnob) -> String {
+    let knob = |x: f64, y: f64, r: f64, a: f64| {
+        format!(
+            r##"<circle cx="{x}" cy="{}" r="{}" fill="#111" opacity=".5"/><circle cx="{x}" cy="{y}" r="{r}" fill="url(#gVol)" stroke="#0c0c0d"/><circle cx="{x}" cy="{y}" r="{}" fill="none" stroke="rgba(255,255,255,.08)"/><path d="M{} L{}" stroke="#ffb02e" stroke-width="{}" stroke-linecap="round"/>"##,
+            y + 1.5,
+            r + 0.5,
+            r * 0.75,
+            polar(x, y, a, r * 0.29),
+            polar(x, y, a, r * 0.86),
+            if r > 12.0 { 2.4 } else { 2.0 }
+        )
+    };
+    let (cx, cy) = m.knob;
+    let mut s = knob(cx, cy, 14.0, vol_angle(volume));
+    if let Some((bx, by)) = m.bal {
+        let a = balance.clamp(-1.0, 1.0) * 135.0;
+        let pointer = |dy: f64, color: &str, w: f64, r0: f64, r1: f64| format!(r#"<path d="M{} L{}" stroke="{color}" stroke-width="{w}" stroke-linecap="round"/>"#, polar(bx, by + dy, a, r0), polar(bx, by + dy, a, r1));
+        s += &match bal {
+            // held down: below flush, deeper in its well
+            BalKnob::Held => format!(r##"<circle cx="{bx}" cy="{}" r="8.3" fill="#151618" stroke="#050506"/><circle cx="{bx}" cy="{}" r="8.6" fill="none" stroke="rgba(0,0,0,.7)" stroke-width="1.6"/>{}"##, by + 0.6, by - 0.4, pointer(0.6, "#6a5028", 1.7, 2.4, 6.6)),
+            // out: a taller cap with a shadow under it
+            BalKnob::Out => format!(r##"<circle cx="{}" cy="{}" r="10.4" fill="#000" opacity=".55"/><circle cx="{bx}" cy="{}" r="9.6" fill="#0d0e0f"/>{}"##, bx + 1.6, by + 3.2, by + 2.0, knob(bx, by, 9.6, a)),
+            // in: flush, a dim pointer
+            BalKnob::In => format!(r##"<circle cx="{bx}" cy="{by}" r="9" fill="#202124" stroke="#0c0c0d"/>{}"##, pointer(0.0, "#8a6a32", 1.8, 2.6, 7.4)),
+        };
+    }
+    if mute {
+        let [kx, ky, _, kh] = m.mute;
+        let _ = write!(s, r##"<circle cx="{}" cy="{}" r="5" fill="#ff3b2f" opacity=".35"/><circle cx="{}" cy="{}" r="2.6" fill="#ff3b2f" stroke="rgba(0,0,0,.6)" stroke-width=".6"/>"##, kx + 8.0, ky + kh / 2.0, kx + 8.0, ky + kh / 2.0);
+    }
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{MIX_H}" viewBox="{x} {MIX_Y} {w} {MIX_H}"><defs><radialGradient id="gVol" cx=".38" cy=".3" r=".8"><stop offset="0" stop-color="#5a5b5f"/><stop offset="1" stop-color="#151618"/></radialGradient></defs>{s}</svg>"##,
+        x = m.x,
+        w = m.w
+    )
+}
+
+/// Where the VOLUME section's picture starts, down from the face's top, and how high it is.
+pub const MIX_Y: f64 = 18.0;
+pub const MIX_H: f64 = 92.0;
 
 /// The name in capitals at one size, on one line, ending in "…" when it doesn't fit (the LCD
 /// scrolls the full name).
@@ -283,7 +496,7 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
     let (w, mx) = (geo.w, geo.meter);
     let mut body = String::new();
     for (gi, g) in dev.groups.iter().enumerate() {
-        let (x, gw) = geo.groups[gi];
+        let (x, gw, jw) = geo.groups[gi];
         let _ = write!(
             body,
             r#"<rect x="{x}" y="18" width="{gw}" height="92" rx="6" fill="rgba(0,0,0,.15)" stroke="rgba(0,0,0,.3)"/><path d="M{},110.6 h{}" stroke="rgba(255,255,255,.14)"/>{}"#,
@@ -291,7 +504,7 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
             gw - 12.0,
             SECTION.text(x + 8.0, 31.0, f.print, "start", &g.label)
         );
-        let tx = x + gw - 30.0;
+        let tx = x + jw - 30.0;
         if g.dir == Dir::In {
             let _ = write!(
                 body,
@@ -336,6 +549,9 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
             SWITCH.text(bx + 17.0, by + 7.6, "#e6e7e8", "middle", if on { "JOIN" } else { "SPLIT" })
         );
     }
+    for (_, m) in &geo.mix {
+        body.push_str(&mix_panel(m, f.print));
+    }
     let mut grille = String::new();
     if let Some((gx0, gx1)) = geo.grille {
         let mut y = 30.0;
@@ -344,12 +560,7 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
             y += 9.5;
         }
     }
-    let mut leds = String::new();
-    for c in 0..2 {
-        for i in 0..10 {
-            let _ = write!(leds, r#"<rect x="{}" y="{}" width="8" height="5.4" rx="1" fill="rgba(0,0,0,.5)"/>"#, mx + c as f64 * 11.0, 92.0 - i as f64 * 7.6);
-        }
-    }
+    let leds = if geo.sig { Leds::sig(mx).dark() + &SMALL.text(mx + 9.5, 112.0, f.print, "middle", "SIG") } else { String::new() };
 
     let r = if rack { 3.0 } else { 12.0 };
     let title = format!(r#"<text x="{x0}" y="33" font-size="{TITLE}">{}</text>"#, esc(&fit_title(&dev.name, IDW - 4.0)));
@@ -426,7 +637,6 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
 <rect x="{ix}" y="{LCD_Y}" width="{iw}" height="{lh}" rx="2" fill="none" stroke="rgba(110,45,0,.35)" stroke-width="3"/>
 {key}
 {body}{grille}{leds}
-{sig}
 </g>
 </svg>"##,
         defs = defs(),
@@ -445,7 +655,6 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
         lw = IDW + 3.0,
         ix = x0 + 1.5,
         iw = IDW - 3.0,
-        sig = SMALL.text(mx + 9.5, 112.0, f.print, "middle", "SIG"),
         // the status lamp: green while running, amber when idle, dark when suspended
         lamp = match dev.state {
             "running" => "#4cff6a",

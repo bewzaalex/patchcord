@@ -19,7 +19,9 @@ hangs, swings and settles like a real one.
 
 Patchcord shows the live PipeWire graph, audio and MIDI, with signal meters and the state of each
 device. You patch it with the mouse, on a desk or in a 19" rack, and keep your setups as presets.
-Plug sounds and smaller things come next (see the [issues](https://github.com/bewzaalex/patchcord/issues)). The design is the
+It also does what pavucontrol's Playback, Recording and Configuration tabs do, built into the
+panels: each app's volume (or recording gain), balance and mute beside its jacks, and each
+sound card's profile. Output and input devices' own volumes, plug sounds and smaller things come next (see the [issues](https://github.com/bewzaalex/patchcord/issues)). The design is the
 interactive mockup in [docs/design/mockup](docs/design/mockup/index.html).
 
 ## Installation
@@ -127,6 +129,10 @@ To uninstall, delete those three files.
 | Drag a cord's end | move it to another jack, or drop it in empty space to unlink |
 | Double-click a cord or its end | pull it out (unlink) |
 | SPLIT / JOIN | one stereo jack, or separate L and R jacks, L above R; the stereo jacks its cords lead to follow, and theirs in turn, and so does a new stream that starts playing into a split pair |
+| VOLUME / GAIN knob beside an app's jacks | each app stream has its controls in the same frame as its jacks: VOLUME on what it plays, GAIN on what it records. From silence to 153% as in pavucontrol (red past 100%: it can clip): drag up or down (Shift: fine), or the wheel (5%, Shift: 1%); it rests at 100% for a moment, and a double-click sets 100%. The screen shows the value in % and dB while it changes |
+| BAL knob on a stereo stream | the balance between L and R. A push-push knob, as on an old car stereo: click to pop it out, then turn it like VOLUME; click again to push it back in, where it can't be turned by accident |
+| MUTE key | silences the stream; its LED lights red |
+| An app that records and plays | one device with both, INPUT and OUTPUT (as Audacity): each frame has its own controls and its own meter, what it records after its gain and what it plays after its volume |
 | PROFILE ▾ under a card's screen | pick the sound card's profile: which inputs and outputs it has (analog or HDMI, Bluetooth hi-fi or headset) and, for Bluetooth, its codec; profiles with nothing plugged in are marked. The list stays open to try another; a click elsewhere, Escape or the wheel closes it. A card that is off shows too, so it can be switched on |
 | Ctrl+Z / Ctrl+Shift+Z | undo / redo |
 | Drag a device | move it; on the desk it stops at other devices and slides along them, and its edges and centre stick lightly to those of the others, with a guide line, to line devices up (also right beside, above or below one); in RACK, drag it up or down to change the order |
@@ -142,14 +148,30 @@ To uninstall, delete those three files.
 | Ctrl+Q | quit |
 
 Settings and presets are plain text files in `~/.config/patchcord`: `settings.txt` (cords,
-lock, lining up, desk or rack, window size, where devices sit, the rack's order) and `presets.txt` (each preset's links, split jacks and
-layout, by PipeWire's node and port names). Loading a preset takes away the links between
+lock, lining up, desk or rack, window size, where devices sit, the rack's order) and `presets.txt` (each preset's links, split jacks,
+layout, the apps' volumes and the cards' profiles, by PipeWire's names). Loading a preset takes away the links between
 devices it knows that it doesn't have; devices started later keep theirs. The Flatpak keeps them
 in `~/.var/app/io.github.bewzaalex.patchcord/config/patchcord` instead.
 
 `patchcord --render out.png [rack] [demo] [split] [hover | held] [save | presets] [profile[=NAME]] [only=NAME,…] [size=WxH]` draws the current graph to a PNG without
 opening a window, with its live signal levels, optionally in the rack, with a few cords added to the picture only (`demo`, for screenshots), with every stereo jack split, with the pointer on a jack, with a cord's end in the hand, with a preset drop-down or a card's profile list open, with only some devices or at a given size (`PATCHCORD_SCALE` sets the scale, 1.5 by default).
 `patchcord --record DIR` plays a short scripted session on the current graph (cords patched, a device dragged into line, the rack and back) and saves it as frames for the README's animation; neither changes anything in PipeWire. `PATCHCORD_DEBUG=1` prints which GPU it uses.
+
+### Bluetooth headsets: when the microphone switches on
+
+A Bluetooth headset can't play in high quality and use its microphone at the same time: its
+hi-fi profile (A2DP) has no microphone, and its headset profile (HSP/HFP) has one but sounds
+like a phone call. Its CAPTURE jack is there in every profile, and PipeWire's session manager,
+WirePlumber, switches the profile by itself: to the headset profile when an app's input gets
+connected to CAPTURE, and back to hi-fi when that cord goes. Patchcord leaves this to
+WirePlumber, and shows each switch on the card's screen and in its PROFILE list.
+
+WirePlumber looks again only when a cord to a recording app comes or goes, not when the app
+starts or stops recording. Many recording apps, DAWs among them, keep their input open between
+takes. So if you switch back to hi-fi by hand while such an app is still connected, it stays
+in hi-fi the next time you record, and the recording is silent. To get the microphone back,
+pick the headset profile with PROFILE ▾, or pull the cord out of the app's INPUT and plug it
+back in: WirePlumber then switches again.
 
 ## Development
 

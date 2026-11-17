@@ -6,18 +6,19 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use resvg::tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Rect, Transform};
 use resvg::usvg;
 
 use super::cord::{Cord, Held, RATE};
-use super::face::{self, BADGE, DEV_H, Geometry, JP, JackDef, JackKind, LCD_W, LCD_X, LCD_Y, PIC, RACK_MIN, SHADOW};
+use super::face::{self, BADGE, BAL_R, BalKnob, DEV_H, Geometry, KNOB_R, Leds, MIX_H, MIX_Y, JP, JackDef, JackKind, LCD_W, LCD_X, LCD_Y, PIC, RACK_MIN, SHADOW};
 use super::{ease, paint, text};
 use crate::config::Preset;
 
 /// A change to the links, for undo and redo: the (output, input) port pairs added and removed.
 type Change = (Vec<(u32, u32)>, Vec<(u32, u32)>);
-use crate::graph::{Device, Dir, Graph, Media};
+use crate::graph::{Device, Dir, Graph, Media, VOL_MAX, volume_text};
 use crate::pw::{Cmd, Event};
 
 /// What the pointer is over, for highlighting cords and the tooltip.
@@ -92,6 +93,86 @@ pub struct DevView {
     /// the meter's lit LEDs, left and right (0…10, falling smoothly)
     pub level: [f32; 2],
     pub meter: Option<((u8, u8), Layer)>,
+    /// each app stream's volume, balance and mute as last set here (by group), shown until
+    /// PipeWire has caught up
+    mix_local: HashMap<usize, (Instant, (f64, f64, bool))>,
+    /// what the LCD's second line says for a moment after a volume changes, and until when
+    mix_note: Option<(Instant, String)>,
+    /// each BAL knob (by group): pushed in, held down or out
+    pub bal: HashMap<usize, BalKnob>,
+    /// each group's knobs and MUTE LED, and what they were drawn for
+    mix_pics: Vec<(usize, u64, Layer)>,
+    /// a group's own meter (on a device with two app streams): its lit LEDs, falling smoothly
+    glevel: HashMap<usize, [f32; 2]>,
+    gmeters: Vec<(usize, (u8, u8), Layer)>,
+}
+
+/// How long a volume set here is shown before PipeWire's own is, and the LCD shows it.
+const MIX_HOLD: Duration = Duration::from_millis(600);
+const MIX_NOTE: Duration = Duration::from_millis(1500);
+
+impl DevView {
+    /// A group's volume, balance and mute: as last set here, else as PipeWire has them.
+    pub fn mix(&self, gi: usize) -> Option<(f64, f64, bool)> {
+        let g = self.dev.groups.get(gi)?;
+        let m = g.mix.as_ref()?;
+        match self.mix_local.get(&gi) {
+            Some((at, v)) if at.elapsed() < MIX_HOLD => Some(*v),
+            // only a stereo pair has a balance
+            _ => Some((m.volume(), if g.stereo { m.balance() } else { 0.0 }, m.mute)),
+        }
+    }
+
+    /// A group's BAL knob.
+    pub fn bal(&self, gi: usize) -> BalKnob {
+        self.bal.get(&gi).copied().unwrap_or_default()
+    }
+
+    /// Its pictures, bottom to top.
+    pub fn layers(&self) -> impl Iterator<Item = &Layer> {
+        [self.shade.as_ref().map(|(_, l)| l), self.face.as_ref(), self.lcd.as_ref().map(|(_, l)| l), self.meter.as_ref().map(|(_, l)| l)]
+            .into_iter()
+            .flatten()
+            .chain(self.mix_pics.iter().map(|(_, _, l)| l))
+            .chain(self.gmeters.iter().map(|(_, _, l)| l))
+    }
+
+    pub fn layers_mut(&mut self) -> impl Iterator<Item = &mut Layer> {
+        [self.shade.as_mut().map(|(_, l)| l), self.face.as_mut(), self.lcd.as_mut().map(|(_, l)| l), self.meter.as_mut().map(|(_, l)| l)]
+            .into_iter()
+            .flatten()
+            .chain(self.mix_pics.iter_mut().map(|(_, _, l)| l))
+            .chain(self.gmeters.iter_mut().map(|(_, _, l)| l))
+    }
+}
+
+/// The volume as the LCD shows it: "VOL  85%  -4.23 dB" ("GAIN" on an input), or MUTED.
+fn vol_text(volume: f64, mute: bool, input: bool) -> String {
+    if mute {
+        return "MUTED".into();
+    }
+    let (pct, db) = volume_text(volume);
+    format!("{} {pct:>4}  {db}", if input { "GAIN" } else { "VOL" })
+}
+
+/// The balance as the LCD shows it: "BAL R 30%  L -9.29 dB" (the quieter side), or CENTRE.
+fn bal_text(volume: f64, balance: f64) -> String {
+    if balance.abs() < 0.005 {
+        return "BAL CENTRE".into();
+    }
+    let (near, far) = if balance < 0.0 { ("L", "R") } else { ("R", "L") };
+    format!("BAL {near} {:.0}%  {far} {}", balance.abs() * 100.0, volume_text(volume * (1.0 - balance.abs())).1)
+}
+
+/// What a meter measures for: a device's SIG meter, or a group's own one (`group`). One measuring
+/// what a recording app takes in (`input`) has its channels mapped to the app's (`map`), and the
+/// app's gain applied: that happens inside the app, where no meter can listen.
+#[derive(Clone, Debug, PartialEq)]
+struct MeterFor {
+    dev: String,
+    group: Option<usize>,
+    input: Option<usize>,
+    map: Vec<usize>,
 }
 
 pub struct Scene {
@@ -112,9 +193,9 @@ pub struct Scene {
     opt: Arc<usvg::Options<'static>>,
     /// commands for PipeWire (meters to start and stop), sent by whoever owns the connection
     pub outbox: Vec<Cmd>,
-    /// meter id by the ports it measures, and the device and peaks of each meter
+    /// meter id by the ports it measures, and what each meter is for, and its peaks
     meters: HashMap<Vec<u32>, u32>,
-    meter_dev: HashMap<u32, String>,
+    meter_dev: HashMap<u32, MeterFor>,
     peaks: HashMap<u32, Vec<f32>>,
     next_meter: u32,
     /// young streams waiting to be shown, at the last look
@@ -244,7 +325,7 @@ impl Scene {
                         self.peaks.insert(*id, p.clone());
                     }
                     if std::env::var_os("PATCHCORD_DEBUG").is_some() && l.iter().any(|(_, p)| p.iter().any(|v| *v > 0.001)) {
-                        let named: Vec<String> = l.iter().map(|(id, p)| format!("{}={:.2?}", self.meter_dev.get(id).map_or("?", |s| s.as_str()), p)).collect();
+                        let named: Vec<String> = l.iter().map(|(id, p)| format!("{}={:.2?}", self.meter_dev.get(id).map_or("?", |m| m.dev.as_str()), p)).collect();
                         eprintln!("levels: {}", named.join(" "));
                     }
                     changed = true;
@@ -284,7 +365,7 @@ impl Scene {
                 None => {
                     let split = vec![false; dev.groups.len()];
                     fresh.push(dev.key.clone());
-                    DevView { dev, split, defs: Vec::new(), counts: Vec::new(), geo: Geometry::default(), x: 0.0, y: 0.0, tx: 0.0, ty: 0.0, dx: 0.0, dy: 0.0, face: None, shade: None, face_sig: 0, face_scale: 0.0, lcd: None, level: [0.0; 2], meter: None }
+                    DevView { dev, split, defs: Vec::new(), counts: Vec::new(), geo: Geometry::default(), x: 0.0, y: 0.0, tx: 0.0, ty: 0.0, dx: 0.0, dy: 0.0, face: None, shade: None, face_sig: 0, face_scale: 0.0, lcd: None, level: [0.0; 2], meter: None, mix_local: HashMap::new(), mix_note: None, bal: HashMap::new(), mix_pics: Vec::new(), glevel: HashMap::new(), gmeters: Vec::new() }
                 }
             };
             self.devs.push(dv);
@@ -586,14 +667,41 @@ impl Scene {
     /// Meters for the groups that have one: started for new ones, stopped for those gone.
     fn meters(&mut self) {
         // by the ports measured: the device, (node, port) of each, and the channel names
-        type Want = (String, Vec<(u32, u32)>, Vec<String>);
+        type Want = (MeterFor, Vec<(u32, u32)>, Vec<String>);
         let mut want: HashMap<Vec<u32>, Want> = HashMap::new();
+        let links = self.graph.links();
         for d in &self.devs {
-            for g in d.dev.groups.iter().filter(|g| g.meter) {
-                let ports: Vec<u32> = g.ports.iter().map(|p| p.id).collect();
-                let targets = g.ports.iter().map(|p| (p.node, p.id)).collect();
-                let channels = g.ports.iter().map(|p| if p.channel.is_empty() { "MONO".to_owned() } else { p.channel.clone() }).collect();
-                want.insert(ports, (d.dev.key.clone(), targets, channels));
+            let own = face::own_meters(&d.dev);
+            for (gi, g) in d.dev.groups.iter().enumerate() {
+                let group = (own && g.mix.is_some()).then_some(gi);
+                if g.meter {
+                    let ports: Vec<u32> = g.ports.iter().map(|p| p.id).collect();
+                    let targets = g.ports.iter().map(|p| (p.node, p.id)).collect();
+                    let channels = g.ports.iter().map(|p| if p.channel.is_empty() { "MONO".to_owned() } else { p.channel.clone() }).collect();
+                    let map = (0..g.ports.len()).collect();
+                    want.insert(ports, (MeterFor { dev: d.dev.key.clone(), group, input: None, map }, targets, channels));
+                }
+                // a recording app: what comes into it, every port linked to each of its channels
+                if g.dir == Dir::In && g.mix.is_some() {
+                    let mut targets = Vec::new();
+                    let mut map = Vec::new();
+                    for (c, p) in g.ports.iter().enumerate() {
+                        for l in links.iter().filter(|l| l.in_port == p.id) {
+                            if let Some(node) = self.graph.port_node(l.out_port) {
+                                targets.push((node, l.out_port));
+                                map.push(c);
+                            }
+                        }
+                    }
+                    if targets.is_empty() {
+                        continue;
+                    }
+                    // apart from a meter of the same ports for their own device: marked by the app's node
+                    let mut key: Vec<u32> = targets.iter().map(|(_, p)| *p).collect();
+                    key.extend([u32::MAX, g.ports[0].node]);
+                    let channels = (0..targets.len()).map(|i| format!("AUX{i}")).collect();
+                    want.insert(key, (MeterFor { dev: d.dev.key.clone(), group, input: Some(gi), map }, targets, channels));
+                }
             }
         }
         let gone: Vec<Vec<u32>> = self.meters.keys().filter(|k| !want.contains_key(*k)).cloned().collect();
@@ -751,19 +859,53 @@ impl Scene {
             self.make_room();
         }
         // meters: peaks to lit LEDs on a dB scale (-54…0 dB → 0…10), quick up and slow down
-        let mut target: HashMap<&str, [f32; 2]> = HashMap::new();
+        let mut target: HashMap<(&str, Option<usize>), [f32; 2]> = HashMap::new();
+        let index: HashMap<&str, usize> = self.devs.iter().enumerate().map(|(i, d)| (d.dev.key.as_str(), i)).collect();
         for (id, p) in &self.peaks {
-            let Some(dev) = self.meter_dev.get(id) else { continue };
+            let Some(m) = self.meter_dev.get(id) else { continue };
             let led = |v: f32| if v <= 0.0 { 0.0 } else { ((20.0 * v.log10() + 54.0) / 54.0 * 10.0).clamp(0.0, 10.0) };
-            let (l, r) = (p.first().copied().unwrap_or(0.0), p.get(1).or(p.first()).copied().unwrap_or(0.0));
-            let t = target.entry(dev.as_str()).or_default();
-            (t[0], t[1]) = (t[0].max(led(l)), t[1].max(led(r)));
+            // each of the app's channels: the loudest of what comes into it, times its gain
+            let mut ch = [0.0f32; 2];
+            for (i, v) in p.iter().enumerate() {
+                let c = m.map.get(i).copied().unwrap_or(i).min(1);
+                ch[c] = ch[c].max(*v);
+            }
+            if let Some(gi) = m.input {
+                let gains = index.get(m.dev.as_str()).and_then(|&di| {
+                    let d = &self.devs[di];
+                    let (vol, bal, mute) = d.mix(gi)?;
+                    let mx = d.dev.groups[gi].mix.as_ref()?;
+                    Some(if mute { vec![0.0; 2] } else { mx.volumes_for(vol, bal) })
+                });
+                let gains = gains.unwrap_or_else(|| vec![1.0; 2]);
+                for (c, v) in ch.iter_mut().enumerate() {
+                    *v *= gains.get(c).or(gains.first()).copied().unwrap_or(1.0);
+                }
+            }
+            if p.len() == 1 || m.map.iter().all(|c| *c == 0) {
+                ch[1] = ch[0];
+            }
+            let t = target.entry((m.dev.as_str(), m.group)).or_default();
+            (t[0], t[1]) = (t[0].max(led(ch[0])), t[1].max(led(ch[1])));
         }
+        let fall = |level: &mut f32, t: f32| {
+            *level = if t >= *level { t } else { (*level - 18.0 * dt).max(t) };
+            *level > 0.01
+        };
         for d in &mut self.devs {
-            let t = target.get(d.dev.key.as_str()).copied().unwrap_or_default();
+            let t = target.get(&(d.dev.key.as_str(), None)).copied().unwrap_or_default();
             for (level, t) in d.level.iter_mut().zip(t) {
-                *level = if t >= *level { t } else { (*level - 18.0 * dt).max(t) };
-                moving |= *level > 0.01;
+                moving |= fall(level, t);
+            }
+            for (gi, m) in &d.geo.mix {
+                if m.meter.is_none() {
+                    continue;
+                }
+                let t = target.get(&(d.dev.key.as_str(), Some(*gi))).copied().unwrap_or_default();
+                let lv = d.glevel.entry(*gi).or_default();
+                for (level, t) in lv.iter_mut().zip(t) {
+                    moving |= fall(level, t);
+                }
             }
         }
         self.acc = (self.acc + dt).min(4.0 / RATE);
@@ -917,6 +1059,7 @@ impl Scene {
         for (di, d) in self.devs.iter_mut().enumerate() {
             let mut h = DefaultHasher::new();
             (&d.counts, &d.split, &d.dev.name, &d.dev.model, d.dev.state, self.rack_w.map(f64::to_bits)).hash(&mut h);
+            d.dev.groups.iter().for_each(|g| g.mix.as_ref().map(|m| m.volumes.len()).hash(&mut h));
             d.defs.iter().for_each(|j| (&j.key, &j.label).hash(&mut h));
             let sig = h.finish();
             let changed = d.face.is_none() || sig != d.face_sig;
@@ -928,7 +1071,25 @@ impl Scene {
                 (d.face_sig, d.face_scale) = (sig, scale);
                 d.lcd = None;
                 d.meter = None;
+                d.mix_pics.clear();
+                d.gmeters.clear();
             }
+            // each group's knobs and MUTE LED, drawn again when they move
+            let mut pics = Vec::new();
+            for (gi, m) in &d.geo.mix {
+                let Some((vol, bal, mute)) = d.mix(*gi) else { continue };
+                let mut h = DefaultHasher::new();
+                (vol.to_bits(), bal.to_bits(), mute, d.bal(*gi), scale.to_bits(), m.x.to_bits()).hash(&mut h);
+                let sig = h.finish();
+                match d.mix_pics.iter().position(|(g, s, _)| g == gi && *s == sig) {
+                    Some(i) => pics.push(d.mix_pics.swap_remove(i)),
+                    None => {
+                        let pm = rasterize(&self.opt, &face::mix_pic(m, vol, bal, mute, d.bal(*gi)), scale);
+                        pics.push((*gi, sig, Layer { id: next_id(), pm, x: m.x, y: MIX_Y, w: m.w, h: MIX_H }));
+                    }
+                }
+            }
+            d.mix_pics = pics;
             let wsig = d.geo.w.to_bits() ^ self.rack_w.is_some() as u64;
             if d.shade.as_ref().is_none_or(|(s, _)| *s != wsig) {
                 // a blur: drawn at a small fixed scale and stretched, so zooming never redraws it
@@ -936,7 +1097,10 @@ impl Scene {
                 d.shade = Some((wsig, Layer { id: next_id(), pm, x: -SHADOW, y: -SHADOW, w: d.geo.w + 2.0 * SHADOW, h: DEV_H + 2.0 * SHADOW }));
             }
             let n = links.get(&di).copied().unwrap_or(0);
-            let line2 = if d.dev.groups.is_empty() && d.dev.card.is_some() {
+            let note = d.mix_note.as_ref().filter(|(until, _)| Instant::now() < *until).map(|(_, s)| s.clone());
+            let line2 = if let Some(note) = note {
+                note
+            } else if d.dev.groups.is_empty() && d.dev.card.is_some() {
                 "NO INPUTS OR OUTPUTS".to_owned()
             } else {
                 format!(
@@ -965,11 +1129,25 @@ impl Scene {
                 d.lcd = Some((text, Layer { id: next_id(), pm, x, y: LCD_Y, w: LCD_W, h: face::lcd_h(card) }));
             }
             let lit = (d.level[0].round() as u8, d.level[1].round() as u8);
-            if lit == (0, 0) {
+            if lit == (0, 0) || !d.geo.sig {
                 d.meter = None;
             } else if d.meter.as_ref().is_none_or(|(l, _)| *l != lit) {
-                d.meter = Some((lit, meter_layer(lit, d.geo.meter, scale)));
+                d.meter = Some((lit, meter_layer(lit, Leds::sig(d.geo.meter), scale)));
             }
+            // a group's own meter
+            let mut meters = Vec::new();
+            for (gi, m) in &d.geo.mix {
+                let (Some(x), Some(lv)) = (m.meter, d.glevel.get(gi)) else { continue };
+                let lit = (lv[0].round() as u8, lv[1].round() as u8);
+                if lit == (0, 0) {
+                    continue;
+                }
+                match d.gmeters.iter().position(|(g, l, _)| g == gi && *l == lit) {
+                    Some(i) => meters.push(d.gmeters.swap_remove(i)),
+                    None => meters.push((*gi, lit, meter_layer(lit, Leds::strip(x), scale))),
+                }
+            }
+            d.gmeters = meters;
         }
         waiting
     }
@@ -1103,6 +1281,76 @@ impl Scene {
 
     pub fn jack_kind(&self, key: &str) -> Option<JackKind> {
         self.jack(key).map(|(_, j)| j.kind)
+    }
+
+    /// The control of an app stream under a world point: (device, group).
+    fn mix_hit(&self, x: f64, y: f64, hit: impl Fn(&face::MixGeo, f64, f64) -> bool) -> Option<(usize, usize)> {
+        let di = self.device_at(x, y)?;
+        let d = &self.devs[di];
+        d.geo.mix.iter().find(|(_, m)| hit(m, x - d.x, y - d.y)).map(|(gi, _)| (di, *gi))
+    }
+
+    /// The VOLUME (or GAIN) knob under a world point: (device, group).
+    pub fn knob_at(&self, x: f64, y: f64) -> Option<(usize, usize)> {
+        self.mix_hit(x, y, |m, x, y| (x - m.knob.0).hypot(y - m.knob.1) <= KNOB_R)
+    }
+
+    /// The BAL knob under a world point.
+    pub fn bal_at(&self, x: f64, y: f64) -> Option<(usize, usize)> {
+        self.mix_hit(x, y, |m, x, y| m.bal.is_some_and(|(bx, by)| (x - bx).hypot(y - by) <= BAL_R))
+    }
+
+    /// The MUTE key under a world point.
+    pub fn mute_at(&self, x: f64, y: f64) -> Option<(usize, usize)> {
+        self.mix_hit(x, y, |m, x, y| {
+            let [kx, ky, kw, kh] = m.mute;
+            x >= kx && x <= kx + kw && y >= ky && y <= ky + kh
+        })
+    }
+
+    /// Any of an app stream's controls under a world point.
+    pub fn mix_control_at(&self, x: f64, y: f64) -> bool {
+        self.knob_at(x, y).or(self.bal_at(x, y)).or(self.mute_at(x, y)).is_some()
+    }
+
+    /// Sets an app stream's volume, balance and mute (PipeWire is told; the LCD says what
+    /// changed, and which stream on a device with two: IN or OUT).
+    fn set_mix(&mut self, (di, gi): (usize, usize), volume: f64, balance: f64, mute: bool) {
+        let Some(d) = self.devs.get_mut(di) else { return };
+        let Some(g) = d.dev.groups.get(gi) else { return };
+        let Some(m) = &g.mix else { return };
+        let input = g.dir == Dir::In;
+        // only a stereo pair has a balance
+        let balance = if g.stereo { balance } else { 0.0 };
+        let was = d.mix(gi);
+        self.outbox.push(Cmd::SetMix { node: m.node, volumes: m.volumes_for(volume, balance), mute });
+        d.mix_local.insert(gi, (Instant::now(), (volume, balance, mute)));
+        let mut note = if was.is_some_and(|(_, b, _)| (b - balance).abs() > 0.001) { bal_text(volume, balance) } else { vol_text(volume, mute, input) };
+        if face::own_meters(&d.dev) {
+            note = format!("{} {note}", if input { "IN" } else { "OUT" });
+        }
+        d.mix_note = Some((Instant::now() + MIX_NOTE, note));
+        self.edited = true;
+    }
+
+    pub fn set_volume(&mut self, at: (usize, usize), volume: f64) {
+        let Some((_, bal, mute)) = self.devs.get(at.0).and_then(|d| d.mix(at.1)) else { return };
+        self.set_mix(at, (volume.clamp(0.0, VOL_MAX) * 100.0).round() / 100.0, bal, mute);
+    }
+
+    pub fn set_balance(&mut self, at: (usize, usize), balance: f64) {
+        let Some((vol, _, mute)) = self.devs.get(at.0).and_then(|d| d.mix(at.1)) else { return };
+        self.set_mix(at, vol, (balance.clamp(-1.0, 1.0) * 100.0).round() / 100.0, mute);
+    }
+
+    pub fn toggle_mute(&mut self, at: (usize, usize)) {
+        let Some((vol, bal, mute)) = self.devs.get(at.0).and_then(|d| d.mix(at.1)) else { return };
+        self.set_mix(at, vol, bal, !mute);
+    }
+
+    /// The LCD still shows a volume just changed: it has to be drawn again when that ends.
+    pub fn noting(&self) -> bool {
+        self.devs.iter().any(|d| d.mix_note.as_ref().is_some_and(|(until, _)| Instant::now() < *until + Duration::from_millis(50)))
     }
 
     /// The SPLIT/JOIN switch under a world point: (device, group).
@@ -1285,7 +1533,14 @@ impl Scene {
                 d.dev.groups.iter().zip(&d.split).filter(|(_, s)| **s).map(|(g, _)| (d.dev.key.clone(), g.label.clone(), if g.dir == Dir::In { "in" } else { "out" }.to_owned()))
             })
             .collect();
-        Preset { name: name.to_owned(), nodes: self.graph.node_names(), links, split, pos: self.positions().into_iter().collect() }
+        // what the faces set: the apps' volumes, the cards' profiles
+        let mix = self
+            .devs
+            .iter()
+            .flat_map(|d| d.dev.groups.iter().enumerate().filter_map(move |(gi, g)| Some(((d.dev.key.clone(), g.label.clone(), if g.dir == Dir::In { "in" } else { "out" }.to_owned()), d.mix(gi)?))))
+            .collect();
+        let profiles = self.devs.iter().filter_map(|d| Some((d.dev.key.clone(), d.dev.card.as_ref()?.profile()?.description.clone()))).collect();
+        Preset { name: name.to_owned(), nodes: self.graph.node_names(), links, split, pos: self.positions().into_iter().collect(), mix, profiles }
     }
 
     /// Puts a preset in place: split switches, device places and links, as one undo step. Links
@@ -1309,6 +1564,28 @@ impl Scene {
         }
         for (k, xy) in &p.pos {
             self.saved_pos.insert(k.clone(), *xy);
+        }
+        // cards to their profiles (by name: the numbers can change), apps to their volumes
+        for d in &self.devs {
+            if let (Some(c), Some(name)) = (&d.dev.card, p.profiles.get(&d.dev.key))
+                && let Some(pr) = c.profiles.iter().find(|pr| pr.description == *name)
+                && Some(pr.index) != c.current
+            {
+                self.outbox.push(Cmd::SetProfile { device: c.id, index: pr.index });
+            }
+        }
+        for di in 0..self.devs.len() {
+            for gi in 0..self.devs[di].dev.groups.len() {
+                let d = &self.devs[di];
+                let g = &d.dev.groups[gi];
+                let key = (d.dev.key.clone(), g.label.clone(), if g.dir == Dir::In { "in" } else { "out" }.to_owned());
+                // only what differs (the LCD says what changed)
+                if let Some(&(vol, bal, mute)) = p.mix.get(&key)
+                    && d.mix(gi).is_some_and(|(v, b, m)| (v - vol).abs() > 0.005 || (b - bal).abs() > 0.005 || m != mute)
+                {
+                    self.set_mix((di, gi), vol.clamp(0.0, VOL_MAX), bal.clamp(-1.0, 1.0), mute);
+                }
+            }
         }
         let mut want = Vec::new();
         let mut missing = 0;
@@ -1549,6 +1826,29 @@ impl Scene {
         if let Some(k) = self.free_jack_at(x, y) {
             return format!("{}  ·  drag: pull out a cord", self.jack_name(&k));
         }
+        if let Some((di, gi)) = self.knob_at(x, y)
+            && let Some((v, _, mute)) = self.devs[di].mix(gi)
+        {
+            let g = &self.devs[di].dev.groups[gi];
+            let input = g.dir == Dir::In;
+            return format!("{} · {} · {}  ·  drag up/down: {}, Shift: fine · wheel: 5% (Shift: 1%) · double-click: 100%", self.devs[di].dev.name, g.label, vol_text(v, mute, input), if input { "gain" } else { "volume" });
+        }
+        if let Some((di, gi)) = self.bal_at(x, y)
+            && let Some((v, b, _)) = self.devs[di].mix(gi)
+        {
+            let d = &self.devs[di];
+            let label = &d.dev.groups[gi].label;
+            return if d.bal(gi) == BalKnob::Out {
+                format!("{} · {label} · {}  ·  drag up/down: balance (up is right), Shift: fine · wheel · click: push it in", d.dev.name, bal_text(v, b))
+            } else {
+                format!("{} · {label} · {}  ·  click: pop the knob out to turn it", d.dev.name, bal_text(v, b))
+            };
+        }
+        if let Some((di, gi)) = self.mute_at(x, y)
+            && let Some((_, _, mute)) = self.devs[di].mix(gi)
+        {
+            return format!("{} · {}  ·  click: {}", self.devs[di].dev.name, self.devs[di].dev.groups[gi].label, if mute { "unmute" } else { "mute" });
+        }
         if let Some(di) = self.profile_key_at(x, y) {
             let card = self.devs[di].dev.card.as_ref().map_or(String::new(), |c| c.summary());
             return format!("{card}  ·  click: choose a profile");
@@ -1607,8 +1907,9 @@ fn rack_svg(w: f64, h: f64) -> String {
 }
 
 /// The lit LEDs of a signal meter (the dark ones are part of the face), with a little glow.
-fn meter_layer(lit: (u8, u8), mx: f64, scale: f64) -> Layer {
-    let (x0, y0, w, h) = (mx - 4.0, 19.6, 27.0, 82.0);
+fn meter_layer(lit: (u8, u8), leds: Leds, scale: f64) -> Layer {
+    let (x0, y0) = (leds.x - 4.0, leds.y - 9.0 * leds.step - 4.0);
+    let (w, h) = (leds.col + leds.w + 8.0, 9.0 * leds.step + leds.h + 8.0);
     let s = scale as f32;
     let mut pm = Pixmap::new((w as f32 * s).ceil() as u32, (h as f32 * s).ceil() as u32);
     if let Some(pm) = &mut pm {
@@ -1622,9 +1923,10 @@ fn meter_layer(lit: (u8, u8), mx: f64, scale: f64) -> Layer {
                 } else {
                     [0x4c, 0xff, 0x6a]
                 };
-                let (x, y) = (mx as f32 + c as f32 * 11.0, 92.0 - i as f32 * 7.6);
+                let (x, y) = ((leds.x + c as f64 * leds.col) as f32, (leds.y - i as f64 * leds.step) as f32);
+                let (lw, lh) = (leds.w as f32, leds.h as f32);
                 for (grow, a) in [(2.0, 50u8), (0.0, 255u8)] {
-                    if let Some(r) = Rect::from_xywh(x - grow, y - grow, 8.0 + 2.0 * grow, 5.4 + 2.0 * grow) {
+                    if let Some(r) = Rect::from_xywh(x - grow, y - grow, lw + 2.0 * grow, lh + 2.0 * grow) {
                         let mut p = Paint { anti_alias: true, ..Default::default() };
                         p.set_color_rgba8(rgb[0], rgb[1], rgb[2], a);
                         let path = PathBuilder::from_rect(r);
@@ -1664,7 +1966,7 @@ mod tests {
         for (k, &(x, y, w)) in at.iter().enumerate() {
             let dev = Device { key: format!("d{k}"), name: format!("d{k}"), model: String::new(), finish: crate::graph::Finish::Metal, color: [0; 3], groups: Vec::new(), state: "idle", card: None };
             let geo = Geometry { w, ..Default::default() };
-            s.devs.push(DevView { dev, split: Vec::new(), defs: Vec::new(), counts: Vec::new(), geo, x, y, tx: x, ty: y, dx: x, dy: y, face: None, shade: None, face_sig: 0, face_scale: 0.0, lcd: None, level: [0.0; 2], meter: None });
+            s.devs.push(DevView { dev, split: Vec::new(), defs: Vec::new(), counts: Vec::new(), geo, x, y, tx: x, ty: y, dx: x, dy: y, face: None, shade: None, face_sig: 0, face_scale: 0.0, lcd: None, level: [0.0; 2], meter: None, mix_local: HashMap::new(), mix_note: None, bal: HashMap::new(), mix_pics: Vec::new(), glevel: HashMap::new(), gmeters: Vec::new() });
         }
         s
     }
@@ -1738,6 +2040,7 @@ mod tests {
             ports: ids.iter().zip(["FL", "FR"]).map(|(&id, ch)| Port { id, node: id, name: format!("p{id}"), label: ch.into(), dir, media: Media::Audio, channel: ch.into() }).collect(),
             stereo: true,
             meter: false,
+            mix: None,
         };
         let mut s = desk(&[(0.0, 0.0, 300.0), (400.0, 0.0, 300.0), (400.0, 200.0, 300.0)]);
         for (d, g) in s.devs.iter_mut().zip([group("OUTPUT", Dir::Out, [1, 2]), group("PLAYBACK", Dir::In, [3, 4]), group("PLAYBACK", Dir::In, [5, 6])]) {

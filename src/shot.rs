@@ -93,7 +93,7 @@ fn compose(scene: &Scene, view: View, size: (u32, u32), dpi: f64, held: Option<(
     }
     let targets: Option<Vec<String>> = held.map(|(seq, _)| scene.targets(seq));
     for (di, d) in scene.devs.iter().enumerate() {
-        for l in [d.shade.as_ref().map(|(_, l)| l), d.face.as_ref(), d.lcd.as_ref().map(|(_, l)| l), d.meter.as_ref().map(|(_, l)| l)].into_iter().flatten() {
+        for l in d.layers() {
             if let Some(pm) = &l.pm {
                 draw(&mut out, pm, (d.x + l.x, d.y + l.y, l.w, l.h), 1.0);
             }

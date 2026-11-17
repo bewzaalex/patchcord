@@ -134,6 +134,10 @@
       <tr><td>Drag a cord's end</td><td>move it to another jack, or drop it to remove</td></tr>
       <tr><td>Free jack</td><td>every port keeps one; plug in and the mult grows</td></tr>
       <tr><td>SPLIT / JOIN</td><td>stereo jack ⇄ L above R</td></tr>
+      <tr><td>VOLUME / GAIN knob</td><td>beside a stream's jacks, in the same frame: on an output the VOLUME it plays at, on an input the GAIN it records with. Drag up/down, wheel, double-click for 100%</td></tr>
+      <tr><td>BAL knob</td><td>a stereo app's balance, L to R: press to pop it out, then turn it; press again to push it in</td></tr>
+      <tr><td>SIG in a frame</td><td>on an app that records and plays, each frame has its own meter: what it records, what it plays</td></tr>
+      <tr><td>MUTE key</td><td>silences the app; its LED lights red</td></tr>
       <tr><td>PROFILE key</td><td>under a card's screen: its profiles (and codec)</td></tr>
       <tr><td>Drag a cord</td><td>grab it and swing it</td></tr>
       <tr><td>Double-click</td><td>pull a cord out</td></tr>
@@ -163,6 +167,7 @@
       <stop offset="0" stop-color="#fff"/><stop offset=".4" stop-color="#b9bcc1"/><stop offset=".75" stop-color="#65686d"/><stop offset="1" stop-color="#a6a9ad"/></radialGradient>
     <radialGradient id="gHole" cx=".5" cy=".62" r=".6">
       <stop offset="0" stop-color="#000"/><stop offset=".7" stop-color="#0a0a0b"/><stop offset="1" stop-color="#3c3d40"/></radialGradient>
+    <radialGradient id="gVol" cx=".38" cy=".3" r=".8"><stop offset="0" stop-color="#5a5b5f"/><stop offset="1" stop-color="#151618"/></radialGradient>
     <linearGradient id="gLcd" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f7bb62"/><stop offset="1" stop-color="#e38c2a"/></linearGradient>
     <g id="jack-mono">
       <circle r="16.5" cx="1.2" cy="2.4" fill="#000" opacity=".35"/>
@@ -212,7 +217,7 @@ const RYZEN_DUPLEX = [{ label: 'PLAYBACK', dir: 'in', stereo: true, ports: stere
                       { label: 'MONITOR', dir: 'out', stereo: true, ports: stereo('monitor') }];
 const DEVICES = [
   { id: 'cpal', title: 'cpal-pulseaudio-1293852', name: 'cpal-pulseaudio-1293852', model: 'APP · PULSEAUDIO CLIENT', finish: 'black', color: '#e8742a', gen: .6, x: 40, y: 40,
-    groups: [{ label: 'OUTPUT', dir: 'out', stereo: true, ports: stereo('output') }] },
+    groups: [{ label: 'OUTPUT', dir: 'out', stereo: true, mix: true, ports: stereo('output') }] },
   { id: 'jlab', title: 'JLab GO Work 2', name: 'JLab GO Work 2 [JLab GO Work 2]', model: 'BLUETOOTH HEADSET', finish: 'metal', color: '#5b7fe0', gen: .3, pass: true, x: 540, y: 40,
     profile: 0, codec: 'AAC', profiles: [
       { short: 'HI-FI', name: 'High Fidelity Playback (A2DP Sink)', codecs: ['SBC', 'SBC-XQ', 'AAC'],
@@ -224,7 +229,7 @@ const DEVICES = [
                  { label: 'MONITOR', dir: 'out', ports: MONO('monitor') }] },
       { short: 'OFF', name: 'Off', groups: [] }] },
   { id: 'btcap', title: 'Bluetooth internal capture stream', name: 'Bluetooth internal capture stream', model: 'BLUEZ · STREAM', finish: 'cream', color: '#3fae5a', pass: true, x: 540, y: 220,
-    groups: [{ label: 'INPUT', dir: 'in', ports: [P('MONO', 'input_MONO')] }, { label: 'MONITOR', dir: 'out', ports: [P('MONO', 'monitor_MONO')] }] },
+    groups: [{ label: 'INPUT', dir: 'in', mix: true, ports: [P('MONO', 'input_MONO')] }, { label: 'MONITOR', dir: 'out', ports: [P('MONO', 'monitor_MONO')] }] },
   { id: 'ryzen', title: 'Ryzen HD Audio Controller', name: 'Ryzen HD Audio Controller', model: 'ALSA · PCI', finish: 'metal', color: '#2bb0a8', gen: .15, pass: true, x: 540, y: 400,
     profile: 0, profiles: [
       { short: 'DUPLEX', name: 'Analog Stereo Duplex', groups: RYZEN_DUPLEX },
@@ -241,12 +246,22 @@ const DEVICES = [
     groups: [{ label: 'MIDI', dir: 'in', ports: [P('PORT 0', '0:Midi Through Port-0', 'midi')] }, { label: 'MIDI', dir: 'out', ports: [P('PORT 0', '0:Midi Through Port-0', 'midi')] }] },
   { id: 'bridge', title: 'Midi-Bridge', name: 'Midi-Bridge', model: 'PIPEWIRE MIDI', finish: 'navy', color: '#d23b32', x: 40, y: 400,
     groups: [{ label: 'MIDI', dir: 'in', ports: [P('PORT 0', 'Midi Through Port-0', 'midi')] }, { label: 'MIDI', dir: 'out', ports: [P('PORT 0', 'Midi Through Port-0', 'midi')] }] },
+  { id: 'fooyin', title: 'fooyin', name: 'fooyin', model: 'APP · MUSIC PLAYER', finish: 'black', color: '#4bb3e6', gen: .5, x: 40, y: 760,
+    groups: [{ label: 'OUTPUT', dir: 'out', stereo: true, mix: true, vol: .85, ports: stereo('output') }] },
+  // an app that records and plays (pavucontrol's Recording and Playback tabs): two streams, each
+  // with its own VOLUME, built into its group's frame. On the input it sets how loud it records
+  { id: 'audacity', title: 'Audacity', name: 'Audacity', model: 'APP · RECORD & PLAY', finish: 'black', color: '#d65a8c', gen: .4, x: 1040, y: 400,
+    groups: [{ label: 'INPUT', dir: 'in', stereo: true, mix: true, vol: .7, ports: stereo('input') },
+             { label: 'OUTPUT', dir: 'out', stereo: true, mix: true, ports: stereo('output') }] },
   { id: 'ble', title: 'BLE MIDI 1', name: 'BLE MIDI 1', model: 'BLUETOOTH MIDI', finish: 'navy', color: '#e9c53a', x: 40, y: 580,
     groups: [{ label: 'MIDI', dir: 'in', ports: [P('IN', 'in', 'midi')] }, { label: 'MIDI', dir: 'out', ports: [P('OUT', 'out', 'midi')] }] },
 ];
 // the truth is PipeWire's list of port-to-port links; cords are drawn from it
 const LINKS = [
   ['cpal:out:output_FL', 'jlab:in:playback_FL'], ['cpal:out:output_FR', 'jlab:in:playback_FR'],
+  ['fooyin:out:output_FL', 'jlab:in:playback_FL'], ['fooyin:out:output_FR', 'jlab:in:playback_FR'],
+  ['ryzen:out:capture_FL', 'audacity:in:input_FL'], ['ryzen:out:capture_FR', 'audacity:in:input_FR'],
+  ['audacity:out:output_FL', 'ryzen:in:playback_FL'], ['audacity:out:output_FR', 'ryzen:in:playback_FR'],
 ];
 
 const FINISH = {
@@ -259,7 +274,7 @@ const FINISH = {
 // ---------------- state ----------------
 const RACK_MIN = 1000, RACK_GAP = 3, DEV_H = 128, JP = 48;
 const S = { locked: false, align: true, mode: 'desk', rackW: RACK_MIN, cableMode: 0, sound: true, view: { x: 0, y: 0, s: 1 }, vt: null, edited: false };
-const devs = DEVICES.map((d) => ({ ...d, dx: d.x, dy: d.y, tx: d.x, ty: d.y, W: 0, H: DEV_H, lvl: [0, 0], shown: '', running: null }));
+const devs = DEVICES.map((d) => ({ volUntil: 0, mixText: '', ...d, dx: d.x, dy: d.y, tx: d.x, ty: d.y, W: 0, H: DEV_H, lvl: [0, 0], shown: '', running: null }));
 const ports = new Map(), jacks = new Map(), links = new Set();
 // a device's groups: its own, or those of its card's profile (fresh copies: a group keeps its SPLIT
 // switch and jacks). Ports keep their keys across profiles, so links to them come back.
@@ -267,7 +282,9 @@ function setGroups(d) {
   for (const g of d.groups || []) for (const p of g.ports) ports.delete(p.key);
   for (const g of d.groups || []) for (const j of g.jacks || []) jacks.delete(j.key);
   const src = d.profiles ? d.profiles[d.profile].groups : d.groups;
-  d.groups = src.map((g) => ({ ...g, ports: g.ports.map((p) => ({ ...p })), jacks: null, split: false }));
+  d.groups = src.map((g) => ({ vol: 1, bal: 0, mute: false, balOut: false, balHeld: false, ...g, ports: g.ports.map((p) => ({ ...p })), jacks: null, split: false }));
+  d.ownMeters = d.groups.filter((g) => g.mix).length > 1;
+  for (const g of d.groups) { g.ownMeter = d.ownMeters && g.mix; g.lvl = [0, 0]; g.shown = ''; }
   for (const g of d.groups) for (const p of g.ports) {
     Object.assign(p, { dev: d, group: g, key: d.id + ':' + g.dir + ':' + p.full });
     ports.set(p.key, p);
@@ -328,9 +345,15 @@ const labelW = (t) => { measure.font = 'bold 8.5px Arial, Helvetica, sans-serif'
 // a split stereo group: L above R, each mult running to the right of its L / R label
 const ROWS = [50, 84], ROW_X = 38;
 const stacked = (g) => g.stereo && g.split;
-const groupW = (g) => Math.max(
+const jacksW = (g) => Math.max(
   stacked(g) ? ROW_X + (Math.max(...g.jacks.map(slots)) - 1) * JP + 22 + 46 : g.jacks.reduce((s, j) => s + slots(j), 0) * JP + 14,
   g.stereo ? 100 : 0, Math.ceil(labelW(g.label)) + 8 + 6 + 30 + 4);
+// a stream's VOLUME controls (a knob over a MUTE key, a BAL knob too for stereo), right of its
+// jacks inside its group's frame: what they turn is plain to see, one set per stream
+const VMAX = 1.53; // pavucontrol's slider goes to 153% (+11 dB)
+const SMW = 22; // a frame's own meter: two thin LED columns right of its knobs
+const MIXW = (g) => (g.mix ? (g.stereo ? 96 : 58) + (g.ownMeter ? SMW : 0) : 0);
+const groupW = (g) => jacksW(g) + MIXW(g);
 const naturalW = (d, rack) => 2 * (rack ? 30 : 0) + 32 + IDW_ + 14 + d.groups.reduce((s, g) => s + groupW(g) + 10, 0) - 10 + 40;
 const faceSig = (d) => S.mode + (S.mode === 'rack' ? S.rackW : '') + d.groups.map((g) => g.jacks.map(slots).join(',')).join('|') + '|' + (d.profiles ? d.profile + d.codec : '');
 function renderDevice(d) {
@@ -340,19 +363,78 @@ function renderDevice(d) {
   // inputs on the left, outputs on the right; in a rack the outputs sit against the meter with a grille between
   const ins = d.groups.filter((g) => g.dir === 'in'), outs = d.groups.filter((g) => g.dir === 'out');
   const span = (gs) => gs.reduce((s, g) => s + groupW(g) + 10, 0);
-  const natural = x0 + IDW + 14 + span(d.groups) - 10 + 14 + 26 + PAD + EAR;
+  // the SIG meter at the right edge, unless each frame has its own
+  const natural = x0 + IDW + 14 + span(d.groups) - 10 + (d.ownMeters ? 0 : 14 + 26) + PAD + EAR;
   const W = rack ? Math.max(S.rackW, natural) : natural;
   const mx = W - EAR - PAD - 22;
   let body = '';
+  // VOLUME: a knob from silence to 153% with a long tick at 100% and red past it (louder than the
+  // app plays it: it can clip), and a MUTE key with a red LED under it; a groove parts it from
+  // the jacks, the frame around both says they belong together
+  function mixStrip(g, ox) {
+    const MW = MIXW(g) - (g.ownMeter ? SMW : 0), st = g.stereo, cx = ox + (st ? 33 : MW / 2), cy = 60, gi = d.groups.indexOf(g);
+    if (g.ownMeter) {
+      // its own level: what it records (after the gain) or what it plays (after the volume)
+      const lx = ox + MW + 1;
+      body += `<text x="${lx + 7}" y="31" font-size="6.5" fill="${f.print}" text-anchor="middle" letter-spacing=".5">SIG</text>`;
+      for (let c = 0; c < 2; c++) for (let i = 0; i < 10; i++)
+        body += `<rect class="sled${gi}" x="${lx + c * 8}" y="${96 - i * 6.6}" width="6" height="4.6" rx=".8" fill="rgba(0,0,0,.5)"/>`;
+    }
+    const pt = (x, y, a, r) => [x + r * Math.sin(a), y - r * Math.cos(a)].map((v) => v.toFixed(2)).join(',');
+    const rad = (a) => a * Math.PI / 180;
+    const knob = (x, y, r, a, cls) => `<circle cx="${x}" cy="${y + 1.5}" r="${r + .5}" fill="#111" opacity=".5"/><circle cx="${x}" cy="${y}" r="${r}" fill="url(#gVol)" stroke="#0c0c0d"/>` +
+      `<circle cx="${x}" cy="${y}" r="${r * .75}" fill="none" stroke="rgba(255,255,255,.08)"/>` +
+      `<g class="${cls}" transform="translate(${x},${y}) rotate(${a})"><path d="M0,${-r * .29} L0,${-r * .86}" stroke="#ffb02e" stroke-width="${r > 12 ? 2.4 : 2}" stroke-linecap="round"/></g>`;
+    g.knob = { x: cx, y: cy, r: 21 };
+    g.muteK = { x: ox + 7, y: 89, w: MW - 14, h: 14 };
+    body += `<path d="M${ox},26 V102" stroke="rgba(0,0,0,.45)"/><path d="M${ox + 1},26 V102" stroke="rgba(255,255,255,.1)"/>` +
+      `<text x="${ox + MW / 2}" y="31" font-size="8.5" fill="${f.print}" letter-spacing=".8" text-anchor="middle">${knobName(g)}${st ? ' · BAL' : ''}</text>`;
+    // VOLUME: silence to 153%, a long tick at 100% and red past it (louder than the app plays it:
+    // it can clip)
+    const a1 = rad(volAngle(1)), aE = rad(volAngle(VMAX));
+    body += `<path d="M${pt(cx, cy, a1, 19.5)} A19.5,19.5 0 0 1 ${pt(cx, cy, aE, 19.5)}" fill="none" stroke="#d2402f" stroke-width="2.2" opacity=".85"/>`;
+    for (let i = 0; i <= 12; i++) {
+      const a = rad(volAngle(i / 12 * VMAX));
+      body += `<path d="M${pt(cx, cy, a, 17.5)} L${pt(cx, cy, a, i % 4 ? 19.5 : 21)}" stroke="${f.print}" stroke-width=".9" opacity=".6"/>`;
+    }
+    body += `<path d="M${pt(cx, cy, a1, 16.5)} L${pt(cx, cy, a1, 23.5)}" stroke="${f.print}" stroke-width="1.6"/>` + knob(cx, cy, 14, volAngle(g.vol), 'kn' + gi);
+    // BAL: a smaller knob, centre straight up with a long tick, L and R at the ends
+    if (st) {
+      const bx = ox + 75, by = 56;
+      g.balK = { x: bx, y: by, r: 15 };
+      for (let i = -4; i <= 4; i++) {
+        const a = rad(i * 33.75);
+        body += `<path d="M${pt(bx, by, a, 11.5)} L${pt(bx, by, a, i ? 13.5 : 16)}" stroke="${f.print}" stroke-width="${i ? .9 : 1.5}" opacity="${i ? .6 : 1}"/>`;
+      }
+      // a push-push knob, as on an old car stereo: pushed in it sits flush in its well and can't be
+      // turned; a press pops it out (a taller cap with a shadow under it), another press puts it back.
+      // While the button is held it is pushed below flush, deeper in its well: click, then release: click
+      body += `<circle cx="${bx}" cy="${by}" r="10.8" fill="url(#gHole)" stroke="rgba(255,255,255,.12)" stroke-width=".7"/>` +
+        (g.balHeld
+          ? `<circle cx="${bx}" cy="${by + .6}" r="8.3" fill="#151618" stroke="#050506"/><circle cx="${bx}" cy="${by - .4}" r="8.6" fill="none" stroke="rgba(0,0,0,.7)" stroke-width="1.6"/>` +
+            `<g class="bk${gi}" transform="translate(${bx},${by + .6}) rotate(${g.bal * 135})"><path d="M0,-2.4 L0,-6.6" stroke="#6a5028" stroke-width="1.7" stroke-linecap="round"/></g>`
+          : g.balOut
+          ? `<circle cx="${bx + 1.6}" cy="${by + 3.2}" r="10.4" fill="#000" opacity=".55"/>` +
+            `<circle cx="${bx}" cy="${by + 2}" r="9.6" fill="#0d0e0f"/>` + knob(bx, by, 9.6, g.bal * 135, 'bk' + gi)
+          : `<circle cx="${bx}" cy="${by}" r="9" fill="#202124" stroke="#0c0c0d"/>` +
+            `<g class="bk${gi}" transform="translate(${bx},${by}) rotate(${g.bal * 135})"><path d="M0,-2.6 L0,-7.4" stroke="#8a6a32" stroke-width="1.8" stroke-linecap="round"/></g>`) +
+        `<text x="${bx - 12}" y="${by + 17}" font-size="7.5" fill="${f.print}" text-anchor="middle">L</text>` +
+        `<text x="${bx + 12}" y="${by + 17}" font-size="7.5" fill="${f.print}" text-anchor="middle">R</text>`;
+    } else g.balK = null;
+    const m = g.muteK;
+    body += `<rect x="${m.x}" y="${m.y}" width="${m.w}" height="${m.h}" rx="2.5" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/>` +
+      `<circle class="mled${gi}" cx="${m.x + 8}" cy="${m.y + m.h / 2}" r="2.6" fill="${g.mute ? '#ff3b2f' : '#3a1411'}" stroke="rgba(0,0,0,.6)" stroke-width=".6"/>` +
+      `<text x="${m.x + m.w / 2 + (st ? 0 : 5)}" y="${m.y + 9.6}" font-size="7.4" fill="#e6e7e8" text-anchor="middle" letter-spacing=".7">MUTE</text>`;
+  }
   const group = (g, x) => {
-    const n = g.jacks.reduce((s, j) => s + slots(j), 0), gw = groupW(g);
+    const n = g.jacks.reduce((s, j) => s + slots(j), 0), gw = groupW(g), jw = jacksW(g);
     body += `<rect x="${x}" y="18" width="${gw}" height="92" rx="6" fill="rgba(0,0,0,.15)" stroke="rgba(0,0,0,.3)"/>` +
       `<path d="M${x + 6},110.6 h${gw - 12}" stroke="rgba(255,255,255,.14)"/>` +
       `<text x="${x + 8}" y="31" font-size="8.5" fill="${f.print}" letter-spacing=".8">${g.label}</text>`;
     body += g.dir === 'in'
-      ? `<rect x="${x + gw - 30}" y="22.5" width="23" height="11" rx="2" fill="none" stroke="${f.print}" stroke-width=".9"/><text x="${x + gw - 18.5}" y="31" font-size="7.5" fill="${f.print}" text-anchor="middle">IN</text>`
-      : `<rect x="${x + gw - 30}" y="22.5" width="23" height="11" rx="2" fill="${f.print}"/><text x="${x + gw - 18.5}" y="31" font-size="7.5" fill="${inv}" text-anchor="middle">OUT</text>`;
-    let jx = x + (gw - n * JP) / 2 + JP / 2;
+      ? `<rect x="${x + jw - 30}" y="22.5" width="23" height="11" rx="2" fill="none" stroke="${f.print}" stroke-width=".9"/><text x="${x + jw - 18.5}" y="31" font-size="7.5" fill="${f.print}" text-anchor="middle">IN</text>`
+      : `<rect x="${x + jw - 30}" y="22.5" width="23" height="11" rx="2" fill="${f.print}"/><text x="${x + jw - 18.5}" y="31" font-size="7.5" fill="${inv}" text-anchor="middle">OUT</text>`;
+    let jx = x + (jw - n * JP) / 2 + JP / 2;
     const rows = stacked(g);
     g.jacks.forEach((j, r) => {
       const k = slots(j);
@@ -371,18 +453,20 @@ function renderDevice(d) {
     });
     if (g.stereo) {
       // a little hardware switch: one stereo jack, or L and R apart
-      const bx = x + gw - 42, by = 97;
+      const bx = x + jw - 42, by = 97;
       g.btn = { x: bx, y: by - 2, w: 36, h: 14 };
       body += `<rect x="${bx}" y="${by}" width="34" height="10" rx="2" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/>` +
         `<text x="${bx + 17}" y="${by + 7.6}" font-size="6.8" fill="#e6e7e8" text-anchor="middle" letter-spacing=".5">${g.split ? 'JOIN' : 'SPLIT'}</text>`;
     } else g.btn = null;
+    if (g.mix) mixStrip(g, x + jw);
+    else g.knob = g.balK = g.muteK = null;
     g.x = x; g.w = gw;
     return x + gw + 10;
   };
   let x = x0 + IDW + 14;
   for (const g of ins) x = group(g, x);
   const gx0 = x;
-  let ox = rack ? mx - 4 - span(outs) : x;
+  let ox = rack ? (d.ownMeters ? W - EAR - PAD + 10 : mx - 4) - span(outs) : x;
   const gx1 = ox - 10;
   for (const g of outs) ox = group(g, ox);
   let grille = '';
@@ -392,7 +476,7 @@ function renderDevice(d) {
         `<path d="M${gx0 + 2},${y + 5.1} h${gx1 - gx0 - 4}" stroke="rgba(255,255,255,.12)"/>`;
   }
   let leds = '';
-  for (let c = 0; c < 2; c++) for (let i = 0; i < 10; i++)
+  if (!d.ownMeters) for (let c = 0; c < 2; c++) for (let i = 0; i < 10; i++)
     leds += `<rect class="led" x="${mx + c * 11}" y="${92 - i * 7.6}" width="8" height="5.4" rx="1" fill="rgba(0,0,0,.5)"/>`;
 
   const r = rack ? 3 : 12;
@@ -427,7 +511,7 @@ function renderDevice(d) {
     <rect x="${EAR}" y="0" width="${W - 2 * EAR}" height="${H}" rx="${r}" fill="none" stroke="rgba(0,0,0,.65)" stroke-width="1"/>
     ${screws}
     <g font-family="${BLACK}" font-weight="900" fill="${f.print}">${title}</g>
-    <text x="${x0}" y="46" font-size="7.8" fill="${f.sub}" letter-spacing="1">${d.model}</text>
+    <text x="${x0}" y="46" font-size="7.8" fill="${f.sub}" letter-spacing="1">${esc(d.model)}</text>
     <circle class="st" cx="${x0 + IDW - 5}" cy="43" r="3.2" fill="#2a1d0a" stroke="rgba(0,0,0,.6)" stroke-width=".8"/>
     <rect x="${x0 - 1.5}" y="51" width="${IDW + 3}" height="${d.prof ? 52 : 63}" rx="4" fill="#111214"/>
     <rect x="${x0 + 1.5}" y="54" width="${IDW - 3}" height="${d.prof ? 46 : 57}" rx="2" fill="url(#gLcd)"/>
@@ -439,7 +523,7 @@ function renderDevice(d) {
     </g>
     ${profKey}
     ${body}${grille}${leds}
-    <text x="${mx + 9.5}" y="112" font-size="7.5" fill="${f.print}" text-anchor="middle" letter-spacing=".6">SIG</text>
+    ${d.ownMeters ? '' : `<text x="${mx + 9.5}" y="112" font-size="7.5" fill="${f.print}" text-anchor="middle" letter-spacing=".6">SIG</text>`}
   </svg>`;
   if (!d.el) { d.el = document.createElement('div'); d.el.className = 'dev'; world.appendChild(d.el); }
   d.el.classList.toggle('rack', rack);
@@ -451,6 +535,12 @@ function renderDevice(d) {
   d.lcd2 = d.el.querySelector('.lcd2');
   d.lcd1 = d.el.querySelector('.lcd1');
   d.lcd3 = d.el.querySelector('.lcd3');
+  d.groups.forEach((g, gi) => {
+    if (!g.mix) return;
+    g.leds = d.el.querySelectorAll('.sled' + gi); g.shown = '';
+    g.knEl = d.el.querySelector('.kn' + gi); g.bkEl = d.el.querySelector('.bk' + gi); g.muteEl = d.el.querySelector('.mled' + gi);
+    paintMix(g);
+  });
   d.scroll3 = -1;
   d.scroll = -1;
   d.running = null; d.shown = -1;
@@ -695,7 +785,7 @@ function updateSignal(now) {
   for (const d of devs) {
     let g = d.gen || 0;
     if (d.needsMidi && !cables.some((c) => live(c) && c.b.jack.dev === d && c.b.jack.t === 'midi')) g = 0;
-    lv.set(d, { out: g, in: 0 });
+    lv.set(d, { out: g * gain(strip(d, 'out')), in: 0, raw: g });
   }
   for (let pass = 0; pass < 3; pass++) for (const c of cables) {
     if (!live(c) || c.a.jack.t !== 'audio') continue;
@@ -704,20 +794,25 @@ function updateSignal(now) {
     if (c.b.jack.dev.pass) t.out = Math.max(t.out, t.in * .9);
   }
   for (const d of devs) {
-    const l = lv.get(d), base = d.groups.length ? Math.max(l.out, l.in) : 0;
+    const l = lv.get(d), base = d.groups.length ? Math.max(l.out, l.in * gain(strip(d, 'in'))) : 0, playing = d.groups.length && Math.max(l.raw, l.in) > .01;
     // each channel its own: L and R move apart, as music does; up at once, down slowly
-    const lit = [0, 1].map((ch) => {
-      const wob = base ? base * (.62 + .25 * Math.sin(now / (130 + 23 * ch) + d.dx + ch * 2) + .2 * Math.random()) : 0;
-      d.lvl[ch] += (wob - d.lvl[ch]) * (wob > d.lvl[ch] ? .6 : .15);
-      return Math.round(clamp(d.lvl[ch], 0, 1) * 10);
-    });
-    if (lit.join() !== d.shown) {
-      d.shown = lit.join();
-      d.leds.forEach((r, i) => {
+    const meter = (m, level, bal, seed) => {
+      const lit = [0, 1].map((ch) => {
+        const wob = level ? level * chanGain(bal, ch) * (.62 + .25 * Math.sin(now / (130 + 23 * ch) + seed + ch * 2) + .2 * Math.random()) : 0;
+        m.lvl[ch] += (wob - m.lvl[ch]) * (wob > m.lvl[ch] ? .6 : .15);
+        return Math.round(clamp(m.lvl[ch], 0, 1) * 10);
+      });
+      if (lit.join() === m.shown) return;
+      m.shown = lit.join();
+      m.leds.forEach((r, i) => {
         const c = i % 10, on = c < lit[i < 10 ? 0 : 1];
         r.setAttribute('fill', on ? (c >= 9 ? '#ff3b2f' : c >= 7 ? '#ffb02e' : '#4cff6a') : 'rgba(0,0,0,.5)');
       });
-    }
+    };
+    if (d.ownMeters) {
+      // one meter per frame: the input's after its gain, the output's after its volume
+      for (const g of d.groups) if (g.ownMeter) meter(g, g.dir === 'in' ? l.in * gain(g) : l.out, g, d.dx + (g.dir === 'in' ? 0 : 3));
+    } else meter(d, base, strip(d, 'out') || strip(d, 'in'), d.dx);
     // the LCD's top line scrolls a name that is too long for it, pausing at the start
     const nm = d.name, long = nm.length > LCD_CH;
     const pos = long ? Math.max(0, Math.floor(now / 280) % (nm.length + 6 + 8) - 8) : 0;
@@ -737,12 +832,13 @@ function updateSignal(now) {
       d.lcd3.textContent = long3 ? loop.slice(pos3, pos3 + LCD_CH) : l3;
     }
     const off = d.profiles && !d.groups.length;
-    const run = off ? 'off' : base > .01;
+    // line 2 shows the volume for a moment while it changes
+    const run = off ? 'off' : d.volUntil > now ? d.mixText : playing ? 'run' : 'idle';
     if (run !== d.running) {
       d.running = run;
-      d.lcd2.textContent = off ? 'NO INPUTS OR OUTPUTS' : run ? '48 kHz  RUNNING' : '48 kHz  IDLE';
-      d.stEl.setAttribute('fill', run ? '#4cff6a' : '#6a4a12');
-      d.stEl.style.filter = run ? 'drop-shadow(0 0 2.5px #4cff6a)' : '';
+      d.lcd2.textContent = off ? 'NO INPUTS OR OUTPUTS' : run === 'run' ? '48 kHz  RUNNING' : run === 'idle' ? '48 kHz  IDLE' : run;
+      d.stEl.setAttribute('fill', playing ? '#4cff6a' : '#6a4a12');
+      d.stEl.style.filter = playing ? 'drop-shadow(0 0 2.5px #4cff6a)' : '';
     }
   }
 }
@@ -950,6 +1046,61 @@ const hitProfile = (w, d) => {
   return r && w.x >= d.x + r.x && w.x <= d.x + r.x + r.w && w.y >= d.y + r.y && w.y <= d.y + r.y + r.h;
 };
 
+const hitRound = (w, d, k) => k && Math.hypot(w.x - d.x - k.x, w.y - d.y - k.y) <= k.r;
+// the group whose knob or MUTE key is under the pointer
+const hitKnob = (w, d) => d.groups.find((g) => hitRound(w, d, g.knob)) || null;
+const hitBal = (w, d) => d.groups.find((g) => hitRound(w, d, g.balK)) || null;
+const hitMute = (w, d) => d.groups.find((g) => {
+  const r = g.muteK;
+  return r && w.x >= d.x + r.x && w.x <= d.x + r.x + r.w && w.y >= d.y + r.y && w.y <= d.y + r.y + r.h;
+}) || null;
+const strip = (d, dir) => d.groups.find((g) => g.mix && g.dir === dir) || null;
+
+// ---------------- volume and mute ----------------
+// PipeWire's channelVolumes, shown as pavucontrol does: a cubic percentage (100% is 0 dB) and dB
+function volAngle(v) { return -135 + 270 * v / VMAX; }
+function gain(g) { return g && g.mix ? (g.mute ? 0 : g.vol ** 3) : 1; }
+// balance as PulseAudio does it: the far side keeps the volume, the near side goes down with it
+const chanGain = (g, ch) => (g && g.mix ? Math.min(1, 1 - (ch ? -1 : 1) * g.bal) ** 3 : 1);
+const dB = (v) => (v <= 0 ? '-∞ dB' : (60 * Math.log10(v)).toFixed(2).replace(/^-?0\.00$/, '0.00') + ' dB');
+// on an output the knob is the VOLUME it plays at; on an input it is the GAIN it records with, as
+// on a mixer's input channel
+const knobName = (g) => (g.dir === 'in' ? 'GAIN' : 'VOLUME');
+const volText = (g) => (g.mute ? 'MUTED' : `${g.dir === 'in' ? 'GAIN' : 'VOL'} ${String(Math.round(g.vol * 100)).padStart(3)}%  ${dB(g.vol)}`);
+const balText = (g) => (Math.abs(g.bal) < .005 ? 'BAL CENTRE' : `BAL ${g.bal < 0 ? 'L' : 'R'} ${Math.round(Math.abs(g.bal) * 100)}%  ` +
+  `${g.bal < 0 ? 'R' : 'L'} ${dB(Math.min(g.vol, g.vol * (1 - Math.abs(g.bal))))}`);
+// on a device with two sets of controls the LCD says which one: IN or OUT
+const stripText = (d, g, s) => (d.groups.filter((x) => x.mix).length > 1 ? (g.dir === 'in' ? 'IN ' : 'OUT ') : '') + s;
+function paintMix(g) {
+  if (!g.knob) return;
+  g.knEl.setAttribute('transform', `translate(${g.knob.x},${g.knob.y}) rotate(${volAngle(g.vol)})`);
+  if (g.balK) g.bkEl.setAttribute('transform', `translate(${g.balK.x},${g.balK.y}) rotate(${g.bal * 135})`);
+  g.muteEl.setAttribute('fill', g.mute ? '#ff3b2f' : '#3a1411');
+  g.muteEl.style.filter = g.mute ? 'drop-shadow(0 0 2.5px #ff3b2f)' : '';
+}
+// the LCD's line 2 shows the change for a moment; a preset now differs from what is saved
+function mixNote(d, text) {
+  d.volUntil = performance.now() + 1500; d.mixText = text;
+  $('#st2').textContent = `${d.title} · ${text}`;
+  if (!S.edited) { S.edited = true; updateInfo(); }
+}
+function setVol(d, g, v) {
+  g.vol = Math.round(clamp(v, 0, VMAX) * 100) / 100;
+  paintMix(g); mixNote(d, stripText(d, g, volText(g)));
+}
+function setBal(d, g, b) {
+  g.bal = Math.round(clamp(b, -1, 1) * 100) / 100;
+  paintMix(g); mixNote(d, stripText(d, g, balText(g)));
+}
+// a push-push knob clicks twice: once going down under the finger, once on the way back up
+function holdBal(d, g, on) { g.balHeld = on; renderDevice(d); }
+function pressBal(d, g) {
+  g.balHeld = false; g.balOut = !g.balOut;
+  renderDevice(d); sndPlug('out');
+  $('#st2').textContent = `${d.title} · ${g.label.toLowerCase()} balance ${g.balOut ? 'out: turn it' : 'pushed in'} · ${balText(g)}`;
+}
+function setMute(d, g, m) { g.mute = m; paintMix(g); mixNote(d, stripText(d, g, volText(g))); }
+
 // ---------------- card profiles ----------------
 // A new profile changes which inputs and outputs the card has: its jacks follow, and cords to
 // jacks that are gone fall out (PipeWire removes their links with the ports).
@@ -1068,6 +1219,10 @@ stage.addEventListener('pointerdown', (e) => {
   if (cab) { cab.c.grab = cab.k; drag = { type: 'rope', c: cab.c, hand: w }; return; }
   const d = hitDevice(w);
   if (d) {
+    const kg = hitKnob(w, d), bg = hitBal(w, d), mg = hitMute(w, d);
+    if (kg) { drag = { type: 'knob', d, g: kg, sy: w.sy, raw: kg.vol }; return; }
+    if (bg) { drag = { type: 'bal', d, g: bg, sy: w.sy, sy0: w.sy, raw: bg.bal, turned: false }; holdBal(d, bg, true); sndPlug('in'); return; }
+    if (mg) { setMute(d, mg, !mg.mute); return; }
     if (hitProfile(w, d)) { openProfiles(d); return; }
     const g = hitSwitch(w, d);
     if (g) { toggleSplit(d, g); return; }
@@ -1092,6 +1247,22 @@ stage.addEventListener('pointermove', (e) => {
   if (!drag) { updateHover(w); return; }
   if (drag.type === 'pan') {
     S.view.x = drag.v0.x + w.sx - drag.sx; S.view.y = drag.v0.y + w.sy - drag.sy;
+  } else if (drag.type === 'knob') {
+    // up is louder: the whole range in 200 px, Shift for fine steps; it rests at 100% for a moment
+    drag.raw = clamp(drag.raw + (drag.sy - w.sy) * VMAX / 200 * (e.shiftKey ? .2 : 1), 0, VMAX);
+    drag.sy = w.sy;
+    setVol(drag.d, drag.g, Math.abs(drag.raw - 1) < .04 ? 1 : drag.raw);
+    showTip(w, `${drag.d.title} · ${drag.g.label} · <b>${volText(drag.g)}</b>`);
+  } else if (drag.type === 'bal') {
+    if (!drag.g.balOut) return;
+    if (!drag.turned && Math.abs(w.sy - drag.sy0) < 3) return;
+    // turning it, not pressing: it comes back up without a click
+    if (!drag.turned) { drag.turned = true; holdBal(drag.d, drag.g, false); }
+    // up is right, the whole way across in 200 px; it rests at the centre for a moment
+    drag.raw = clamp(drag.raw + (drag.sy - w.sy) * 2 / 200 * (e.shiftKey ? .2 : 1), -1, 1);
+    drag.sy = w.sy;
+    setBal(drag.d, drag.g, Math.abs(drag.raw) < .05 ? 0 : drag.raw);
+    showTip(w, `${drag.d.title} · ${drag.g.label} · <b>${balText(drag.g)}</b>`);
   } else if (drag.type === 'device') {
     const d = drag.d;
     if (S.mode === 'desk') dragDevice(d, w.x - drag.off.x, w.y - drag.off.y);
@@ -1109,6 +1280,7 @@ stage.addEventListener('pointermove', (e) => {
 stage.addEventListener('pointerup', () => {
   if (!drag) return;
   if (drag.type === 'plug') dropPlugs();
+  else if (drag.type === 'bal' && !drag.turned) pressBal(drag.d, drag.g);
   else if (drag.type === 'rope') drag.c.grab = -1;
   else if (drag.type === 'device' && S.mode === 'rack') { rackOrder = layoutRack(drag.d); layoutRack(); }
   guides = []; snapped = [null, null];
@@ -1144,6 +1316,9 @@ function dropPlugs() {
 
 stage.addEventListener('dblclick', (e) => {
   const w = toWorld(e);
+  const kd = hitDevice(w);
+  const kg = kd && hitKnob(w, kd);
+  if (kg) { setVol(kd, kg, 1); return; }
   const plug = hitPlug(w);
   const c = plug ? plug.c : (hitCable(w) || {}).c;
   if (!c || !live(c)) return;
@@ -1155,7 +1330,12 @@ stage.addEventListener('dblclick', (e) => {
 });
 stage.addEventListener('contextmenu', (e) => e.preventDefault());
 stage.addEventListener('wheel', (e) => {
-  e.preventDefault(); S.vt = null;
+  e.preventDefault();
+  const kw = toWorld(e), kd = hitDevice(kw);
+  const kg = kd && hitKnob(kw, kd), bg = kd && hitBal(kw, kd);
+  if (kg) { setVol(kd, kg, kg.vol - Math.sign(e.deltaY) * (e.shiftKey ? .01 : .05)); showTip(kw, `${kd.title} · ${kg.label} · <b>${volText(kg)}</b>`); return; }
+  if (bg) { if (bg.balOut) { setBal(kd, bg, bg.bal - Math.sign(e.deltaY) * (e.shiftKey ? .02 : .1)); showTip(kw, `${kd.title} · ${bg.label} · <b>${balText(bg)}</b>`); } return; }
+  S.vt = null;
   prof.classList.add('hide'); prof.dataset.dev = '';
   const w = toWorld(e), v = S.view, s = clamp(v.s * Math.exp(-e.deltaY * .0015), .25, 2.5);
   v.x = w.sx - w.x * s; v.y = w.sy - w.y * s; v.s = s;
@@ -1170,7 +1350,8 @@ function updateHover(w) {
   focus = new Set();
   let cur = 'default', text = '';
   const plug = hitPlug(w), jack = plug ? null : hitJack(w), cab = plug || jack ? null : hitCable(w), dev = plug || jack || cab ? null : hitDevice(w);
-  const sw = dev && hitSwitch(w, dev), pk = dev && !sw && hitProfile(w, dev);
+  const bk = dev && hitBal(w, dev), kn = dev && !bk && hitKnob(w, dev), mk = dev && !kn && !bk && hitMute(w, dev);
+  const sw = dev && !kn && !mk && !bk && hitSwitch(w, dev), pk = dev && !kn && !mk && !bk && !sw && hitProfile(w, dev);
   if (plug) {
     focus.add(plug.c); cur = 'grab'; text = cordText(plug.c);
   } else if (jack) {
@@ -1181,6 +1362,12 @@ function updateHover(w) {
     focus.add(cab.c); cur = 'grab'; text = cordText(cab.c);
   } else if (sw) {
     cur = 'pointer'; text = sw.split ? 'Join L and R into one stereo jack' : 'Split into separate L and R jacks';
+  } else if (kn) {
+    cur = 'ns-resize'; text = `${dev.title} · ${kn.label} · <b>${volText(kn)}</b>`;
+  } else if (bk) {
+    cur = bk.balOut ? 'ns-resize' : 'pointer'; text = `${dev.title} · ${bk.label} · <b>${balText(bk)}</b>`;
+  } else if (mk) {
+    cur = 'pointer'; text = `${dev.title} · ${mk.label} · ${mk.mute ? '<b>muted</b>' : 'not muted'}`;
   } else if (pk) {
     const pr = dev.profiles[dev.profile];
     cur = 'pointer'; text = `${dev.title} · profile <b>${esc(pr.name)}</b>${pr.codecs ? ' · codec <b>' + dev.codec + '</b>' : ''}`;
@@ -1189,7 +1376,7 @@ function updateHover(w) {
     cur = S.locked ? 'default' : 'move';
     text = dev.name;
   }
-  for (const d of devs) d.el.classList.toggle('hl', d === dev && !sw && !pk);
+  for (const d of devs) d.el.classList.toggle('hl', d === dev && !sw && !pk && !kn && !mk && !bk);
   stage.style.cursor = cur;
   showTip(text ? w : null, text);
   $('#st2').textContent = plug ? 'drag: unplug or move · double-click: remove'
@@ -1197,6 +1384,9 @@ function updateHover(w) {
     : cab ? 'drag: swing the cord · double-click: pull it out'
     : sw ? 'click: ' + (sw.split ? 'join' : 'split')
     : pk ? 'click: choose a profile'
+    : kn ? `drag up/down: ${knobName(kn).toLowerCase()} · Shift: fine · wheel: 5% (Shift 1%) · double-click: 100%`
+    : bk ? (bk.balOut ? 'drag up/down: balance (up is right) · Shift: fine · wheel · click: push it in' : 'click: pop the balance knob out to turn it')
+    : mk ? 'click: ' + (mk.mute ? 'unmute' : 'mute')
     : dev ? `${dev.title} — ${S.locked ? 'locked (L to unlock)' : 'drag to move'}` : 'wheel: zoom · drag: pan';
 }
 function showTip(w, html) {
@@ -1287,6 +1477,9 @@ function preset() {
     desk: Object.fromEntries(devs.map((d) => [d.id, { x: Math.round(d.dx), y: Math.round(d.dy) }])),
     rack: rackOrder.map((d) => d.id),
     mode: S.mode,
+    // what the faces set: volume, balance, mute; a card's profile and codec
+    mix: Object.fromEntries(devs.flatMap((d) => d.groups.filter((g) => g.mix).map((g) => [`${d.id}:${g.dir}:${g.label}`, { vol: g.vol, bal: g.bal, mute: g.mute }]))),
+    profiles: Object.fromEntries(devs.filter((d) => d.profiles).map((d) => [d.id, { name: d.profiles[d.profile].name, codec: d.codec }])),
   };
 }
 function saveSlot(name) {
@@ -1314,6 +1507,18 @@ function applyPreset(p) {
     if (!!g.split !== want) { g.split = want; buildJacks(d, g); }
   });
   for (const d of devs) { const q = p.desk?.[d.id]; if (q) { d.dx = q.x; d.dy = q.y; } }
+  // a profile by its name (indexes can change); one that is gone is skipped. Before the links:
+  // they may need its ports
+  for (const d of devs) {
+    const q = p.profiles?.[d.id], i = q ? d.profiles.findIndex((pr) => pr.name === q.name) : -1;
+    if (i >= 0) setProfile(d, i, q.codec);
+  }
+  for (const d of devs) {
+    for (const g of d.groups) {
+      const q = g.mix && p.mix?.[`${d.id}:${g.dir}:${g.label}`];
+      if (q) { g.vol = clamp(+q.vol || 0, 0, VMAX); g.bal = clamp(+q.bal || 0, -1, 1); g.mute = !!q.mute; paintMix(g); }
+    }
+  }
   if (Array.isArray(p.rack)) {
     const byId = new Map(devs.map((d) => [d.id, d])), seen = p.rack.map((id) => byId.get(id)).filter(Boolean);
     rackOrder = [...seen, ...devs.filter((d) => !seen.includes(d))];

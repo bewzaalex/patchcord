@@ -34,7 +34,8 @@ impl Default for Settings {
     }
 }
 
-/// A saved patch: its links, which stereo jacks are split, and where the devices sit.
+/// A saved patch: its links, which stereo jacks are split, where the devices sit, the apps'
+/// volumes and the cards' profiles.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Preset {
     pub name: String,
@@ -45,6 +46,11 @@ pub struct Preset {
     /// split stereo groups: device key, group label, "in" or "out"
     pub split: Vec<(String, String, String)>,
     pub pos: BTreeMap<String, (f64, f64)>,
+    /// each app stream's volume (1 is 100%), balance (-1 L … 1 R) and mute, by device key,
+    /// group label and "in" or "out"
+    pub mix: BTreeMap<(String, String, String), (f64, f64, bool)>,
+    /// each card's profile, by device key: its full name, as PipeWire describes it
+    pub profiles: BTreeMap<String, String>,
 }
 
 const CABLES: [&str; 3] = ["show", "fade", "hide"];
@@ -188,6 +194,19 @@ pub fn load_presets() -> Vec<Preset> {
                     p.pos.insert(key, xy);
                 }
             }
+            "mix" => {
+                let f = fields(&v);
+                if let [k, g, dir, vol, bal, m] = &f[..]
+                    && let (Ok(vol), Ok(bal)) = (vol.parse::<f64>(), bal.parse::<f64>())
+                {
+                    p.mix.insert((k.clone(), g.clone(), dir.clone()), (vol / 100.0, bal / 100.0, on(m)));
+                }
+            }
+            "profile" => {
+                if let Some((k, name)) = v.split_once(" | ") {
+                    p.profiles.insert(k.trim().to_owned(), name.trim().to_owned());
+                }
+            }
             _ => {}
         }
     }
@@ -200,7 +219,10 @@ pub fn save_presets(presets: &[Preset]) {
          # node  = a PipeWire node that was there when the preset was saved\n\
          # link  = node | port > node | port\n\
          # split = device | group | in or out: a stereo jack shown as separate L and R jacks\n\
-         # pos   = device | x | y: where a device sits on the desk\n",
+         # pos   = device | x | y: where a device sits on the desk\n\
+         # mix   = device | group | in or out | volume % | balance % (-100 L … 100 R) | mute on or off:\n\
+         #         an app stream's volume (or gain, recording)\n\
+         # profile = device | profile: a card's profile, by its full name\n",
     );
     for p in presets {
         t += &format!("\n[{}]\n", p.name);
@@ -215,6 +237,12 @@ pub fn save_presets(presets: &[Preset]) {
         }
         for (k, xy) in &p.pos {
             t += &pos_line(k, *xy);
+        }
+        for ((k, g, dir), (vol, bal, mute)) in &p.mix {
+            t += &format!("mix = {k} | {g} | {dir} | {} | {} | {}\n", (vol * 100.0).round(), (bal * 100.0).round(), if *mute { "on" } else { "off" });
+        }
+        for (k, name) in &p.profiles {
+            t += &format!("profile = {k} | {name}\n");
         }
     }
     write("presets.txt", &t);
@@ -245,6 +273,8 @@ mod tests {
             ],
             split: vec![("device:alsa_card.pci-0000_63_00.6".into(), "PLAYBACK".into(), "in".into())],
             pos: s.pos.clone(),
+            mix: BTreeMap::from([(("node:fooyin".into(), "OUTPUT".into(), "out".into()), (0.85, -0.3, false)), (("app:Audacity".into(), "INPUT".into(), "in".into()), (1.2, 0.0, true))]),
+            profiles: BTreeMap::from([("device:bluez_card.C9_C1_60_6A_FD_E3".into(), "High Fidelity Playback (A2DP Sink, codec AAC)".into())]),
         };
         let q = Preset { name: "EMPTY".into(), ..Default::default() };
         save_presets(&[p.clone(), q.clone()]);

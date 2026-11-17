@@ -48,6 +48,8 @@ pub struct Group {
     pub stereo: bool,
     /// its signal is measured for the device's meter (what a sink plays, what an app sends)
     pub meter: bool,
+    /// an app stream's volume (its output) or gain (its input), set beside its jacks
+    pub mix: Option<Mix>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -74,6 +76,63 @@ pub struct Device {
     pub state: &'static str,
     /// a sound card's profiles, when it has some
     pub card: Option<Card>,
+}
+
+/// The highest volume a knob goes to: 153% (+11 dB), as in pavucontrol.
+pub const VOL_MAX: f64 = 1.53;
+
+/// An app stream's volume (or, recording, its gain): PipeWire keeps one linear gain per channel;
+/// Patchcord shows them as pavucontrol does, as a volume (the cube root: 100% is 0 dB) and a
+/// balance between L and R.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Mix {
+    pub node: u32,
+    pub volumes: Vec<f32>,
+    pub mute: bool,
+}
+
+impl Mix {
+    /// Each channel's volume on the knob's scale (1 is 100%).
+    fn levels(&self) -> Vec<f64> {
+        self.volumes.iter().map(|v| (*v as f64).max(0.0).cbrt()).collect()
+    }
+
+    /// The volume: the loudest channel.
+    pub fn volume(&self) -> f64 {
+        self.levels().into_iter().fold(0.0, f64::max)
+    }
+
+    /// The balance, -1 (only L) to 1 (only R), as PulseAudio works it out: the quieter side
+    /// against the louder one. Only stereo has one.
+    pub fn balance(&self) -> f64 {
+        let l = self.levels();
+        let [a, b] = l[..] else { return 0.0 };
+        if a == b {
+            0.0
+        } else if a > b {
+            b / a - 1.0
+        } else {
+            1.0 - a / b
+        }
+    }
+
+    /// The channel volumes (linear) for a volume and balance: the far side at the volume, the
+    /// near side lower.
+    pub fn volumes_for(&self, volume: f64, balance: f64) -> Vec<f32> {
+        let v = volume.clamp(0.0, VOL_MAX);
+        let b = balance.clamp(-1.0, 1.0);
+        let lin = |x: f64| x.powi(3) as f32;
+        match self.volumes.len() {
+            2 => vec![lin(if b > 0.0 { v * (1.0 - b) } else { v }), lin(if b < 0.0 { v * (1.0 + b) } else { v })],
+            n => vec![lin(v); n.max(1)],
+        }
+    }
+}
+
+/// A volume as pavucontrol writes it: "85%" and "-4.24 dB".
+pub fn volume_text(v: f64) -> (String, String) {
+    let db = if v <= 0.0 { "-∞ dB".to_owned() } else { format!("{:.2} dB", 60.0 * v.log10() + 0.0) };
+    (format!("{}%", (v * 100.0).round()), db.replace("-0.00", "0.00"))
 }
 
 /// A sound card: its PipeWire device and its profiles (see `pw::Profile`).
@@ -168,6 +227,8 @@ pub struct Graph {
     born: HashMap<u32, Instant>,
     /// each card's profiles and the one it is in, by device
     profiles: HashMap<u32, (Vec<Profile>, Option<u32>)>,
+    /// each app stream's channel volumes and mute, by node
+    mix: HashMap<u32, (Vec<f32>, bool)>,
     pub synced: bool,
 }
 
@@ -204,8 +265,13 @@ impl Graph {
                 let new = (list.clone(), *current);
                 self.profiles.insert(*id, new.clone()) != Some(new)
             }
+            Event::Mix { id, volumes, mute } => {
+                let new = (volumes.clone(), *mute);
+                self.mix.insert(*id, new.clone()) != Some(new)
+            }
             Event::Removed(id) => {
                 self.born.remove(id);
+                self.mix.remove(id);
                 self.profiles.remove(id);
                 self.info.remove(id);
                 self.state.remove(id);
@@ -292,8 +358,46 @@ impl Graph {
         for (_, p) in self.of(Kind::Node) {
             *names.entry(p.get("node.name").map_or("", |s| s.as_str())).or_default() += 1;
         }
+        // an app that both plays and records (one stream each, as Audacity does) is one device:
+        // its streams' process, from the stream or else its client (`pipewire.sec.pid`), and its
+        // name (apps that talk to PipeWire through its PulseAudio server may share a process)
+        let audio_stream = |p: &Props| p.get("media.class").is_some_and(|c| c == "Stream/Output/Audio" || c == "Stream/Input/Audio");
+        let process = |p: &Props| -> Option<String> {
+            let client = p.get("client.id").and_then(|c| c.parse::<u32>().ok()).and_then(|c| self.objects.get(&c)).filter(|(k, _)| *k == Kind::Client).map(|(_, cp)| cp);
+            let pid = p.get("application.process.id").or_else(|| client.and_then(|c| c.get("application.process.id").or(c.get("pipewire.sec.pid"))))?;
+            Some(format!("{pid}|{}", p.get("application.name").map_or("", |s| s)))
+        };
+        let mut by_pid: HashMap<String, Vec<u32>> = HashMap::new();
+        for (node, p) in self.of(Kind::Node) {
+            if ports.contains_key(&node) && !self.hidden(node, p) && audio_stream(p)
+                && let Some(pid) = process(p)
+            {
+                by_pid.entry(pid).or_default().push(node);
+            }
+        }
+        let class_of = |n: &u32| self.props(*n).and_then(|p| p.get("media.class")).map_or("", |s| s.as_str());
+        let mut paired: HashMap<u32, String> = HashMap::new();
+        let mut app_names: HashMap<String, usize> = HashMap::new();
+        for nodes in by_pid.values() {
+            if let [a, b] = nodes[..]
+                && class_of(&a) != class_of(&b)
+            {
+                let p = self.props(a).expect("node");
+                let name = some(p.get("application.name")).or(some(p.get("node.name"))).map_or("?", |s| s.as_str()).to_owned();
+                *app_names.entry(name.clone()).or_default() += 1;
+                paired.insert(a, name.clone());
+                paired.insert(b, name);
+            }
+        }
         for (node, p) in self.of(Kind::Node) {
             if !ports.contains_key(&node) || self.hidden(node, p) {
+                continue;
+            }
+            if let Some(name) = paired.get(&node) {
+                let pid = process(p).unwrap_or_default();
+                let pid = pid.split('|').next().unwrap_or("");
+                let key = if app_names.get(name).copied().unwrap_or(0) > 1 { format!("app:{name}#{pid}") } else { format!("app:{name}") };
+                boxes.entry(key).or_default().push(node);
                 continue;
             }
             let key = match p.get("device.id").and_then(|d| d.parse::<u32>().ok()).and_then(|d| self.props(d)) {
@@ -344,6 +448,7 @@ impl Graph {
                     .or(some(first.get("node.name")))
                     .or(some(first.get("media.name")))
                     .cloned()
+                    .map(|n| plain_name(&n))
                     .unwrap_or_else(|| "?".into());
                 let state = nodes
                     .iter()
@@ -361,7 +466,7 @@ impl Graph {
                 let mut h = DefaultHasher::new();
                 key.hash(&mut h);
                 Device {
-                    model: model(dev, first),
+                    model: if key.starts_with("app:") { "APP · RECORD & PLAY".into() } else { model(dev, first) },
                     finish: finish(dev.is_some(), class),
                     color: PALETTE[(h.finish() % PALETTE.len() as u64) as usize],
                     key,
@@ -379,6 +484,12 @@ impl Graph {
         out
     }
 
+}
+
+/// A name without the wrapper PipeWire's ALSA plugin puts around the programs that use it:
+/// "ALSA plug-in [soundcraft]" is "soundcraft".
+fn plain_name(name: &str) -> String {
+    name.strip_prefix("ALSA plug-in [").and_then(|n| n.strip_suffix(']')).filter(|n| !n.is_empty()).unwrap_or(name).to_owned()
 }
 
 /// The value, unless it is blank.
@@ -435,7 +546,11 @@ impl Graph {
             // what a sink plays (its monitor) and what an app sends; never a microphone, which
             // recording would switch on (and a Bluetooth headset into its low-quality mode)
             let meter = ps[0].media == Media::Audio && ((mon && class.ends_with("Sink")) || (dir == Dir::Out && class.starts_with("Stream/Output/Audio")));
-            groups.push(Group { label: label.into(), dir, ports: ps, stereo, meter });
+            // a stream's volume goes with its own ports: what it plays, or what it records
+            let mix = (ps[0].media == Media::Audio && !mon && ((dir == Dir::Out && class == "Stream/Output/Audio") || (dir == Dir::In && class == "Stream/Input/Audio")))
+                .then(|| self.mix.get(&node).map(|(volumes, mute)| Mix { node, volumes: volumes.clone(), mute: *mute }))
+                .flatten();
+            groups.push(Group { label: label.into(), dir, ports: ps, stereo, meter, mix });
         }
         groups
     }
@@ -524,6 +639,56 @@ fn finish(hardware: bool, class: &str) -> Finish {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn volume_and_balance_read_as_in_pavucontrol() {
+        let m = Mix { node: 1, volumes: vec![0.85f32.powi(3), (0.85f32 * 0.6).powi(3)], mute: false };
+        assert!((m.volume() - 0.85).abs() < 1e-4);
+        assert!((m.balance() + 0.4).abs() < 1e-4, "{}", m.balance());
+        let v = m.volumes_for(m.volume(), m.balance());
+        assert!(v.iter().zip(&m.volumes).all(|(a, b)| (a - b).abs() < 1e-5), "{v:?}");
+        assert_eq!(m.volumes_for(1.0, 0.5), vec![0.125, 1.0]);
+        assert_eq!(volume_text(1.0), ("100%".into(), "0.00 dB".into()));
+        assert_eq!(volume_text(0.85).1, "-4.23 dB");
+        assert_eq!(volume_text(0.0).1, "-∞ dB");
+    }
+
+    #[test]
+    fn an_alsa_app_is_called_by_its_own_name() {
+        assert_eq!(plain_name("ALSA plug-in [soundcraft]"), "soundcraft");
+        assert_eq!(plain_name("Firefox"), "Firefox");
+        assert_eq!(plain_name("ALSA plug-in []"), "ALSA plug-in []");
+    }
+
+    #[test]
+    fn an_app_that_records_and_plays_is_one_device_with_two_sets_of_controls() {
+        let mut g = Graph::default();
+        let props = |kv: &[(&str, &str)]| -> Props { kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect() };
+        let node = |g: &mut Graph, id: u32, class: &str| {
+            let p = props(&[("media.class", class), ("node.name", "ALSA plug-in [audacity]"), ("application.name", "Audacity"), ("application.process.id", "4242")]);
+            g.apply(&Event::Added { id, kind: Kind::Node, props: p.clone() });
+            g.apply(&Event::Info { id, props: p, state: Some("running") });
+        };
+        let port = |g: &mut Graph, id: u32, node: u32, dir: &str, name: &str, ch: &str| {
+            let p = props(&[("node.id", &node.to_string()), ("port.direction", dir), ("port.name", name), ("format.dsp", "32 bit float mono audio"), ("audio.channel", ch)]);
+            g.apply(&Event::Added { id, kind: Kind::Port, props: p });
+        };
+        node(&mut g, 10, "Stream/Output/Audio");
+        node(&mut g, 20, "Stream/Input/Audio");
+        port(&mut g, 11, 10, "out", "output_FL", "FL");
+        port(&mut g, 12, 10, "out", "output_FR", "FR");
+        port(&mut g, 21, 20, "in", "input_FL", "FL");
+        port(&mut g, 22, 20, "in", "input_FR", "FR");
+        g.apply(&Event::Mix { id: 10, volumes: vec![1.0, 1.0], mute: false });
+        g.apply(&Event::Mix { id: 20, volumes: vec![0.343, 0.343], mute: true });
+        let devs = g.devices();
+        assert_eq!(devs.len(), 1, "{:?}", devs.iter().map(|d| &d.key).collect::<Vec<_>>());
+        let d = &devs[0];
+        assert_eq!((d.key.as_str(), d.name.as_str(), d.model.as_str()), ("app:Audacity", "Audacity", "APP · RECORD & PLAY"));
+        let groups: Vec<(&str, Option<u32>, Option<bool>)> = d.groups.iter().map(|g| (g.label.as_str(), g.mix.as_ref().map(|m| m.node), g.mix.as_ref().map(|m| m.mute))).collect();
+        assert_eq!(groups, vec![("INPUT", Some(20), Some(true)), ("OUTPUT", Some(10), Some(false))]);
+        assert!((d.groups[0].mix.as_ref().unwrap().volume() - 0.7).abs() < 1e-3);
+    }
 
     fn card(profiles: &[(u32, &str, Avail, i32)], current: u32) -> Card {
         Card {

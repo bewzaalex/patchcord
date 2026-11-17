@@ -13,11 +13,12 @@ use winit::window::{CursorIcon, Window, WindowId};
 
 use super::cord::Held;
 use super::ease;
-use super::face::{DEV_H, LCD_CH};
+use super::face::{BalKnob, DEV_H, LCD_CH};
 use super::gpu::{Gpu, Sprite};
 use super::panel::{self, Key, Menu, MenuHit, Panel, ProfileHit};
 use crate::config::{self, Preset, Settings};
 use super::scene::{Hover, Layer, Scene, View, next_id};
+use crate::graph::VOL_MAX;
 use crate::pw::{Cmd, Connection};
 
 /// After zooming, faces are drawn sharp again once the zoom has been still this long.
@@ -40,7 +41,16 @@ enum Drag {
     Switch { from: (f64, f64), pos0: u8, moved: bool },
     /// a panel key held down
     Key,
+    /// an app's VOLUME knob, turned by dragging up and down: the pointer's last height and the
+    /// volume it has turned to (before resting at 100%)
+    Knob { key: String, gi: usize, last: f64, raw: f64 },
+    /// an app's BAL knob, pressed: it turns once the pointer moves (if it was out), else the
+    /// release pops it out or pushes it in
+    Bal { key: String, gi: usize, y0: f64, last: f64, raw: f64, was: BalKnob, turned: bool },
 }
+
+/// How far the pointer moves (logical pixels) to turn a knob all the way.
+const KNOB_TRAVEL: f64 = 200.0;
 
 /// How long a notice stays.
 const NOTICE: Duration = Duration::from_millis(1800);
@@ -498,7 +508,7 @@ impl App {
             {
                 sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (d.x + l.x) * v.s + v.x, y: (d.y + l.y) * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha: 1.0 });
             }
-            for l in [d.shade.as_ref().map(|(_, l)| l), d.face.as_ref(), d.lcd.as_ref().map(|(_, l)| l), d.meter.as_ref().map(|(_, l)| l)].into_iter().flatten() {
+            for l in d.layers() {
                 sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (d.x + l.x) * v.s + v.x, y: (d.y + l.y) * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha: 1.0 });
             }
             // its jacks, over the face
@@ -557,20 +567,20 @@ impl App {
         // the GPU has the pixels now (the jack pictures are kept: they are small, and the GPU lets
         // a texture go in a frame that doesn't draw it)
         for d in &mut self.scene.devs {
-            for l in [d.shade.as_mut().map(|(_, l)| l), d.face.as_mut(), d.lcd.as_mut().map(|(_, l)| l), d.meter.as_mut().map(|(_, l)| l)].into_iter().flatten() {
+            for l in d.layers_mut() {
                 if sf.gpu.has(l.id) {
                     l.pm = None;
                 }
             }
         }
-        self.animating = moving || self.view_to.is_some() || self.drag.is_some() || self.rescale_at.is_some() || self.notice.is_some() || faces_waiting || (self.scene.hover != Hover::None && self.tip.is_none() && now - self.hover_since < 2 * TIP_DELAY);
+        self.animating = moving || self.view_to.is_some() || self.drag.is_some() || self.rescale_at.is_some() || self.notice.is_some() || faces_waiting || self.scene.noting() || (self.scene.hover != Hover::None && self.tip.is_none() && now - self.hover_since < 2 * TIP_DELAY);
     }
 
     /// The glow around the device under the pointer (not while dragging, nor over its switches).
     fn update_glow(&mut self) {
         let w = self.world(self.cursor);
         let key = match &self.scene.hover {
-            Hover::Device(k) if self.drag.is_none() && self.scene.switch_at(w.0, w.1).is_none() && self.scene.profile_key_at(w.0, w.1).is_none() => k.clone(),
+            Hover::Device(k) if self.drag.is_none() && self.scene.switch_at(w.0, w.1).is_none() && self.scene.profile_key_at(w.0, w.1).is_none() && !self.scene.mix_control_at(w.0, w.1) => k.clone(),
             _ => {
                 self.glow = None;
                 return;
@@ -721,6 +731,28 @@ impl App {
                 return self.after_patch();
             }
         }
+        // an app's VOLUME controls (they work while devices are locked too)
+        if let Some((di, gi)) = self.scene.knob_at(w.0, w.1) {
+            if double {
+                self.scene.set_volume((di, gi), 1.0);
+                return self.after_patch();
+            }
+            let raw = self.scene.devs[di].mix(gi).map_or(1.0, |m| m.0);
+            self.drag = Some(Drag::Knob { key: self.scene.devs[di].dev.key.clone(), gi, last: self.cursor.1, raw });
+            return self.redraw();
+        }
+        if let Some((di, gi)) = self.scene.bal_at(w.0, w.1) {
+            let d = &mut self.scene.devs[di];
+            let raw = d.mix(gi).map_or(0.0, |m| m.1);
+            self.drag = Some(Drag::Bal { key: d.dev.key.clone(), gi, y0: self.cursor.1, last: self.cursor.1, raw, was: d.bal(gi), turned: false });
+            // down under the finger, below flush
+            d.bal.insert(gi, BalKnob::Held);
+            return self.redraw();
+        }
+        if let Some(at) = self.scene.mute_at(w.0, w.1) {
+            self.scene.toggle_mute(at);
+            return self.after_patch();
+        }
         // a card's PROFILE key opens its list under it
         if let Some(di) = self.scene.profile_key_at(w.0, w.1) {
             self.profiles = Some(ProfileList { key: self.scene.devs[di].dev.key.clone(), sig: 0, layer: None, hits: Vec::new(), at: (0.0, 0.0) });
@@ -778,6 +810,12 @@ impl App {
                 }
                 self.save_settings();
             }
+            // a press without a turn: it comes back up, out if it was in, in if it was out
+            Some(Drag::Bal { key, gi, was, turned, .. }) => {
+                if let Some(d) = self.scene.devs.iter_mut().find(|d| d.dev.key == key) {
+                    d.bal.insert(gi, if turned || was == BalKnob::In { BalKnob::Out } else { BalKnob::In });
+                }
+            }
             _ => {}
         }
         self.panel.state.pressed = None;
@@ -818,6 +856,36 @@ impl App {
             }
             Some(Drag::Cord { .. }) => self.redraw(),
             Some(Drag::Key) => {}
+            Some(Drag::Knob { key, gi, last, raw }) => {
+                // up is louder; Shift turns it finely; it rests at 100% for a moment on the way
+                let fine = if self.mods.shift_key() { 0.2 } else { 1.0 };
+                let raw = (raw + (last - self.cursor.1) / self.dpi() * VOL_MAX / KNOB_TRAVEL * fine).clamp(0.0, VOL_MAX);
+                let (key, gi) = (key.clone(), *gi);
+                self.drag = Some(Drag::Knob { key: key.clone(), gi, last: self.cursor.1, raw });
+                if let Some(di) = self.scene.devs.iter().position(|d| d.dev.key == key) {
+                    self.scene.set_volume((di, gi), if (raw - 1.0).abs() < 0.04 { 1.0 } else { raw });
+                }
+                self.after_patch();
+            }
+            Some(Drag::Bal { key, gi, y0, last, raw, was, turned }) => {
+                let (key, gi, y0, last, raw, was, mut turned) = (key.clone(), *gi, *y0, *last, *raw, *was, *turned);
+                let dpi = self.dpi();
+                // pushed in, it can't turn; out, it turns once the pointer really moves
+                if was != BalKnob::Out || (!turned && (self.cursor.1 - y0).abs() / dpi < 3.0) {
+                    return;
+                }
+                let Some(di) = self.scene.devs.iter().position(|d| d.dev.key == key) else { return };
+                if !turned {
+                    // turning, not pressing: it comes back up without a click
+                    turned = true;
+                    self.scene.devs[di].bal.insert(gi, BalKnob::Out);
+                }
+                let fine = if self.mods.shift_key() { 0.2 } else { 1.0 };
+                let raw = (raw + (last - self.cursor.1) / dpi * 2.0 / KNOB_TRAVEL * fine).clamp(-1.0, 1.0);
+                self.drag = Some(Drag::Bal { key, gi, y0, last: self.cursor.1, raw, was, turned });
+                self.scene.set_balance((di, gi), if raw.abs() < 0.05 { 0.0 } else { raw });
+                self.after_patch();
+            }
             Some(Drag::Switch { from, pos0, .. }) => {
                 let (from, pos0) = (*from, *pos0);
                 // right or up steps on, left or down steps back: one position per 30 pixels
@@ -890,7 +958,9 @@ impl App {
             CursorIcon::Grab
         } else if self.scene.free_jack_at(w.0, w.1).is_some() {
             CursorIcon::Crosshair
-        } else if self.scene.switch_at(w.0, w.1).is_some() || self.scene.profile_key_at(w.0, w.1).is_some() {
+        } else if self.scene.knob_at(w.0, w.1).is_some() || self.scene.bal_at(w.0, w.1).is_some_and(|(di, gi)| self.scene.devs[di].bal(gi) == BalKnob::Out) {
+            CursorIcon::NsResize
+        } else if self.scene.switch_at(w.0, w.1).is_some() || self.scene.profile_key_at(w.0, w.1).is_some() || self.scene.mix_control_at(w.0, w.1) {
             CursorIcon::Pointer
         } else if self.scene.device_at(w.0, w.1).is_some() && !self.panel.state.locked {
             CursorIcon::Move
@@ -1030,7 +1100,24 @@ impl ApplicationHandler<()> for App {
                         _ => {}
                     }
                 } else if self.cursor.1 <= bottom {
-                    self.zoom(f);
+                    // over an app's VOLUME knob, or its BAL knob when out, the wheel turns it
+                    let w = self.world(self.cursor);
+                    let up = if f > 1.0 { 1.0 } else { -1.0 };
+                    let fine = self.mods.shift_key();
+                    if f == 1.0 {
+                    } else if let Some((di, gi)) = self.scene.knob_at(w.0, w.1) {
+                        let v = self.scene.devs[di].mix(gi).map_or(1.0, |m| m.0);
+                        self.scene.set_volume((di, gi), v + up * if fine { 0.01 } else { 0.05 });
+                        self.after_patch();
+                    } else if let Some((di, gi)) = self.scene.bal_at(w.0, w.1) {
+                        if self.scene.devs[di].bal(gi) == BalKnob::Out {
+                            let b = self.scene.devs[di].mix(gi).map_or(0.0, |m| m.1);
+                            self.scene.set_balance((di, gi), b + up * if fine { 0.02 } else { 0.1 });
+                            self.after_patch();
+                        }
+                    } else {
+                        self.zoom(f);
+                    }
                 }
             }
             WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
