@@ -32,11 +32,11 @@
   <screenshots>
     <screenshot type="default">
       <caption>Devices on the desk, patched with cords</caption>
-      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.1.0/docs/screenshots/desk.png</image>
+      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.2.0/docs/screenshots/desk.png</image>
     </screenshot>
     <screenshot>
       <caption>The same devices in a rack</caption>
-      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.1.0/docs/screenshots/rack.png</image>
+      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.2.0/docs/screenshots/rack.png</image>
     </screenshot>
   </screenshots>
   <description>
@@ -53,6 +53,25 @@
     </ul>
   </description>
   <releases>
+    <release version="0.2.0" date="2026-11-17">
+      <url type="details">https://github.com/bewzaalex/patchcord/releases/tag/v0.2.0</url>
+      <description>
+        <p>Lighter cords that hang like real ones, as in Reason; devices that line up and never lie over one another; and fixes for hovering, SPLIT and JOIN.</p>
+        <ul>
+          <li>Cords end straight in their jacks instead of in right-angle plugs: they simply hang between their jacks in smooth curves, with no loops, kinks or turning plugs</li>
+          <li>Cords hang in deep, calm curves like real cords, dropping out of their jacks; the SAG knob is gone</li>
+          <li>A cord pulled out of a jack comes out in a smooth curve, instead of a coil that unrolls</li>
+          <li>Cords follow their devices smoothly when they move, as when switching between desk and rack</li>
+          <li>When a cord is dropped, the jack its other end is still in keeps its place until the cord has gone</li>
+          <li>A split stereo jack shows its L jack above its R jack, both keeping the stereo jack's gold ring</li>
+          <li>SPLIT and JOIN carry over to every stereo jack patched to it, and on from there, so a stereo jack is never patched to a split one by two cords that each carry one channel</li>
+          <li>Devices on the desk line up: a dragged device's edges and centre stick lightly to those of the others, with a guide line, and it sits neatly right beside, above or below one; a button on the panel (G) turns this off to place devices freely</li>
+          <li>Devices on the desk never lie over one another: they can't be dragged over each other, they make room when one grows, and a device that comes back no longer lands on top of another one that took its place</li>
+          <li>JOIN on a split input jack joins the app output it is patched to as well, like JOIN on the output did</li>
+          <li>Hovering a jack, cord or device no longer makes the cords blink, and hovering one without cords leaves the others as they are</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-11-16">
       <url type="details">https://github.com/bewzaalex/patchcord/releases/tag/v0.1.0</url>
       <description>

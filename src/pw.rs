@@ -108,6 +108,11 @@ fn props_of(d: &spa::utils::dict::DictRef) -> Props {
 }
 
 /// A signal meter: a capture stream, its ports once they exist, and the passive links to them.
+/// A node or device bound to keep its info coming: its proxy and listener.
+type Bound = (Box<dyn Any>, Box<dyn Any>);
+/// A meter's stream, its listener and the peaks it measures.
+type MeterStream = (pw::stream::StreamRc, pw::stream::StreamListener<()>, Rc<RefCell<Vec<f32>>>);
+
 struct Meter {
     _stream: pw::stream::StreamRc,
     _listener: pw::stream::StreamListener<()>,
@@ -130,7 +135,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
     let registry = core.get_registry_rc().expect("PipeWire registry");
 
     // bound nodes and devices (proxy and listener), so their info keeps coming
-    let bound: Rc<RefCell<HashMap<u32, (Box<dyn Any>, Box<dyn Any>)>>> = Default::default();
+    let bound: Rc<RefCell<HashMap<u32, Bound>>> = Default::default();
     let meters: Rc<RefCell<HashMap<u32, Meter>>> = Default::default();
 
     let _registry_listener = registry
@@ -209,11 +214,12 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                         let node: Option<u32> = props.get("node.id").and_then(|n| n.parse().ok());
                         let index: u32 = props.get("port.id").and_then(|n| n.parse().ok()).unwrap_or(0);
                         for m in meters.borrow_mut().values_mut() {
-                            if m.node.is_some() && m.node == node {
+                            if let Some(me) = m.node
+                                && m.node == node
+                            {
                                 m.ports.push((index, id));
                                 if m.ports.len() == m.targets.len() && m.links.is_empty() {
                                     m.ports.sort();
-                                    let me = m.node.unwrap();
                                     for (&(tn, tp), &(_, mine)) in m.targets.iter().zip(&m.ports) {
                                         let p = pw::properties::properties! {
                                             "link.output.node" => tn.to_string(),
@@ -345,7 +351,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
 
 /// A passive capture stream with one channel per measured port, not connected to anything:
 /// Patchcord links it itself once its ports appear.
-fn meter(core: &pw::core::CoreRc, id: u32, channels: &[String]) -> Result<(pw::stream::StreamRc, pw::stream::StreamListener<()>, Rc<RefCell<Vec<f32>>>), pw::Error> {
+fn meter(core: &pw::core::CoreRc, id: u32, channels: &[String]) -> Result<MeterStream, pw::Error> {
     let props = pw::properties::properties! {
         "media.type" => "Audio",
         "media.category" => "Capture",

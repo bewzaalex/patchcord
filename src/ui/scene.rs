@@ -12,9 +12,12 @@ use resvg::usvg;
 
 use super::cord::{Cord, Held, RATE};
 use super::face::{self, BADGE, DEV_H, Geometry, JP, JackDef, JackKind, LCD_H, LCD_W, LCD_X, LCD_Y, PIC, RACK_MIN, SHADOW};
-use super::{paint, text};
+use super::{ease, paint, text};
 use crate::config::Preset;
-use crate::graph::{Device, Dir, Graph, Group, Media};
+
+/// A change to the links, for undo and redo: the (output, input) port pairs added and removed.
+type Change = (Vec<(u32, u32)>, Vec<(u32, u32)>);
+use crate::graph::{Device, Dir, Graph, Media};
 use crate::pw::{Cmd, Event};
 
 /// What the pointer is over, for highlighting cords and the tooltip.
@@ -100,12 +103,9 @@ pub struct Scene {
     jacks: HashMap<String, (usize, usize)>,
     /// PipeWire port → jack key
     port_jack: HashMap<u32, String>,
-    /// the links there were at the last look, to tell new ones
-    seen_links: Vec<u32>,
     pub cords: Vec<Cord>,
     seq: u64,
     slot_seq: u64,
-    pub sag: f32,
     /// devices have been placed once (after the first full graph)
     pub laid_out: bool,
     /// physics time not yet stepped
@@ -120,7 +120,7 @@ pub struct Scene {
     next_meter: u32,
     /// young streams waiting to be shown, at the last look
     young: usize,
-    /// cords: 0 shown, 1 faded, 2 hidden (plugs stay)
+    /// cords: 0 shown, 1 faded, 2 hidden
     pub cables: u8,
     /// where devices sat last time (settings) or in a preset, used when they appear
     pub saved_pos: HashMap<String, (f64, f64)>,
@@ -131,6 +131,15 @@ pub struct Scene {
     rack_h: f64,
     /// the rack's rails and inside, behind the devices
     pub rack_bg: Option<(u64, Layer)>,
+    /// a device on the desk grew (more jacks): the ones it now lies over make room on the next tick
+    crowded: bool,
+    /// while a device is dragged on the desk, the lines it is aligned along: (x0, y0, x1, y1)
+    pub guides: Vec<[f64; 4]>,
+    /// where the dragged device sticks (x, y), each while the hand keeps near it
+    snapped: (Option<f64>, Option<f64>),
+    /// devices dragged on the desk stick to each other's edges and centres (else they go
+    /// exactly where they are held)
+    pub align: bool,
     rack_scale: f64,
     /// pictures of a mono, a stereo and a MIDI jack and of the plus badge, laid over the faces
     pub jack_pics: [Option<Layer>; 4],
@@ -148,10 +157,36 @@ pub struct Scene {
     /// jack pairs just pulled apart, not to be plugged back in from links PipeWire hasn't removed yet
     suppress: Vec<((String, String), f32)>,
     /// link changes, for undo and redo: (added, removed) port pairs
-    undo: Vec<(Vec<(u32, u32)>, Vec<(u32, u32)>)>,
-    redo: Vec<(Vec<(u32, u32)>, Vec<(u32, u32)>)>,
+    undo: Vec<Change>,
+    redo: Vec<Change>,
 }
 
+
+/// How close devices on the desk may come to each other.
+const GAP: f64 = 8.0;
+/// How near (in pixels on the screen) an edge or centre of a dragged device must come to
+/// another's to stick to it, and how far the hand must then pull it to come free.
+const SNAP: f64 = 16.0;
+const UNSNAP: f64 = 32.0;
+
+/// Whether two devices on the desk, at (x, y) and `w` wide, are at least `gap` apart.
+fn apart((ax, ay, aw): (f64, f64, f64), (bx, by, bw): (f64, f64, f64), gap: f64) -> bool {
+    ax + aw + gap <= bx || bx + bw + gap <= ax || ay + DEV_H + gap <= by || by + DEV_H + gap <= ay
+}
+
+/// The furthest point on the way from `from` to `to` where `free` still holds (`from` must).
+fn reach(free: &impl Fn((f64, f64)) -> bool, from: (f64, f64), to: (f64, f64)) -> (f64, f64) {
+    let at = |m: f64| (from.0 + (to.0 - from.0) * m, from.1 + (to.1 - from.1) * m);
+    if free(to) {
+        return to;
+    }
+    let (mut lo, mut hi) = (0.0, 1.0);
+    for _ in 0..14 {
+        let m = (lo + hi) / 2.0;
+        if free(at(m)) { lo = m } else { hi = m }
+    }
+    at(lo)
+}
 
 impl Scene {
     pub fn new() -> Self {
@@ -160,11 +195,9 @@ impl Scene {
             devs: Vec::new(),
             jacks: HashMap::new(),
             port_jack: HashMap::new(),
-            seen_links: Vec::new(),
             cords: Vec::new(),
             seq: 0,
             slot_seq: 0,
-            sag: 0.45,
             laid_out: false,
             acc: 0.0,
             opt: text::svg_options(),
@@ -181,6 +214,10 @@ impl Scene {
             rack_w: None,
             rack_h: 0.0,
             rack_bg: None,
+            crowded: false,
+            guides: Vec::new(),
+            snapped: (None, None),
+            align: true,
             rack_scale: 0.0,
             jack_pics: [None, None, None, None],
             pics_scale: 0.0,
@@ -258,7 +295,7 @@ impl Scene {
         self.follow_splits();
         self.index();
         self.meters();
-        self.reconcile(!self.laid_out);
+        self.reconcile();
         self.slots();
         if !self.laid_out {
             self.laid_out = true;
@@ -266,11 +303,25 @@ impl Scene {
         } else {
             self.place_new(&fresh);
         }
-        // devices that have a remembered place go back to it
-        for d in self.devs.iter_mut().filter(|d| fresh.contains(&d.dev.key)) {
-            if let Some(&(x, y)) = self.saved_pos.get(&d.dev.key) {
-                (d.tx, d.ty) = (x, y);
+        // devices that have a remembered place go back to it, unless another device sits there
+        // now (an app that comes back after the others moved): then it goes below them all
+        let bottom = self.devs.iter().filter(|d| !fresh.contains(&d.dev.key)).map(|d| d.ty + DEV_H + 46.0).fold(40.0, f64::max);
+        let mut below = bottom;
+        for i in 0..self.devs.len() {
+            if !fresh.contains(&self.devs[i].dev.key) {
+                continue;
             }
+            if let Some(&(x, y)) = self.saved_pos.get(&self.devs[i].dev.key) {
+                let w = self.devs[i].geo.w;
+                let taken = !self.others(i).all(|o| apart((x, y, w), (o.tx, o.ty, o.geo.w), 0.0));
+                if taken {
+                    (self.devs[i].tx, self.devs[i].ty) = (40.0, below);
+                    below += DEV_H + 46.0;
+                } else {
+                    (self.devs[i].tx, self.devs[i].ty) = (x, y);
+                }
+            }
+            let d = &mut self.devs[i];
             (d.dx, d.dy) = (d.tx, d.ty);
         }
         if self.rack {
@@ -279,15 +330,12 @@ impl Scene {
         for d in self.devs.iter_mut().filter(|d| fresh.contains(&d.dev.key)) {
             (d.x, d.y) = (d.tx, d.ty);
         }
+        self.crowded = true;
     }
 
-    /// A stereo jack that new links tie channel by channel to a split pair is split too (a stream
-    /// that starts playing to split headphones, say): as one jack it would show two cords that
-    /// each carry only L or R. A jack linked to L with both its channels (a cord pulled from L
-    /// into it) stays whole.
-    fn follow_splits(&mut self) {
-        let links = self.graph.links();
-        let mut group_of: HashMap<u32, (usize, usize)> = HashMap::new();
+    /// The stereo group (device, group) of each port of a stereo jack shown.
+    fn stereo_groups(&self) -> HashMap<u32, (usize, usize)> {
+        let mut group_of = HashMap::new();
         for (di, d) in self.devs.iter().enumerate() {
             for (gi, g) in d.dev.groups.iter().enumerate().filter(|(_, g)| g.stereo) {
                 for p in &g.ports {
@@ -295,8 +343,18 @@ impl Scene {
                 }
             }
         }
+        group_of
+    }
+
+    /// A stereo jack that links tie channel by channel to a split pair is split too (a stream
+    /// that starts playing to split headphones, say): as one jack it would show two cords that
+    /// each carry only L or R. A jack linked to L with both its channels (a cord pulled from L
+    /// into it) stays whole.
+    fn follow_splits(&mut self) {
+        let links = self.graph.links();
+        let group_of = self.stereo_groups();
         let split = |devs: &[DevView], (di, gi): (usize, usize)| devs[di].split.get(gi).copied().unwrap_or(false);
-        for l in links.iter().filter(|l| !self.seen_links.contains(&l.id)) {
+        for l in &links {
             let (Some(&a), Some(&b)) = (group_of.get(&l.out_port), group_of.get(&l.in_port)) else { continue };
             for (x, px, y) in [(a, l.out_port, b), (b, l.in_port, a)] {
                 // how many of y's channels the split side's port is linked to
@@ -306,9 +364,6 @@ impl Scene {
                 }
             }
         }
-        // a link to a device not shown yet (a new stream shows after a moment) stays new until it is
-        let shown: Vec<u32> = self.devs.iter().flat_map(|d| d.dev.groups.iter().flat_map(|g| g.ports.iter().map(|p| p.id))).collect();
-        self.seen_links = links.iter().filter(|l| shown.contains(&l.out_port) && shown.contains(&l.in_port)).map(|l| l.id).collect();
     }
 
     /// Faces' geometry; in a rack every face is as wide as the widest needs.
@@ -371,6 +426,126 @@ impl Scene {
         }
     }
 
+    /// A device dragged by the hand towards (x, y). On the desk devices don't go over each other:
+    /// one pushed against another stops at it and slides along its edge. One that already lies
+    /// over another (from an older version) moves freely until it is clear.
+    /// `px`: how much of the world one pixel of the screen shows.
+    pub fn drag_device(&mut self, key: &str, x: f64, y: f64, px: f64) {
+        let Some(i) = self.devs.iter().position(|d| d.dev.key == key).filter(|_| !self.rack) else {
+            return self.move_device(key, x, y);
+        };
+        let from = (self.devs[i].dx, self.devs[i].dy);
+        let mut to = self.snap(i, (x, y), px);
+        let free = |at: (f64, f64)| self.free_at(i, at);
+        if free(from) && !free(to) {
+            // as far as it goes straight, then along the edge it met, whichever way goes further
+            let s = reach(&free, from, to);
+            let (ax, ay) = (reach(&free, s, (x, s.1)), reach(&free, s, (s.0, y)));
+            to = if (ax.0 - s.0).abs() >= (ay.1 - s.1).abs() { ax } else { ay };
+        }
+        self.guides = self.guides_at(i, to);
+        self.move_device(key, to.0, to.1);
+    }
+
+    /// The devices other than device `i`.
+    fn others(&self, i: usize) -> impl Iterator<Item = &DevView> {
+        self.devs.iter().enumerate().filter(move |(j, _)| *j != i).map(|(_, o)| o)
+    }
+
+    /// Whether device `i` at `at` on the desk keeps clear of the others.
+    fn free_at(&self, i: usize, (x, y): (f64, f64)) -> bool {
+        let w = self.devs[i].geo.w;
+        self.others(i).all(|o| apart((x, y, w), (o.dx, o.dy, o.geo.w), GAP))
+    }
+
+    /// Where device `i`, held at `at` on the desk, settles: lined up with another device by the
+    /// left edges, centres or right edges, or by the tops, or just beside, above or below one
+    /// (as close as devices may come). It sticks there lightly when the hand brings it near,
+    /// and holds while the hand stays near (so it doesn't flicker between stuck and free),
+    /// until pulled well away. Only places where it keeps clear of the others count.
+    fn snap(&mut self, i: usize, at: (f64, f64), px: f64) -> (f64, f64) {
+        if !self.align {
+            self.snapped = (None, None);
+            return at;
+        }
+        let w = self.devs[i].geo.w;
+        let (mut xs, mut ys) = (Vec::new(), Vec::new());
+        for o in self.others(i) {
+            xs.extend([o.dx, o.dx + (o.geo.w - w) / 2.0, o.dx + o.geo.w - w, o.dx + o.geo.w + GAP, o.dx - GAP - w]);
+            ys.extend([o.dy, o.dy + DEV_H + GAP, o.dy - DEV_H - GAP]);
+        }
+        // the choices on each axis, nearest first: where it already sticks, those near, or none
+        let choices = |held: Option<f64>, raw: f64, all: &[f64]| {
+            let mut near: Vec<f64> = all.iter().copied().filter(|v| (v - raw).abs() < SNAP * px).collect();
+            near.sort_by(|a, b| (a - raw).abs().total_cmp(&(b - raw).abs()));
+            let mut c: Vec<Option<f64>> = held.filter(|h| (h - raw).abs() < UNSNAP * px).into_iter().chain(near).map(Some).collect();
+            c.push(None);
+            c
+        };
+        let (cx, cy) = (choices(self.snapped.0, at.0, &xs), choices(self.snapped.1, at.1, &ys));
+        let pick = cx.iter().flat_map(|x| cy.iter().map(move |y| (*x, *y))).find(|(x, y)| self.free_at(i, (x.unwrap_or(at.0), y.unwrap_or(at.1))));
+        self.snapped = pick.unwrap_or((None, None));
+        (self.snapped.0.unwrap_or(at.0), self.snapped.1.unwrap_or(at.1))
+    }
+
+    /// The guide lines for device `i` at `at`: every edge or centre it shares with another
+    /// device on the axis it sticks on, drawn across both.
+    fn guides_at(&self, i: usize, at: (f64, f64)) -> Vec<[f64; 4]> {
+        let w = self.devs[i].geo.w;
+        let lines = |x: f64, w: f64| [x, x + w / 2.0, x + w];
+        let same = |a: f64, b: f64| (a - b).abs() < 0.5;
+        let mut guides = Vec::new();
+        for o in self.others(i) {
+            let (y0, y1) = (at.1.min(o.dy) - 14.0, (at.1 + DEV_H).max(o.dy + DEV_H) + 14.0);
+            let (x0, x1) = (at.0.min(o.dx) - 14.0, (at.0 + w).max(o.dx + o.geo.w) + 14.0);
+            if self.snapped.0.is_some_and(|s| same(s, at.0)) {
+                for v in lines(at.0, w).into_iter().filter(|v| lines(o.dx, o.geo.w).iter().any(|t| same(*t, *v))) {
+                    guides.push([v, y0, v, y1]);
+                }
+            }
+            if self.snapped.1.is_some_and(|s| same(s, at.1)) && same(at.1, o.dy) {
+                for v in lines(at.1, DEV_H) {
+                    guides.push([x0, v, x1, v]);
+                }
+            }
+        }
+        guides
+    }
+
+    /// Devices on the desk that lie over one another (one grew when its jacks were split, or got
+    /// another cord) move apart: of two, the one further right moves right, or the lower one
+    /// down, whichever is the shorter way, and on along the line they push. They glide there.
+    fn make_room(&mut self) {
+        for _ in 0..200 {
+            let mut moved = false;
+            for i in 0..self.devs.len() {
+                for j in 0..self.devs.len() {
+                    let (a, b) = (&self.devs[i], &self.devs[j]);
+                    if i == j || (b.dx, b.dy) < (a.dx, a.dy) || apart((a.dx, a.dy, a.geo.w), (b.dx, b.dy, b.geo.w), GAP) {
+                        continue;
+                    }
+                    // how far b must go right, or down, to clear a
+                    let right = a.dx + a.geo.w + GAP - b.dx;
+                    let down = a.dy + DEV_H + GAP - b.dy;
+                    let push_down = b.dy >= a.dy && down < right;
+                    let b = &mut self.devs[j];
+                    if push_down {
+                        b.dy += down;
+                    } else {
+                        b.dx += right;
+                    }
+                    if !self.rack {
+                        (b.tx, b.ty) = (b.dx, b.dy);
+                    }
+                    moved = true;
+                }
+            }
+            if !moved {
+                break;
+            }
+        }
+    }
+
     /// A device dragged to (x, y): on the desk that is its place; in the rack the others make room.
     pub fn move_device(&mut self, key: &str, x: f64, y: f64) {
         if let Some(d) = self.devs.iter_mut().find(|d| d.dev.key == key) {
@@ -386,6 +561,8 @@ impl Scene {
 
     /// A dragged device let go: in the rack it slides into its slot.
     pub fn drop_device(&mut self) {
+        self.guides.clear();
+        self.snapped = (None, None);
         if self.rack {
             self.layout_rack(None);
         }
@@ -409,7 +586,9 @@ impl Scene {
 
     /// Meters for the groups that have one: started for new ones, stopped for those gone.
     fn meters(&mut self) {
-        let mut want: HashMap<Vec<u32>, (String, Vec<(u32, u32)>, Vec<String>)> = HashMap::new();
+        // by the ports measured: the device, (node, port) of each, and the channel names
+        type Want = (String, Vec<(u32, u32)>, Vec<String>);
+        let mut want: HashMap<Vec<u32>, Want> = HashMap::new();
         for d in &self.devs {
             for g in d.dev.groups.iter().filter(|g| g.meter) {
                 let ports: Vec<u32> = g.ports.iter().map(|p| p.id).collect();
@@ -454,7 +633,7 @@ impl Scene {
     }
 
     /// The cords to match PipeWire's links: keep those that fit, pull out the rest, plug in what is missing.
-    fn reconcile(&mut self, quiet: bool) {
+    fn reconcile(&mut self) {
         let mut want: Vec<(String, String)> = Vec::new();
         for l in self.graph.links() {
             if let (Some(a), Some(b)) = (self.port_jack.get(&l.out_port), self.port_jack.get(&l.in_port)) {
@@ -501,11 +680,7 @@ impl Scene {
             let color = self.jack(&a).map(|j| j.0.dev.color).unwrap();
             self.seq += 1;
             self.slot_seq += 2;
-            let mut c = Cord::new(self.seq, (self.slot_seq - 1, self.slot_seq), (a, ka, pa), (b, kb, pb), color, self.sag);
-            if !quiet {
-                (c.a.ins, c.b.ins) = (1.0, 1.0);
-            }
-            self.cords.push(c);
+            self.cords.push(Cord::new(self.seq, (self.slot_seq - 1, self.slot_seq), (a, ka, pa), (b, kb, pb), color));
         }
     }
 
@@ -518,10 +693,8 @@ impl Scene {
         }
         let mut per: HashMap<String, Vec<(u64, usize, bool)>> = HashMap::new();
         for (ci, c) in self.cords.iter().enumerate() {
-            // a cord being pulled out no longer takes a jack of the mult
-            if c.dying.is_some() {
-                continue;
-            }
+            // a cord being pulled out keeps the jack its other plug is still in until it has faded
+            // away: the mult closes up after it, not under it
             for (b, e) in [(false, &c.a), (true, &c.b)] {
                 if e.seated() {
                     per.entry(e.jack.clone().unwrap()).or_default().push((e.slot, ci, b));
@@ -540,6 +713,7 @@ impl Scene {
         }
         if self.devs.iter().zip(&before).any(|(d, old)| d.counts != *old) {
             self.regeo();
+            self.crowded = true;
             if self.rack {
                 self.layout_rack(None);
             }
@@ -560,17 +734,23 @@ impl Scene {
         }
         self.young = young;
         moving |= young > 0;
+        let glide = ease(0.18, dt) as f64;
         for d in &mut self.devs {
             let (dx, dy) = (d.tx - d.x, d.ty - d.y);
             if dx.abs() + dy.abs() > 0.3 {
-                d.x += dx * 0.18;
-                d.y += dy * 0.18;
+                d.x += dx * glide;
+                d.y += dy * glide;
                 moving = true;
             } else {
                 (d.x, d.y) = (d.tx, d.ty);
             }
         }
         self.slots();
+        // (not while a device is in the hand: it goes where it is held)
+        if self.crowded && !dragging {
+            self.crowded = false;
+            self.make_room();
+        }
         // meters: peaks to lit LEDs on a dB scale (-54…0 dB → 0…10), quick up and slow down
         let mut target: HashMap<&str, [f32; 2]> = HashMap::new();
         for (id, p) in &self.peaks {
@@ -582,9 +762,9 @@ impl Scene {
         }
         for d in &mut self.devs {
             let t = target.get(d.dev.key.as_str()).copied().unwrap_or_default();
-            for c in 0..2 {
-                d.level[c] = if t[c] >= d.level[c] { t[c] } else { (d.level[c] - 18.0 * dt).max(t[c]) };
-                moving |= d.level[c] > 0.01;
+            for (level, t) in d.level.iter_mut().zip(t) {
+                *level = if t >= *level { t } else { (*level - 18.0 * dt).max(t) };
+                moving |= *level > 0.01;
             }
         }
         self.acc = (self.acc + dt).min(4.0 / RATE);
@@ -594,20 +774,22 @@ impl Scene {
         let mut kept = Vec::with_capacity(cords.len());
         for mut c in cords {
             let h = held.filter(|(seq, _)| *seq == c.seq).map(|(_, h)| h);
-            c.frame(dt, steps, &|k, n| self.slot_pos(k, n), hand, h, self.sag, dragging);
+            c.frame(dt, steps, &|k, n| self.slot_pos(k, n), hand, h, dragging);
             moving |= c.moving();
             if !c.gone() {
                 kept.push(c);
             }
         }
         self.cords = kept;
-        // the hovered thing's cords light up quickly and fade back a little slower
-        if self.hover != Hover::None {
+        // the hovered thing's cords light up quickly and fade back a little slower; something
+        // without cords lights none, and leaves the others as they are
+        let has = self.hover != Hover::None && self.cords.iter().any(|c| self.lights_for(c, &self.hover));
+        if has {
             self.lit_for = self.hover.clone();
         }
-        let to = if self.hover == Hover::None { 0.0 } else { 1.0 };
+        let to = if has { 1.0 } else { 0.0 };
         let was = self.lit;
-        self.lit = if to > self.lit { (self.lit + dt * 8.0).min(1.0) } else { (self.lit - dt * 5.0).max(0.0) };
+        self.lit = ease_lit(self.lit, to, dt);
         moving |= self.lit != was;
         moving
     }
@@ -780,33 +962,30 @@ impl Scene {
         waiting
     }
 
-    /// The cords and plugs in the window area (x, y, w, h) in pixels, or None when there are none.
-    /// `rings`: jacks a plug in the hand may go into (world position, the one it is pulled to).
+    /// The cords in the window area (x, y, w, h) in pixels, or None when there are none.
+    /// `rings`: jacks the end in the hand may go into (world position, the one it is pulled to).
     pub fn cord_layer(&self, view: View, win: (u32, u32), rings: &[((f32, f32), bool)], pulse: f32) -> Option<(Pixmap, i32, i32)> {
         if self.cords.is_empty() {
             return None;
         }
         let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
         for c in &self.cords {
+            // its ends are its first and last points
             for p in &c.pts {
                 (x0, y0, x1, y1) = (x0.min(p.x), y0.min(p.y), x1.max(p.x), y1.max(p.y));
-            }
-            // plugs in the air reach a little beyond the cord's end
-            for e in [&c.a, &c.b] {
-                (x0, y0, x1, y1) = (x0.min(e.x), y0.min(e.y), x1.max(e.x), y1.max(e.y));
             }
         }
         if ![x0, y0, x1, y1].iter().all(|v| v.is_finite()) {
             return None;
         }
-        // room for plugs in the hand and shadows
-        let m = 170.0;
+        // room for the cords' width and their shadows (12 down, 13 wide)
+        let m = 40.0;
         let s = view.s as f32;
         let px0 = (((x0 - m) * s) as f64 + view.x).floor().max(0.0) as i32;
         let py0 = (((y0 - m) * s) as f64 + view.y).floor().max(0.0) as i32;
         let px1 = (((x1 + m) * s) as f64 + view.x).ceil().min(win.0 as f64) as i32;
         let py1 = (((y1 + m) * s) as f64 + view.y).ceil().min(win.1 as f64) as i32;
-        // while a plug is in the hand, the target rings can be anywhere: use the whole window
+        // while a cord's end is in the hand, the target rings can be anywhere: use the whole window
         let (px0, py0, px1, py1) = if rings.is_empty() { (px0, py0, px1, py1) } else { (0, 0, win.0 as i32, win.1 as i32) };
         if px1 <= px0 || py1 <= py0 {
             return None;
@@ -871,7 +1050,10 @@ impl Scene {
         let mut v = Vec::new();
         for (ji, j) in d.defs.iter().enumerate() {
             let (Some(&(jx, jy)), Some(&n)) = (d.geo.jacks.get(ji), d.counts.get(ji)) else { continue };
+            // the L and R of a split stereo jack keep its gold ring: still the same pair
+            let stereo = d.dev.groups.get(j.group).is_some_and(|g| g.stereo);
             let pic = match j.kind {
+                JackKind::Mono if stereo => 1,
                 JackKind::Mono => 0,
                 JackKind::Stereo => 1,
                 JackKind::Midi => 2,
@@ -919,30 +1101,28 @@ impl Scene {
     }
 
     /// One stereo jack ⇄ separate L and R jacks. The cords re-plug themselves to match.
-    /// The stereo jacks at the other ends of its cords follow, else one would keep two cords that
-    /// each carry only L or R and look like they carry both. They join again only when all their
-    /// cords come here.
+    /// The stereo jacks its cords lead to follow, and the ones theirs lead to, and so on: else a
+    /// stereo jack would show two cords that each carry only L or R and look like they carry both.
     pub fn toggle_split(&mut self, di: usize, g: usize) {
         let Some(&was) = self.devs[di].split.get(g) else { return };
-        let ids = |grp: &Group| grp.ports.iter().map(|p| p.id).collect::<Vec<u32>>();
-        let here = ids(&self.devs[di].dev.groups[g]);
+        let group_of = self.stereo_groups();
+        // links to hidden streams (Patchcord's own meters on app outputs, say) don't count: their
+        // ports aren't in `group_of`
         let links = self.graph.links();
-        // the port at the far end of each link of `ports`
-        let far = |ports: &[u32]| -> Vec<u32> {
-            links.iter().filter_map(|l| if ports.contains(&l.out_port) { Some(l.in_port) } else if ports.contains(&l.in_port) { Some(l.out_port) } else { None }).collect()
-        };
-        let there = far(&here);
         let mut flip = vec![(di, g)];
-        for (dj, d) in self.devs.iter().enumerate() {
-            for (gj, grp) in d.dev.groups.iter().enumerate() {
-                let ports = ids(grp);
-                if !grp.stereo || (dj, gj) == (di, g) || !ports.iter().any(|p| there.contains(p)) {
-                    continue;
-                }
-                if !was || far(&ports).iter().all(|p| here.contains(p)) {
-                    flip.push((dj, gj));
+        let mut k = 0;
+        while k < flip.len() {
+            let here = flip[k];
+            for l in &links {
+                let (a, b) = (group_of.get(&l.out_port), group_of.get(&l.in_port));
+                let far = if a == Some(&here) { b } else if b == Some(&here) { a } else { None };
+                if let Some(&f) = far
+                    && !flip.contains(&f)
+                {
+                    flip.push(f);
                 }
             }
+            k += 1;
         }
         for (dj, gj) in flip {
             if let Some(v) = self.devs[dj].split.get_mut(gj) {
@@ -950,7 +1130,7 @@ impl Scene {
             }
         }
         self.index();
-        self.reconcile(false);
+        self.reconcile();
         self.slots();
     }
 
@@ -962,7 +1142,7 @@ impl Scene {
         let color = self.jack(out).map(|j| j.0.dev.color).unwrap();
         self.seq += 1;
         self.slot_seq += 2;
-        let c = Cord::new(self.seq, (self.slot_seq - 1, self.slot_seq), (out.to_owned(), ka, pa), (inp.to_owned(), kb, pb), color, self.sag);
+        let c = Cord::new(self.seq, (self.slot_seq - 1, self.slot_seq), (out.to_owned(), ka, pa), (inp.to_owned(), kb, pb), color);
         self.cords.push(c);
         self.slots();
     }
@@ -1106,14 +1286,14 @@ impl Scene {
         self.record(add, del);
         self.edited = false;
         self.index();
-        self.reconcile(false);
+        self.reconcile();
         self.slots();
         (want.len(), missing)
     }
 
-    /// Lets go of the plug in the hand: into `target` when given and free to take it, else it
-    /// falls out. `moved`: it travelled (a plug only clicked returns quietly). True when it went in.
-    pub fn drop_held(&mut self, seq: u64, target: Option<String>, moved: bool) -> bool {
+    /// Lets go of the cord's end in the hand: into `target` when given and free to take it, else
+    /// it falls out. True when it went in.
+    pub fn drop_held(&mut self, seq: u64, target: Option<String>) -> bool {
         let Some(ci) = self.cord_index(seq) else { return false };
         let b = self.cords[ci].b.held;
         let (orig, other) = {
@@ -1158,7 +1338,6 @@ impl Scene {
                 }
                 e.jack = Some(t);
                 e.orig = None;
-                e.ins = if moved { 1.0 } else { 0.0 };
                 if let Some(col) = color {
                     c.color = col;
                 }
@@ -1261,9 +1440,14 @@ impl Scene {
 
     /// Whether a cord belongs to what was hovered last.
     fn lights(&self, c: &Cord) -> bool {
+        self.lights_for(c, &self.lit_for)
+    }
+
+    /// Whether a cord belongs to `h`: its own cord, or a cord of its jack or device.
+    fn lights_for(&self, c: &Cord, h: &Hover) -> bool {
         // a plug in the hand still counts for the jack it came from
         let mut ends = [&c.a, &c.b].into_iter().filter_map(|e| e.jack.as_ref().or(e.orig.as_ref()));
-        match &self.lit_for {
+        match h {
             Hover::None => false,
             Hover::Cord(seq) => c.seq == *seq,
             Hover::Jack(key) => ends.any(|k| k == key),
@@ -1359,6 +1543,12 @@ impl Scene {
     }
 }
 
+/// The hover highlight one frame on, towards `to`: up quickly, down a little slower, and still
+/// once there (it used to step down from 1 and back up every frame, and the cords blinked).
+fn ease_lit(lit: f32, to: f32, dt: f32) -> f32 {
+    if lit < to { (lit + dt * 8.0).min(to) } else { (lit - dt * 5.0).max(to) }
+}
+
 /// The rack: a dark inside between two metal rails with a row of mounting holes each.
 fn rack_svg(w: f64, h: f64) -> String {
     let mut holes = String::new();
@@ -1421,4 +1611,105 @@ pub fn rasterize(opt: &usvg::Options, doc: &str, scale: f64) -> Option<Pixmap> {
     let mut pm = Pixmap::new((size.width() * s).ceil().max(1.0) as u32, (size.height() * s).ceil().max(1.0) as u32)?;
     resvg::render(&tree, Transform::from_scale(s, s), &mut pm.as_mut());
     Some(pm)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A scene with devices on the desk at (x, y), `w` wide.
+    fn desk(at: &[(f64, f64, f64)]) -> Scene {
+        let mut s = Scene::new();
+        s.rack = false;
+        for (k, &(x, y, w)) in at.iter().enumerate() {
+            let dev = Device { key: format!("d{k}"), name: format!("d{k}"), model: String::new(), finish: crate::graph::Finish::Metal, color: [0; 3], groups: Vec::new(), state: "idle" };
+            let geo = Geometry { w, ..Default::default() };
+            s.devs.push(DevView { dev, split: Vec::new(), defs: Vec::new(), counts: Vec::new(), geo, x, y, tx: x, ty: y, dx: x, dy: y, face: None, shade: None, face_sig: 0, face_scale: 0.0, lcd: None, level: [0.0; 2], meter: None });
+        }
+        s
+    }
+
+    fn overlap(s: &Scene) -> bool {
+        let d = &s.devs;
+        (0..d.len()).any(|i| (0..d.len()).any(|j| i != j && !apart((d[i].dx, d[i].dy, d[i].geo.w), (d[j].dx, d[j].dy, d[j].geo.w), 0.0)))
+    }
+
+    /// A device dragged near another's edge or centre sticks to it, with a guide to show it;
+    /// pulled further it comes free.
+    #[test]
+    fn a_dragged_device_lines_up_with_another() {
+        let mut s = desk(&[(100.0, 100.0, 400.0), (600.0, 500.0, 300.0)]);
+        // left edges
+        s.drag_device("d1", 106.0, 500.0, 1.0);
+        assert_eq!((s.devs[1].dx, s.devs[1].dy), (100.0, 500.0));
+        assert!(s.guides.iter().any(|g| g[0] == 100.0 && g[2] == 100.0), "no guide along the left edges: {:?}", s.guides);
+        // from the other side too
+        s.drag_device("d1", 95.0, 500.0, 1.0);
+        assert_eq!(s.devs[1].dx, 100.0);
+        s.drag_device("d1", 650.0, 107.0 + DEV_H + 40.0, 1.0);
+        assert_eq!(s.devs[1].dx, 650.0, "far from every line, it goes where it is held");
+        assert!(s.guides.is_empty());
+        // tops, side by side
+        s.drag_device("d1", 700.0, 94.0, 1.0);
+        assert_eq!(s.devs[1].dy, 100.0);
+        assert!(s.guides.iter().any(|g| g[1] == 100.0 && g[3] == 100.0));
+        s.drop_device();
+        assert!(s.guides.is_empty());
+        // with lining up switched off it goes exactly where it is held
+        s.align = false;
+        s.drag_device("d1", 106.0, 500.0, 1.0);
+        assert_eq!((s.devs[1].dx, s.devs[1].dy), (106.0, 500.0));
+        assert!(s.guides.is_empty());
+    }
+
+    /// Once stuck, a device stays stuck while the hand wavers near the line, so the guide doesn't
+    /// flicker; pulled well away it comes free. The distances are pixels on the screen.
+    #[test]
+    fn a_device_stays_lined_up_until_pulled_away() {
+        let mut s = desk(&[(100.0, 100.0, 400.0), (600.0, 500.0, 300.0)]);
+        for (x, px, want) in [(112.0, 1.0, 100.0), (125.0, 1.0, 100.0), (88.0, 1.0, 100.0), (175.0, 1.0, 175.0), (180.0, 1.0, 180.0), (125.0, 2.0, 100.0)] {
+            s.drag_device("d1", x, 500.0, px);
+            assert_eq!(s.devs[1].dx, want, "held at {x} (a pixel showing {px})");
+            assert_eq!(s.guides.is_empty(), want != 100.0);
+        }
+    }
+
+    /// Right under another device, as close as devices may come, a device still lines up with
+    /// it by the centres, even with the hand a little too high.
+    #[test]
+    fn a_device_right_below_another_lines_up_by_the_centres() {
+        let mut s = desk(&[(100.0, 100.0, 400.0), (600.0, 500.0, 300.0)]);
+        let below = 100.0 + DEV_H + GAP;
+        for y in [below + 6.0, below, below - 5.0] {
+            s.drag_device("d1", 157.0, y, 1.0);
+            assert_eq!((s.devs[1].dx, s.devs[1].dy), (150.0, below), "held at (157, {y})");
+            assert!(s.guides.iter().any(|g| g[0] == 300.0 && g[2] == 300.0), "no guide along the centres: {:?}", s.guides);
+        }
+    }
+
+    /// Devices that come to lie over one another (one grew) move apart.
+    #[test]
+    fn devices_that_overlap_move_apart() {
+        for at in [vec![(0.0, 0.0, 500.0), (400.0, 40.0, 300.0)], vec![(0.0, 0.0, 500.0), (100.0, 100.0, 300.0), (450.0, 20.0, 300.0)], vec![(0.0, 0.0, 300.0), (0.0, 0.0, 300.0)]] {
+            let mut s = desk(&at);
+            s.make_room();
+            assert!(!overlap(&s), "devices at {at:?} still overlap");
+        }
+    }
+
+    /// The hover highlight eases to where it is going and stays there, frame after frame.
+    #[test]
+    fn the_hover_highlight_stays_still_once_there() {
+        for to in [0.0, 1.0] {
+            let mut lit = 1.0 - to;
+            for _ in 0..30 {
+                lit = ease_lit(lit, to, 1.0 / 60.0);
+            }
+            for _ in 0..10 {
+                let next = ease_lit(lit, to, 1.0 / 60.0);
+                assert_eq!(next, to, "the highlight moves from {lit} to {next} while it should stay at {to}");
+                lit = next;
+            }
+        }
+    }
 }

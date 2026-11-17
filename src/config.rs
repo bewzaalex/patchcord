@@ -12,11 +12,11 @@ use std::path::PathBuf;
 /// What Patchcord remembers between runs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
-    /// how much the cords sag, 0…100
-    pub sag: u8,
     /// cords: 0 show, 1 fade, 2 hide
     pub cables: u8,
     pub lock: bool,
+    /// devices dragged on the desk line up with each other
+    pub align: bool,
     pub rack: bool,
     /// window size in logical pixels
     pub window: Option<(u32, u32)>,
@@ -30,7 +30,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { sag: 45, cables: 0, lock: false, rack: false, window: None, preset: None, pos: BTreeMap::new(), rack_order: Vec::new() }
+        Settings { cables: 0, lock: false, align: true, rack: false, window: None, preset: None, pos: BTreeMap::new(), rack_order: Vec::new() }
     }
 }
 
@@ -111,9 +111,9 @@ impl Settings {
         let Some(text) = file("settings.txt").and_then(|p| std::fs::read_to_string(p).ok()) else { return s };
         for (_, k, v) in parse(&text) {
             match k.as_str() {
-                "sag" => s.sag = v.parse::<u8>().unwrap_or(45).min(100),
                 "cables" => s.cables = CABLES.iter().position(|c| *c == v).unwrap_or(0) as u8,
                 "lock" => s.lock = on(&v),
+                "align" => s.align = on(&v),
                 "layout" => s.rack = v == "rack",
                 "window" => {
                     s.window = v.split_once('x').and_then(|(w, h)| Some((w.trim().parse().ok()?, h.trim().parse().ok()?)));
@@ -133,7 +133,8 @@ impl Settings {
 
     pub fn save(&self) {
         let mut t = String::from("# Patchcord settings. Written by Patchcord; edit while it is not running.\n");
-        t += &format!("sag = {}\ncables = {}\nlock = {}\nlayout = {}\n", self.sag, CABLES[self.cables.min(2) as usize], if self.lock { "on" } else { "off" }, if self.rack { "rack" } else { "desk" });
+        let onoff = |b: bool| if b { "on" } else { "off" };
+        t += &format!("cables = {}\nlock = {}\nalign = {}\nlayout = {}\n", CABLES[self.cables.min(2) as usize], onoff(self.lock), onoff(self.align), if self.rack { "rack" } else { "desk" });
         if let Some((w, h)) = self.window {
             t += &format!("window = {w}x{h}\n");
         }
@@ -229,7 +230,7 @@ mod tests {
         // SAFETY: the only test that touches the environment
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
 
-        let mut s = Settings { sag: 72, cables: 2, lock: true, rack: true, window: Some((1600, 900)), preset: Some("HOME STUDIO".into()), pos: BTreeMap::new(), rack_order: vec!["node:Midi-Bridge".into(), "device:alsa_card.pci-0000_63_00.6".into()] };
+        let mut s = Settings { cables: 2, lock: true, align: false, rack: true, window: Some((1600, 900)), preset: Some("HOME STUDIO".into()), pos: BTreeMap::new(), rack_order: vec!["node:Midi-Bridge".into(), "device:alsa_card.pci-0000_63_00.6".into()] };
         s.pos.insert("device:bluez_card.C9_C1_60_6A_FD_E3".into(), (40.0, 214.0));
         s.pos.insert("node:VLC media player (LibVLC 4.0.0-dev)".into(), (-12.0, 388.0));
         s.save();

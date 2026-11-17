@@ -12,6 +12,7 @@ use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::window::{CursorIcon, Window, WindowId};
 
 use super::cord::Held;
+use super::ease;
 use super::face::LCD_CH;
 use super::gpu::{Gpu, Sprite};
 use super::panel::{self, Key, Menu, MenuHit, Panel};
@@ -33,10 +34,8 @@ enum Drag {
     Pan { from: (f64, f64), view: View },
     Device { key: String, off: (f64, f64) },
     Cord { seq: u64 },
-    /// a plug in the hand: a weight on a spring to the pointer, pulled into a jack nearby
-    Plug { seq: u64, p: (f32, f32), v: (f32, f32), magnet: Option<String>, targets: Vec<String>, moved: f64, start: (f64, f64) },
-    /// the SAG knob, turned by dragging up and down
-    Knob { y0: f64, sag0: f32 },
+    /// a cord's end in the hand: a weight on a spring to the pointer, pulled into a jack nearby
+    Plug { seq: u64, p: (f32, f32), v: (f32, f32), magnet: Option<String>, targets: Vec<String> },
     /// the cords switch: dragged, it steps between its positions; clicked, it moves on one
     Switch { from: (f64, f64), pos0: u8, moved: bool },
     /// a panel key held down
@@ -67,6 +66,8 @@ pub struct App {
     raster: f64,
     rescale_at: Option<Instant>,
     bg: Option<(u64, Pixmap)>,
+    /// one pixel of the alignment guides' colour, stretched into each line
+    guide: (u64, Pixmap),
     last: Instant,
     start: Instant,
     animating: bool,
@@ -94,10 +95,10 @@ impl App {
         let presets = config::load_presets();
         let current = settings.preset.as_ref().and_then(|n| presets.iter().position(|p| p.name == *n));
         let mut scene = Scene::new();
-        scene.sag = settings.sag as f32 / 100.0;
         scene.cables = settings.cables;
         scene.saved_pos = settings.pos.clone().into_iter().collect();
         scene.rack = settings.rack;
+        scene.align = settings.align;
         scene.rack_order = settings.rack_order.clone();
         App {
             conn,
@@ -113,12 +114,17 @@ impl App {
             raster: 0.0,
             rescale_at: None,
             bg: None,
+            guide: (next_id(), {
+                let mut pm = Pixmap::new(1, 1).unwrap();
+                pm.fill(Color::from_rgba8(255, 200, 90, 255));
+                pm
+            }),
             last: now,
             start: now,
             animating: true,
             next_frame: now,
             last_press: (now, (0.0, 0.0)),
-            panel: Panel::new(panel::State { rack: false, locked: settings.lock, cables: settings.cables, sag: settings.sag, sound: false, lcd: [String::new(), String::new()], pressed: None }),
+            panel: Panel::new(panel::State { rack: false, locked: settings.lock, align: settings.align, cables: settings.cables, sound: false, lcd: [String::new(), String::new()], pressed: None }),
             hint: String::new(),
             status: None,
             notice: None,
@@ -133,9 +139,9 @@ impl App {
     /// Writes settings.txt when something in it changed.
     fn save_settings(&mut self) {
         let mut s = self.settings.clone();
-        s.sag = (self.scene.sag * 100.0).round() as u8;
         s.cables = self.scene.cables;
         s.lock = self.panel.state.locked;
+        s.align = self.scene.align;
         s.rack = self.scene.rack;
         s.rack_order = self.scene.rack_order.clone();
         s.preset = self.current.map(|i| self.presets[i].name.clone());
@@ -275,6 +281,10 @@ impl App {
                 self.panel.state.locked = !self.panel.state.locked;
                 self.save_settings();
             }
+            Key::Align => {
+                self.scene.align = !self.scene.align;
+                self.save_settings();
+            }
             Key::Cables => {
                 self.scene.cables = (self.scene.cables + 1) % 3;
                 self.save_settings();
@@ -293,7 +303,6 @@ impl App {
                 self.save_settings();
                 self.fit(true);
             }
-            Key::Sag => {}
             Key::Save => self.open_menu(true),
             Key::Load | Key::Lcd => self.open_menu(false),
             Key::Sound => self.say("Plug sounds are not implemented yet"),
@@ -346,9 +355,10 @@ impl App {
         self.last = now;
         if let Some(t) = self.view_to {
             let v = &mut self.view;
-            v.x += (t.x - v.x) * 0.15;
-            v.y += (t.y - v.y) * 0.15;
-            v.s += (t.s - v.s) * 0.15;
+            let k = ease(0.15, dt) as f64;
+            v.x += (t.x - v.x) * k;
+            v.y += (t.y - v.y) * k;
+            v.s += (t.s - v.s) * k;
             if (t.s - v.s).abs() < 0.001 && (t.x - v.x).abs() < 0.5 && (t.y - v.y).abs() < 0.5 {
                 self.view = t;
                 self.view_to = None;
@@ -365,12 +375,12 @@ impl App {
         let mut held = None;
         let mut rings = Vec::new();
         if let Some(Drag::Plug { seq, p, v, magnet, targets, .. }) = &mut self.drag {
-            // the plug is a weight on a spring to the pointer; near a jack it is pulled in
+            // the end is a weight on a spring to the pointer; near a jack it is pulled in
             let spot = magnet.as_ref().and_then(|m| self.scene.spare(m));
             let to = spot.unwrap_or((cursor.0 as f32, cursor.1 as f32));
             let k = if spot.is_some() { 1200.0 } else { 650.0 };
             let damp = 2.0 * f32::sqrt(k);
-            // small fixed steps: one big step on a slow frame would fling the plug away
+            // small fixed steps: one big step on a slow frame would fling the end away
             let n = (dt / 0.004).ceil().max(1.0);
             let h = dt / n;
             for _ in 0..n as usize {
@@ -382,10 +392,8 @@ impl App {
             if !(p.0.is_finite() && p.1.is_finite()) {
                 (*p, *v) = (to, (0.0, 0.0));
             }
-            // near its jack the plug turns to face the panel
-            let lift = spot.map_or(1.0, |s| (((s.0 - p.0).powi(2) + (s.1 - p.1).powi(2)).sqrt() - 4.0).clamp(0.0, 70.0) / 70.0);
             let kind = magnet.as_ref().and_then(|m| self.scene.jack_kind(m));
-            held = Some((*seq, Held { x: p.0, y: p.1, vx: v.0, lift, kind }));
+            held = Some((*seq, Held { x: p.0, y: p.1, kind }));
             for t in targets.iter() {
                 if let Some(pos) = self.scene.spare(t) {
                     rings.push((pos, magnet.as_ref() == Some(t)));
@@ -417,8 +425,8 @@ impl App {
         // the panel, the status bar and a notice, over the field
         let dpi = self.dpi();
         let width = self.size.0 as f64 / dpi;
-        self.panel.state.sag = (self.scene.sag * 100.0).round() as u8;
         self.panel.state.cables = self.scene.cables;
+        self.panel.state.align = self.scene.align;
         self.panel.state.rack = self.scene.rack;
         self.panel.state.lcd = self.lcd();
         self.panel.layer(width, dpi);
@@ -471,6 +479,14 @@ impl App {
                     sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (x + l.x) * v.s + v.x, y: (y + l.y) * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha });
                 }
             }
+        }
+        // alignment guides, over the faces and under the cords
+        let lw = 1.5 * dpi;
+        for &[x0, y0, x1, y1] in &self.scene.guides {
+            let (x, y) = (x0 * v.s + v.x, y0 * v.s + v.y);
+            let (w, h) = (((x1 - x0) * v.s).max(lw), ((y1 - y0) * v.s).max(lw));
+            let (x, y) = if x0 == x1 { (x - lw / 2.0, y) } else { (x, y - lw / 2.0) };
+            sprites.push(Sprite { id: self.guide.0, pm: Some(&self.guide.1), x, y, w, h, alpha: 0.85 });
         }
         if let Some((pm, x, y)) = &cords {
             sprites.push(Sprite { id: cord_id, pm: Some(pm), x: *x as f64, y: *y as f64, w: pm.width() as f64, h: pm.height() as f64, alpha: 1.0 });
@@ -556,7 +572,6 @@ impl App {
             {
                 self.panel.state.pressed = Some(key);
                 self.drag = Some(match key {
-                    Key::Sag => Drag::Knob { y0: self.cursor.1, sag0: self.scene.sag },
                     Key::Cables => Drag::Switch { from: self.cursor, pos0: self.scene.cables, moved: false },
                     _ => Drag::Key,
                 });
@@ -599,7 +614,7 @@ impl App {
             let e = if c.b.held { &c.b } else { &c.a };
             let p = (e.x, e.y);
             let magnet = Self::magnet(&self.scene, &targets, w);
-            self.drag = Some(Drag::Plug { seq, p, v: (0.0, 0.0), magnet, targets, moved: 0.0, start: self.cursor });
+            self.drag = Some(Drag::Plug { seq, p, v: (0.0, 0.0), magnet, targets });
         } else if let Some((di, g)) = self.scene.switch_at(w.0, w.1) {
             self.scene.toggle_split(di, g);
         } else if let Some((ci, k)) = self.scene.cord_at(w.0, w.1).filter(|_| self.scene.cables < 2) {
@@ -624,15 +639,14 @@ impl App {
                     c.grab = None;
                 }
             }
-            Some(Drag::Plug { seq, magnet, moved, .. }) => {
-                self.scene.drop_held(seq, magnet, moved > 6.0);
+            Some(Drag::Plug { seq, magnet, .. }) => {
+                self.scene.drop_held(seq, magnet);
                 self.after_patch();
             }
             Some(Drag::Device { .. }) => {
                 self.scene.drop_device();
                 self.save_settings();
             }
-            Some(Drag::Knob { .. }) => self.save_settings(),
             Some(Drag::Switch { moved, .. }) => {
                 if !moved {
                     self.panel_key(Key::Cables);
@@ -673,15 +687,11 @@ impl App {
             }
             Some(Drag::Device { key, off }) => {
                 let (key, x, y) = (key.clone(), w.0 - off.0, w.1 - off.1);
-                self.scene.move_device(&key, x, y);
+                let px = self.dpi() / self.view.s;
+                self.scene.drag_device(&key, x, y, px);
                 self.redraw();
             }
             Some(Drag::Cord { .. }) => self.redraw(),
-            Some(Drag::Knob { y0, sag0 }) => {
-                let dpi = self.dpi();
-                self.scene.sag = (sag0 + ((y0 - self.cursor.1) / (150.0 * dpi)) as f32).clamp(0.0, 1.0);
-                self.redraw();
-            }
             Some(Drag::Key) => {}
             Some(Drag::Switch { from, pos0, .. }) => {
                 let (from, pos0) = (*from, *pos0);
@@ -700,9 +710,7 @@ impl App {
                 }
             }
             Some(Drag::Plug { .. }) => {
-                let cursor = self.cursor;
-                if let Some(Drag::Plug { magnet, targets, moved, start, .. }) = &mut self.drag {
-                    *moved = moved.max((cursor.0 - start.0).abs() + (cursor.1 - start.1).abs());
+                if let Some(Drag::Plug { magnet, targets, .. }) = &mut self.drag {
                     *magnet = Self::magnet(&self.scene, targets, w);
                 }
                 self.redraw();
@@ -712,7 +720,6 @@ impl App {
                 let dpi = self.dpi();
                 let (icon, hint) = if self.cursor.1 < top {
                     match self.panel.hit(self.cursor.0 / dpi, self.cursor.1 / dpi) {
-                        Some(Key::Sag) => (CursorIcon::NsResize, Key::Sag.hint().to_owned()),
                         Some(Key::Cables) => (CursorIcon::EwResize, Key::Cables.hint().to_owned()),
                         Some(k) => (CursorIcon::Pointer, k.hint().to_owned()),
                         None => (CursorIcon::Default, String::new()),
@@ -746,21 +753,16 @@ impl App {
     }
 
     fn field_cursor(&self, w: (f64, f64)) -> CursorIcon {
-        {
-            {
-                let icon = if self.scene.plug_at(w.0, w.1).is_some() || (self.scene.cables < 2 && self.scene.cord_at(w.0, w.1).is_some()) {
-                    CursorIcon::Grab
-                } else if self.scene.free_jack_at(w.0, w.1).is_some() {
-                    CursorIcon::Crosshair
-                } else if self.scene.switch_at(w.0, w.1).is_some() {
-                    CursorIcon::Pointer
-                } else if self.scene.device_at(w.0, w.1).is_some() && !self.panel.state.locked {
-                    CursorIcon::Move
-                } else {
-                    CursorIcon::Default
-                };
-                icon
-            }
+        if self.scene.plug_at(w.0, w.1).is_some() || (self.scene.cables < 2 && self.scene.cord_at(w.0, w.1).is_some()) {
+            CursorIcon::Grab
+        } else if self.scene.free_jack_at(w.0, w.1).is_some() {
+            CursorIcon::Crosshair
+        } else if self.scene.switch_at(w.0, w.1).is_some() {
+            CursorIcon::Pointer
+        } else if self.scene.device_at(w.0, w.1).is_some() && !self.panel.state.locked {
+            CursorIcon::Move
+        } else {
+            CursorIcon::Default
         }
     }
 
@@ -792,6 +794,7 @@ impl App {
             KeyCode::KeyF | KeyCode::Digit0 => self.panel_key(Key::Fit),
             KeyCode::KeyA => self.panel_key(Key::Arrange),
             KeyCode::KeyL => self.panel_key(Key::Lock),
+            KeyCode::KeyG => self.panel_key(Key::Align),
             KeyCode::KeyC => self.panel_key(Key::Cables),
             KeyCode::KeyR => self.panel_key(if self.scene.rack { Key::Desk } else { Key::Rack }),
             KeyCode::Escape => {
@@ -878,12 +881,7 @@ impl ApplicationHandler<()> for App {
                 let (top, bottom) = self.field();
                 let dpi = self.dpi();
                 if self.cursor.1 < top {
-                    // the wheel turns the SAG knob
                     match self.panel.hit(self.cursor.0 / dpi, self.cursor.1 / dpi) {
-                        Some(Key::Sag) => {
-                            self.scene.sag = (self.scene.sag + (f.ln() * 0.6) as f32).clamp(0.0, 1.0);
-                            self.redraw();
-                        }
                         // the wheel steps the cords switch, one click at a time
                         Some(Key::Cables | Key::CablesAt(_)) if f != 1.0 => {
                             let step = if f > 1.0 { 1 } else { -1 };

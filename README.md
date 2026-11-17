@@ -123,31 +123,31 @@ To uninstall, delete those three files.
 
 | | |
 | --- | --- |
-| Drag from a jack's free slot | pull out a cord; drop it on a jack to link (the jacks it fits glow, the others fade) |
-| Drag a plug | move it to another jack, or drop it in empty space to unlink |
-| Double-click a cord or plug | pull it out (unlink) |
-| SPLIT / JOIN | one stereo jack, or separate L and R jacks; the stereo jacks at the other ends of its cords follow, and so does a new stream that starts playing into a split pair |
+| Drag from a jack's free slot | pull out a cord; drop its end on a jack to link (the jacks it fits glow, the others fade) |
+| Drag a cord's end | move it to another jack, or drop it in empty space to unlink |
+| Double-click a cord or its end | pull it out (unlink) |
+| SPLIT / JOIN | one stereo jack, or separate L and R jacks, L above R; the stereo jacks its cords lead to follow, and theirs in turn, and so does a new stream that starts playing into a split pair |
 | Ctrl+Z / Ctrl+Shift+Z | undo / redo |
-| Drag a device | move it; in RACK, drag it up or down to change the order |
+| Drag a device | move it; on the desk it stops at other devices and slides along them, and its edges and centre stick lightly to those of the others, with a guide line, to line devices up (also right beside, above or below one); in RACK, drag it up or down to change the order |
 | R, or DESK / RACK | devices on a desk, or in a 19" rack (each keeps its desk place) |
-| Hover a jack, plug, cord or device | its cords stand out (even with CABLES on fade or hide) and the others fade; after a moment a tooltip gives the full names |
+| Hover a jack, cord or device | its cords stand out (even with CABLES on fade or hide) and the others fade; after a moment a tooltip gives the full names |
 | Drag a cord | grab it and swing it |
 | Drag empty space, or right/middle drag | pan |
 | Wheel | zoom |
-| Top panel | undo, redo, save and load presets, lock devices (L), the CABLES switch show · fade · hide (drag, wheel, click, or C), the SAG knob (drag or wheel), arrange (A), fit (F) |
+| Top panel | undo, redo, save and load presets, lock devices (L), line devices up on the desk or place them freely (G), the CABLES switch show · fade · hide (drag, wheel, click, or C), arrange (A), fit (F) |
 | Ctrl+S / Ctrl+O, or the LCD | save a new preset / pick one from the list |
 | F | fit everything in the window |
 | A | arrange devices by signal flow |
 | Ctrl+Q | quit |
 
-Settings and presets are plain text files in `~/.config/patchcord`: `settings.txt` (SAG, cords,
-lock, desk or rack, window size, where devices sit, the rack's order) and `presets.txt` (each preset's links, split jacks and
+Settings and presets are plain text files in `~/.config/patchcord`: `settings.txt` (cords,
+lock, lining up, desk or rack, window size, where devices sit, the rack's order) and `presets.txt` (each preset's links, split jacks and
 layout, by PipeWire's node and port names). Loading a preset takes away the links between
 devices it knows that it doesn't have; devices started later keep theirs. The Flatpak keeps them
 in `~/.var/app/io.github.bewzaalex.patchcord/config/patchcord` instead.
 
 `patchcord --render out.png [rack] [demo] [hover | held] [save | presets]` draws the current graph to a PNG without
-opening a window, optionally in the rack, with a few cords added to the picture only (`demo`, for screenshots), with the pointer on a jack, with a plug in the hand or with a preset drop-down open (`PATCHCORD_SCALE` sets the scale, 1.5 by default). `PATCHCORD_DEBUG=1` prints which GPU it uses.
+opening a window, optionally in the rack, with a few cords added to the picture only (`demo`, for screenshots), with the pointer on a jack, with a cord's end in the hand or with a preset drop-down open (`PATCHCORD_SCALE` sets the scale, 1.5 by default). `PATCHCORD_DEBUG=1` prints which GPU it uses.
 
 ## Development
 

@@ -1,7 +1,10 @@
-//! A patch cord: a rope of points (Verlet integration) with a plug at each end.
+//! A patch cord, as in Reason: a rope of points (Verlet integration) hanging between the two
+//! jacks it is plugged into, its ends straight in the jacks. No plugs stand out of the panel to
+//! turn, so a cord just hangs: it swings, sags and settles.
 //!
-//! Distances are in world units (the panel's pixels at zoom 1). Ported from docs/design/mockup.
+//! Distances are in world units (the panel's pixels at zoom 1).
 
+use super::ease;
 use super::face::JackKind;
 
 /// points along a cord
@@ -14,29 +17,6 @@ const ITER: usize = 20;
 const STIFF: f32 = 0.35;
 /// physics steps per second
 pub const RATE: f32 = 120.0;
-/// A plug is drawn in millimetres: one millimetre is this many world units. A jack's hole on a
-/// face is 11 units across and stands for the 6.3 mm opening, so the shaft fits it exactly.
-pub const PLUG: f32 = 11.0 / 6.3;
-/// A right-angle 6.3 mm plug, in millimetres: two barrels joined at a right angle. The metal
-/// barrel runs along x from where the cord goes in (0) to the head; the head is the second barrel,
-/// a little thicker, in the cord's colour, standing across it with its axis along y and a rounded
-/// back; the shaft comes out of the middle of its front. Overall 46 from the head's back to the
-/// tip, as a standard plug.
-pub const BARREL_R: f32 = 5.0;
-pub const HEAD_R: f32 = 6.5;
-pub const HEAD_X0: f32 = 20.0;
-pub const SHAFT_X: f32 = HEAD_X0 + HEAD_R;
-pub const HEAD_X1: f32 = SHAFT_X + HEAD_R;
-pub const HEAD_TOP: f32 = -8.0;
-pub const HEAD_BOTTOM: f32 = 7.0;
-/// the shaft: 6.3 thick, reaching 31.2 out of the head
-pub const SHAFT_R: f32 = 3.15;
-pub const SHAFT_LEN: f32 = 31.2;
-/// the cord comes out of the barrel straight for this long before it bends, as from a strain relief
-pub const STRAIN: f32 = 8.0;
-const STRAIN_W: f32 = STRAIN * PLUG;
-/// the hand holds the plug by its head, over the shaft: this far from where the cord leaves it
-pub const HOLD: f32 = PLUG * SHAFT_X;
 
 #[derive(Clone, Copy, Default, Debug)]
 pub struct P {
@@ -52,6 +32,7 @@ impl P {
     }
 }
 
+/// One end of a cord: in a jack, in the hand, or dropped.
 #[derive(Clone, Debug)]
 pub struct End {
     /// the jack it is plugged into
@@ -64,20 +45,10 @@ pub struct End {
     pub slot: u64,
     pub rank: usize,
     pub kind: JackKind,
-    /// a little bump when it goes in, fading
-    pub ins: f32,
-    /// 0 seated, 1 in the hand: how much of the shaft shows (in a jack it is inside the panel)
-    pub lift: f32,
-    /// the way the barrel points, from where the cord leaves it towards the head (radians)
-    pub ang: f32,
-    /// the head, over the shaft: on the jack when seated, in the hand when held
+    /// where the cord ends: on the jack, in the hand, or where it fell
     pub x: f32,
     pub y: f32,
-    /// where the cord leaves the barrel, and where it is free to bend, a little further out
-    pub cx: f32,
-    pub cy: f32,
-    pub sx: f32,
-    pub sy: f32,
+    /// placed on its jack at least once (after that it glides when the jack moves)
     placed: bool,
     /// the jack it was pulled out of, while in the hand
     pub orig: Option<String>,
@@ -85,7 +56,7 @@ pub struct End {
 
 impl End {
     fn new(jack: Option<String>, kind: JackKind, slot: u64) -> Self {
-        End { jack, held: false, free: false, slot, rank: 0, kind, ins: 0.0, lift: 0.0, ang: -std::f32::consts::FRAC_PI_2, x: 0.0, y: 0.0, cx: 0.0, cy: 0.0, sx: 0.0, sy: 0.0, placed: false, orig: None }
+        End { jack, held: false, free: false, slot, rank: 0, kind, x: 0.0, y: 0.0, placed: false, orig: None }
     }
     pub fn seated(&self) -> bool {
         self.jack.is_some() && !self.held && !self.free
@@ -110,55 +81,73 @@ pub struct Cord {
     pub strain: f32,
     /// seconds to wait for PipeWire to confirm the links of a cord just plugged in
     pub pending: f32,
+    /// how far apart its ends were last frame
+    span: f32,
 }
 
-/// The hand holding a plug: where, how fast it moves sideways, and how far the plug has turned
-/// to face the panel (1 in the air, 0 when it is about to go in).
+/// The hand holding a cord's end: where, and the kind of jack it is about to go into (a cord
+/// into a stereo jack is drawn thicker).
 #[derive(Clone, Copy, Debug)]
 pub struct Held {
     pub x: f32,
     pub y: f32,
-    pub vx: f32,
-    pub lift: f32,
     pub kind: Option<JackKind>,
 }
 
-pub fn target_len(d: f32, sag: f32) -> f32 {
-    d * (1.03 + 0.2 * sag) + 30.0 + 140.0 * sag
+/// How long a cord between two points (`dx` apart across, `dy` up or down) is: a third longer
+/// than the distance, as in Reason, so it hangs in a deep, calm U, and drops out of its jacks
+/// rather than running sideways over the jacks beside them; a little more between jacks side by
+/// side.
+pub fn target_len(dx: f32, dy: f32) -> f32 {
+    let (across, d) = (dx.abs(), (dx * dx + dy * dy).sqrt());
+    d * 1.3 + (30.0f32).min(across * 0.4)
+}
+
+/// The curve a cord `len` long hangs in between `p0` and `p1`, as N points: a curve h·sin(πt)
+/// over a span d is about d + (πh)²/(4d) long; it bulges across the span, on its lower side (down
+/// between points side by side, sideways between points one above the other, where bulging down
+/// would fold it back along itself).
+fn hang(p0: (f32, f32), p1: (f32, f32), len: f32) -> Vec<(f32, f32)> {
+    let d = ((p1.0 - p0.0).powi(2) + (p1.1 - p0.1).powi(2)).sqrt();
+    let deep = ((len - d).max(0.0) * 4.0 * d).sqrt() / std::f32::consts::PI;
+    let (nx, ny) = if d > 1.0 { ((p1.1 - p0.1) / d, -(p1.0 - p0.0) / d) } else { (0.0, 1.0) };
+    let (nx, ny) = if ny < 0.0 || (ny == 0.0 && nx < 0.0) { (-nx, -ny) } else { (nx, ny) };
+    (0..N)
+        .map(|i| {
+            let t = i as f32 / (N - 1) as f32;
+            let out = (t * std::f32::consts::PI).sin() * deep;
+            (p0.0 + (p1.0 - p0.0) * t + nx * out, p0.1 + (p1.1 - p0.1) * t + ny * out)
+        })
+        .collect()
 }
 
 impl Cord {
-    /// A cord plugged in at both ends, starting on a gentle curve so it settles instead of dropping.
-    pub fn new(seq: u64, slots: (u64, u64), a: (String, JackKind, (f32, f32)), b: (String, JackKind, (f32, f32)), color: [u8; 3], sag: f32) -> Self {
-        // the barrels hang down from the jacks at first: the cord starts below them
-        let (p0, p1) = ((a.2.0, a.2.1 + HOLD + STRAIN_W), (b.2.0, b.2.1 + HOLD + STRAIN_W));
-        let d = ((p1.0 - p0.0).powi(2) + (p1.1 - p0.1).powi(2)).sqrt();
-        let pts = (0..N)
-            .map(|i| {
-                let t = i as f32 / (N - 1) as f32;
-                let sag = (t * std::f32::consts::PI).sin() * (d * 0.25).min(120.0);
-                P::at(p0.0 + (p1.0 - p0.0) * t, p0.1 + (p1.1 - p0.1) * t + sag)
-            })
-            .collect();
+    /// A cord plugged in at both ends, starting in the curve it hangs in (see `hang`), so it swings
+    /// a little and settles instead of dropping or buckling.
+    pub fn new(seq: u64, slots: (u64, u64), a: (String, JackKind, (f32, f32)), b: (String, JackKind, (f32, f32)), color: [u8; 3]) -> Self {
+        let len = target_len(b.2.0 - a.2.0, b.2.1 - a.2.1);
+        let pts = hang(a.2, b.2, len).into_iter().map(|(x, y)| P::at(x, y)).collect();
         Cord {
             seq,
             a: End::new(Some(a.0), a.1, slots.0),
             b: End::new(Some(b.0), b.1, slots.1),
             color,
             pts,
-            len: target_len(d, sag),
+            len,
             dying: None,
             alpha: 1.0,
             grab: None,
             strain: 1.0,
             pending: 0.0,
+            span: 0.0,
         }
     }
 
-    /// A cord just pulled out of a jack: one end plugged in, the other in the hand.
+    /// A cord just pulled out of a jack: one end plugged in, the other in the hand. It starts with
+    /// no length and quickly grows to its own as the hand moves away.
     pub fn fresh(seq: u64, slot: u64, jack: String, kind: JackKind, at: (f32, f32), color: [u8; 3], output: bool) -> Self {
-        let mut c = Cord::new(seq, (slot, slot), (jack.clone(), kind, at), (jack, kind, at), color, 0.0);
-        c.len = 30.0;
+        let mut c = Cord::new(seq, (slot, slot), (jack.clone(), kind, at), (jack, kind, at), color);
+        c.len = 0.0;
         let held = if output { &mut c.b } else { &mut c.a };
         held.jack = None;
         held.held = true;
@@ -200,70 +189,74 @@ impl Cord {
 
     /// Moving enough to need another frame.
     pub fn moving(&self) -> bool {
-        self.dying.is_some() || self.grab.is_some() || self.a.held || self.b.held || self.a.ins > 0.01 || self.b.ins > 0.01 || self.pts.iter().any(|p| (p.x - p.px).abs() + (p.y - p.py).abs() > 0.02)
+        self.dying.is_some() || self.grab.is_some() || self.a.held || self.b.held || self.pts.iter().any(|p| (p.x - p.px).abs() + (p.y - p.py).abs() > 0.02)
     }
 
-    /// One frame: `dt` seconds. `slot_pos` finds where a jack's n-th slot is; `snap` puts seated
-    /// plugs straight in place (while a device is dragged) instead of gliding there.
-    pub fn frame(&mut self, dt: f32, steps: usize, slot_pos: &impl Fn(&str, usize) -> Option<(f32, f32)>, hand: Option<(f32, f32)>, held: Option<Held>, sag: f32, snap: bool) {
+    /// One frame: `dt` seconds. `slot_pos` finds where a jack's n-th slot is; `snap` puts ends in
+    /// jacks straight in place (while a device is dragged) instead of gliding there.
+    pub fn frame(&mut self, dt: f32, steps: usize, slot_pos: &impl Fn(&str, usize) -> Option<(f32, f32)>, hand: Option<(f32, f32)>, held: Option<Held>, snap: bool) {
         self.pending = (self.pending - dt).max(0.0);
         let dying = self.dying.is_some();
+        // how far each end in a jack moved with its device this frame, and where the ends and the
+        // length were before
+        let mut carried = [(0.0f32, 0.0f32); 2];
+        let before = ((self.a.x, self.a.y), (self.b.x, self.b.y), self.len);
         for (end_b, e) in [(false, &mut self.a), (true, &mut self.b)] {
-            let lift = if e.held { held.map_or(1.0, |h| h.lift) } else if e.free { 1.0 } else { 0.0 };
-            e.lift += (lift - e.lift) * 0.22;
-            e.ins *= 0.82;
-            // the cord near the plug: its end, and a point further in that shows where it pulls
-            // (close to the plug when it is in a jack, where the cord turns the barrel directly)
-            let k = if e.held || e.free { 6 } else { 2 };
-            let (p0, p3) = if end_b { (self.pts[N - 1], self.pts[N - 1 - k]) } else { (self.pts[0], self.pts[k]) };
-            // the barrel turns towards where the cord pulls, like a right-angle plug in a jack or a hand
-            let toward = |hx: f32, hy: f32, ang: f32| {
-                if (hx - p3.x).abs() + (hy - p3.y).abs() > 2.0 { (hy - p3.y).atan2(hx - p3.x) } else { ang }
-            };
             if e.held
                 && let Some(h) = held
             {
-                // held by the head; the barrel trails towards the cord, leaning with the movement
                 (e.x, e.y) = (h.x, h.y);
-                let want = toward(e.x, e.y, e.ang) + (h.vx * 0.0006).clamp(-0.5, 0.5);
-                e.ang += wrap(want - e.ang) * 0.25;
                 if let Some(k) = h.kind {
                     e.kind = k;
                 }
             } else if e.free {
-                // a dropped plug falls with the cord's end, its barrel in line with the cord
-                let want = (p0.y - p3.y).atan2(p0.x - p3.x);
-                e.ang += wrap(want - e.ang) * 0.16;
-                let (u, v) = (e.ang.cos(), e.ang.sin());
-                (e.sx, e.sy) = (p0.x, p0.y);
-                (e.cx, e.cy) = (p0.x + u * STRAIN_W, p0.y + v * STRAIN_W);
-                (e.x, e.y) = (e.cx + u * HOLD, e.cy + v * HOLD);
-                continue;
+                // a dropped end falls with the cord
+                let p = if end_b { self.pts[N - 1] } else { self.pts[0] };
+                (e.x, e.y) = (p.x, p.y);
             } else if let Some(j) = &e.jack
                 && !dying
                 && let Some((x, y)) = slot_pos(j, e.rank)
             {
-                // seated plugs glide when their mult closes up or opens, and turn in the jack
+                // ends in a jack glide when their mult closes up or opens
+                let was = (e.x, e.y, e.placed);
                 if !e.placed || snap {
                     (e.x, e.y, e.placed) = (x, y, true);
                 } else {
-                    e.x += (x - e.x) * 0.3;
-                    e.y += (y - e.y) * 0.3;
+                    let k = ease(0.3, dt);
+                    e.x += (x - e.x) * k;
+                    e.y += (y - e.y) * k;
                 }
-                let want = toward(e.x, e.y, e.ang);
-                e.ang += wrap(want - e.ang) * 0.35;
+                if was.2 {
+                    carried[end_b as usize] = (e.x - was.0, e.y - was.1);
+                }
             }
-            // the cord leaves the barrel's end, behind the head, and runs straight a little way
-            let (u, v) = (e.ang.cos(), e.ang.sin());
-            (e.cx, e.cy) = (e.x - u * HOLD, e.y - v * HOLD);
-            (e.sx, e.sy) = (e.cx - u * STRAIN_W, e.cy - v * STRAIN_W);
         }
         if !self.a.free && !self.b.free {
-            let d = ((self.a.sx - self.b.sx).powi(2) + (self.a.sy - self.b.sy).powi(2)).sqrt();
+            let d = ((self.a.x - self.b.x).powi(2) + (self.a.y - self.b.y).powi(2)).sqrt();
             let in_hand = self.a.held || self.b.held;
-            // in the hand the cord pays out as it is pulled, a little behind: it stretches on a quick pull
-            let t = if in_hand { (d + 60.0 + 60.0 * sag).max(90.0) } else { target_len(d, sag) };
-            self.len += (t - self.len) * if t > self.len { if in_hand { 0.12 } else { 0.05 } } else { 0.03 };
+            // When its ends move apart or together (its devices gliding somewhere), its length
+            // changes with them at once, keeping its slack: it isn't squeezed into an arch that
+            // then drops, nor pulled taut. Then it eases to its own length.
+            if !in_hand && self.span > 1.0 && d > 1.0 {
+                self.len *= d / self.span;
+            }
+            self.span = d;
+            // In the hand it is as long as it will be in the jack, so it doesn't grow when it goes
+            // in. It follows its ends quickly both ways, so devices coming together don't squeeze
+            // it into a loop.
+            let t = target_len(self.a.x - self.b.x, self.a.y - self.b.y);
+            self.len += (t - self.len) * ease(0.2, dt);
+        }
+        // A device that moves carries its cords along: each point moves as much as the curve the
+        // cord hangs in moves there (see `hang`), its last position too. So a cord goes along in
+        // its hanging shape, keeping its own swing, without being pulled at (nothing to fight
+        // its physics and tremble), whipped into a loop, or left to drop from above.
+        if carried.iter().any(|&(x, y)| x.abs() + y.abs() > 1e-3) {
+            let (was, now) = (hang(before.0, before.1, before.2), hang((self.a.x, self.a.y), (self.b.x, self.b.y), self.len));
+            for ((p, w), n) in self.pts.iter_mut().zip(&was).zip(&now) {
+                let (dx, dy) = (n.0 - w.0, n.1 - w.1);
+                (p.x, p.y, p.px, p.py) = (p.x + dx, p.y + dy, p.px + dx, p.py + dy);
+            }
         }
         for _ in 0..steps {
             self.step(1.0 / RATE, hand);
@@ -271,15 +264,15 @@ impl Cord {
         // a safety net: a cord whose numbers went wrong starts over as a straight line
         let sane = |v: f32| v.is_finite() && v.abs() < 1e6;
         if !self.pts.iter().all(|p| sane(p.x) && sane(p.y)) || !sane(self.len) {
-            let (a, b) = if sane(self.a.sx) && sane(self.a.sy) && sane(self.b.sx) && sane(self.b.sy) { ((self.a.sx, self.a.sy), (self.b.sx, self.b.sy)) } else { ((0.0, 0.0), (0.0, 0.0)) };
+            let (a, b) = if sane(self.a.x) && sane(self.a.y) && sane(self.b.x) && sane(self.b.y) { ((self.a.x, self.a.y), (self.b.x, self.b.y)) } else { ((0.0, 0.0), (0.0, 0.0)) };
             for (i, p) in self.pts.iter_mut().enumerate() {
                 let t = i as f32 / (N - 1) as f32;
                 *p = P::at(a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
             }
-            self.len = target_len(((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt(), sag);
+            self.len = target_len(b.0 - a.0, b.1 - a.1);
         }
         let len: f32 = self.pts.windows(2).map(|w| ((w[1].x - w[0].x).powi(2) + (w[1].y - w[0].y).powi(2)).sqrt()).sum();
-        self.strain = len / self.len;
+        self.strain = len / self.len.max(1e-3);
         if let Some(t) = &mut self.dying {
             *t += dt;
             self.alpha = (1.0 - (*t - 0.65) / 0.45).clamp(0.0, 1.0);
@@ -296,13 +289,9 @@ impl Cord {
             p.x += vx;
             p.y += vy + g;
         }
+        // the ends are pinned where they are (in a jack or in the hand); a dropped end falls
         let (pin_a, pin_b, k) = (!self.a.free, !self.b.free, self.grab);
-        let (ax, ay, bx, by) = (self.a.sx, self.a.sy, self.b.sx, self.b.sy);
-        // The cord goes on in line with the barrel. In the hand that is firm (the hand holds the
-        // plug's angle); in a jack it is a gentle pull, since the plug turns there and the cord
-        // turns it: neither can lock the other into a kink.
-        let ax_a = pin_a.then(|| (ax - self.a.ang.cos() * seg, ay - self.a.ang.sin() * seg, self.a.held));
-        let ax_b = pin_b.then(|| (bx - self.b.ang.cos() * seg, by - self.b.ang.sin() * seg, self.b.held));
+        let (ax, ay, bx, by) = (self.a.x, self.a.y, self.b.x, self.b.y);
         let pin = |pts: &mut [P]| {
             if pin_a {
                 (pts[0].x, pts[0].y) = (ax, ay);
@@ -310,20 +299,12 @@ impl Cord {
             if pin_b {
                 (pts[n - 1].x, pts[n - 1].y) = (bx, by);
             }
-            for (i, axis) in [(1, ax_a), (n - 2, ax_b)] {
-                if let Some((x, y, firm)) = axis {
-                    let pull = if firm { 1.0 } else { 0.3 };
-                    pts[i].x += (x - pts[i].x) * pull;
-                    pts[i].y += (y - pts[i].y) * pull;
-                }
-            }
             if let (Some(k), Some((hx, hy))) = (k, hand) {
                 pts[k].x += (hx - pts[k].x) * 0.35;
                 pts[k].y += (hy - pts[k].y) * 0.35;
             }
         };
-        let firm = |axis: Option<(f32, f32, bool)>| axis.is_some_and(|a| a.2);
-        let w = |i: usize| if (i == 0 && pin_a) || (i == n - 1 && pin_b) || (i == 1 && firm(ax_a)) || (i == n - 2 && firm(ax_b)) || Some(i) == k { 0.0 } else { 1.0 };
+        let w = |i: usize| if (i == 0 && pin_a) || (i == n - 1 && pin_b) || Some(i) == k { 0.0 } else { 1.0 };
         pin(&mut self.pts);
         for _ in 0..ITER {
             for i in 0..n - 1 {
@@ -340,21 +321,19 @@ impl Cord {
                 self.pts[i + 1].x -= dx * diff * wb;
                 self.pts[i + 1].y -= dy * diff * wb;
             }
-            // a thick cord resists folding: keep every second point apart; near the plugs, where a
-            // real cord is stiffer, almost straight
+            // a thick cord resists folding: keep every second point apart
             for i in 0..n - 2 {
                 let (wa, wb) = (w(i), w(i + 2));
                 if wa + wb == 0.0 {
                     continue;
                 }
-                let near = i < 3 || i + 2 > n - 4;
                 let (p, q) = (self.pts[i], self.pts[i + 2]);
                 let (dx, dy) = (q.x - p.x, q.y - p.y);
-                let (d, min) = ((dx * dx + dy * dy).sqrt().max(1e-6), seg * if near { 1.96 } else { 1.9 });
+                let (d, min) = ((dx * dx + dy * dy).sqrt().max(1e-6), seg * 1.9);
                 if d >= min {
                     continue;
                 }
-                let diff = (d - min) / d / (wa + wb) * if near { 0.7 } else { STIFF };
+                let diff = (d - min) / d / (wa + wb) * STIFF;
                 self.pts[i].x += dx * diff * wa;
                 self.pts[i].y += dy * diff * wa;
                 self.pts[i + 2].x -= dx * diff * wb;
@@ -364,7 +343,7 @@ impl Cord {
         }
     }
 
-    /// Distance from (x, y) to the cord, and the nearest inner point.
+    /// The nearest point of the cord to (x, y): its distance, and the index of the point to grab.
     pub fn hit(&self, x: f32, y: f32) -> Option<(f32, usize)> {
         let mut best: Option<(f32, usize)> = None;
         for (i, w) in self.pts.windows(2).enumerate() {
@@ -381,118 +360,132 @@ impl Cord {
     }
 }
 
-pub fn wrap(a: f32) -> f32 {
-    a.sin().atan2(a.cos())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// How badly the cord bends back where it leaves a plug in a jack, after settling: the cosine
-    /// between the barrel (pointing out, away from the head) and the cord's first stretch.
-    fn settle(ja: (f32, f32), jb: (f32, f32), start: f32) -> f32 {
-        let slot = move |k: &str, _n: usize| Some(if k == "a" { ja } else { jb });
-        let mut c = Cord::new(1, (1, 2), ("a".into(), JackKind::Stereo, ja), ("b".into(), JackKind::Stereo, jb), [0, 200, 0], 0.45);
-        c.a.ang = start;
-        for _ in 0..180 {
-            c.frame(1.0 / 60.0, 2, &slot, None, None, 0.45, false);
-        }
-        let (bx, by) = (c.a.ang.cos(), c.a.ang.sin());
-        let (p0, p2) = (c.pts[0], c.pts[2]);
-        let (dx, dy) = (p2.x - p0.x, p2.y - p0.y);
-        (dx * -bx + dy * -by) / (dx * dx + dy * dy).sqrt()
+    fn wrap(a: f32) -> f32 {
+        a.sin().atan2(a.cos())
     }
 
-    /// How far the cord turns, in degrees, over its first stretch out of the plug after the
-    /// plug's device was dragged along `path` and the cord let settle.
-    fn turn_after_drag(path: &[(f32, f32)], jb: (f32, f32)) -> f32 {
-        let pos = std::cell::Cell::new(path[0]);
+    /// How many times a cord crosses itself: a loop or a knot crosses at least once.
+    fn crossings(c: &Cord) -> usize {
+        let s: Vec<(P, P)> = c.pts.windows(2).map(|w| (w[0], w[1])).collect();
+        let cross = |(a, b): (P, P), (c, d): (P, P)| {
+            let side = |p: P, q: P, r: P| (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+            side(a, b, c) * side(a, b, d) < 0.0 && side(c, d, a) * side(c, d, b) < 0.0
+        };
+        (0..s.len()).flat_map(|i| (i + 2..s.len()).map(move |j| (i, j))).filter(|&(i, j)| cross(s[i], s[j])).count()
+    }
+
+    /// How far a cord turns in all along its length, in degrees: a cord that hooks round (a J or a
+    /// U) turns about half a circle, a loop or a coil a whole one or more.
+    fn turning(c: &Cord) -> f32 {
+        c.pts.windows(3).map(|w| wrap((w[2].y - w[1].y).atan2(w[2].x - w[1].x) - (w[1].y - w[0].y).atan2(w[1].x - w[0].x)).abs()).sum::<f32>().to_degrees()
+    }
+
+    /// Settles a cord between two jacks, one of them moving along `path` (as a device glides).
+    fn settle(ja: (f32, f32), jb: (f32, f32), path: &[(f32, f32)]) -> Cord {
+        let pos = std::cell::Cell::new(ja);
         let slot = |k: &str, _n: usize| Some(if k == "a" { pos.get() } else { jb });
-        let mut c = Cord::new(1, (1, 2), ("a".into(), JackKind::Stereo, path[0]), ("b".into(), JackKind::Stereo, jb), [0, 200, 0], 0.45);
-        for w in path.windows(2) {
-            for i in 0..20 {
-                let t = i as f32 / 20.0;
-                pos.set((w[0].0 + (w[1].0 - w[0].0) * t, w[0].1 + (w[1].1 - w[0].1) * t));
-                c.frame(1.0 / 60.0, 2, &slot, None, None, 0.45, true);
+        let mut c = Cord::new(1, (1, 2), ("a".into(), JackKind::Stereo, ja), ("b".into(), JackKind::Stereo, jb), [0, 200, 0]);
+        for &to in path {
+            for _ in 0..60 {
+                let at = pos.get();
+                pos.set((at.0 + (to.0 - at.0) * 0.18, at.1 + (to.1 - at.1) * 0.18));
+                c.frame(1.0 / 60.0, 2, &slot, None, None, false);
             }
         }
-        for _ in 0..240 {
-            c.frame(1.0 / 60.0, 2, &slot, None, None, 0.45, false);
+        for _ in 0..300 {
+            c.frame(1.0 / 60.0, 2, &slot, None, None, false);
         }
-        let mut total = 0.0;
-        for i in 0..8 {
-            let (p, q, r) = (c.pts[i], c.pts[i + 1], c.pts[i + 2]);
-            let (a1, a2) = ((q.y - p.y).atan2(q.x - p.x), (r.y - q.y).atan2(r.x - q.x));
-            total += wrap(a2 - a1).abs();
-        }
-        // and the bend between the barrel and the cord's first stretch
-        let (bx, by) = (-c.a.ang.cos(), -c.a.ang.sin());
-        let (p0, p1) = (c.pts[0], c.pts[1]);
-        total += wrap((p1.y - p0.y).atan2(p1.x - p0.x) - by.atan2(bx)).abs();
-        total.to_degrees()
+        c
     }
 
-    /// Dragging a device about, over and around its cord, never leaves a hairpin where the cord
-    /// comes out of the plug.
+    /// A cord sags with its length, as real cords do: a short one a little, a long one in a deep U.
     #[test]
-    fn no_hairpin_after_dragging() {
-        let jb = (100.0, 400.0);
-        let paths: [&[(f32, f32)]; 4] = [
-            &[(700.0, 400.0), (300.0, 150.0), (500.0, 100.0)],
-            &[(700.0, 400.0), (200.0, 600.0), (600.0, 200.0)],
-            &[(400.0, 300.0), (50.0, 200.0), (300.0, 250.0)],
-            &[(700.0, 500.0), (700.0, 100.0), (400.0, 380.0)],
-        ];
-        for path in paths {
-            let deg = turn_after_drag(path, jb);
-            assert!(deg < 120.0, "the cord turns {deg:.0}° right out of the plug after dragging along {path:?}");
+    fn a_long_cord_hangs_lower_than_a_short_one() {
+        let sag = |dx: f32| settle((0.0, 300.0), (dx, 300.0), &[]).pts.iter().map(|p| p.y).fold(f32::MIN, f32::max) - 300.0;
+        let (short, long) = (sag(100.0), sag(1000.0));
+        assert!(short < 80.0, "a cord across 100 sags {short:.0}: short ones hang in a small U");
+        assert!(long > 250.0 && long > 4.0 * short, "a cord across 1000 sags only {long:.0} (one across 100: {short:.0}): long ones hang in a deep U");
+    }
+
+    /// A cord between two jacks hangs in one smooth curve below them, wherever they are: no loop
+    /// (a whole turn), and nowhere above the higher jack. (Between a jack and one right below it,
+    /// it hangs down past the lower one and up into it: a U, half a turn.)
+    #[test]
+    fn a_cord_hangs_below_its_jacks() {
+        let ja = (400.0, 300.0);
+        for (dx, dy) in [(300.0, 0.0), (-500.0, 120.0), (0.0, 120.0), (40.0, 140.0), (-15.0, 180.0), (70.0, 0.0), (250.0, -300.0), (-900.0, -150.0)] {
+            let jb = (ja.0 + dx, ja.1 + dy);
+            let c = settle(ja, jb, &[]);
+            let (deg, top) = (turning(&c), c.pts.iter().map(|p| p.y).fold(f32::MAX, f32::min));
+            assert!(deg < 300.0, "a cord from {ja:?} to {jb:?} turns {deg:.0}° along its length: a loop");
+            assert!(top > ja.1.min(jb.1) - 1.0, "a cord from {ja:?} to {jb:?} rises to {top:.0}, above its jacks");
         }
     }
 
-    /// A cord that leaves a plug in a jack with a tight U-turn (as after swinging it about)
-    /// straightens out once it settles.
+    /// A cord to a jack (nearly) right below hangs in a U a little past it and comes up into it,
+    /// as in Reason: not straight, and not in a deep loop.
     #[test]
-    fn a_loop_by_the_plug_comes_out() {
-        let (ja, jb) = ((600.0, 300.0), (100.0, 420.0));
-        let slot = move |k: &str, _n: usize| Some(if k == "a" { ja } else { jb });
-        let mut c = Cord::new(1, (1, 2), ("a".into(), JackKind::Stereo, ja), ("b".into(), JackKind::Stereo, jb), [0, 200, 0], 0.45);
-        for _ in 0..5 {
-            c.frame(1.0 / 60.0, 2, &slot, None, None, 0.45, false);
+    fn a_cord_to_a_jack_below_hangs_in_a_u_past_it() {
+        let ja = (400.0, 300.0);
+        for (dx, dy) in [(0.0, 120.0), (15.0, 180.0), (-30.0, 250.0), (40.0, 400.0), (-335.0, 1040.0)] {
+            let jb = (ja.0 + dx, ja.1 + dy);
+            let c = settle(ja, jb, &[]);
+            let low = c.pts.iter().map(|p| p.y).fold(f32::MIN, f32::max) - jb.1;
+            assert!(low > 5.0 && low < dy / 3.0 + 20.0, "a cord from {ja:?} to {jb:?} hangs {low:.0} past its lower jack");
         }
-        // bend the cord's first stretch into a U: out to the right, round, and back to the left
-        let (sx, sy) = (c.pts[0].x, c.pts[0].y);
-        for i in 1..9 {
-            let t = i as f32 / 8.0 * std::f32::consts::PI;
-            let (x, y) = (sx + 40.0 * t.sin(), sy + 40.0 - 40.0 * t.cos());
-            c.pts[i] = P { x, y, px: x, py: y };
-        }
-        for _ in 0..240 {
-            c.frame(1.0 / 60.0, 2, &slot, None, None, 0.45, false);
-        }
-        let mut total = 0.0;
-        for i in 0..8 {
-            let (p, q, r) = (c.pts[i], c.pts[i + 1], c.pts[i + 2]);
-            total += wrap((r.y - q.y).atan2(r.x - q.x) - (q.y - p.y).atan2(q.x - p.x)).abs();
-        }
-        assert!(total.to_degrees() < 120.0, "the cord still turns {:.0}° by the plug", total.to_degrees());
     }
 
-    /// A plug in a jack, its barrel starting at any angle, with the cord's other end anywhere
-    /// around it, ends up with the cord leaving its barrel without a sharp bend back.
+    /// A cord leaves each jack going down, not sideways over the jacks beside it: between the
+    /// jacks of a mult, to a jack far off to one side, and up to one above.
     #[test]
-    fn a_seated_plug_turns_towards_its_cord() {
-        let ja = (600.0, 300.0);
-        let mut worst = (2.0f32, (0.0, 0.0), 0.0);
-        for (dx, dy) in [(-500.0, 0.0), (-500.0, -250.0), (-500.0, 250.0), (-150.0, -200.0), (-150.0, 0.0), (0.0, -300.0), (300.0, -100.0), (-900.0, -150.0)] {
-            for k in 0..8 {
-                let start = k as f32 * std::f32::consts::FRAC_PI_4;
-                let cos = settle(ja, (ja.0 + dx, ja.1 + dy), start);
-                if cos < worst.0 {
-                    worst = (cos, (dx, dy), start);
+    fn a_cord_drops_out_of_its_jacks() {
+        let ja = (400.0, 300.0);
+        for (dx, dy) in [(48.0, 0.0), (-96.0, 0.0), (600.0, 0.0), (-400.0, 60.0), (300.0, -200.0)] {
+            let jb = (ja.0 + dx, ja.1 + dy);
+            let c = settle(ja, jb, &[]);
+            for (end, next, at) in [("first", c.pts[2], ja), ("second", c.pts[N - 3], jb)] {
+                let (sx, sy) = (next.x - at.0, next.y - at.1);
+                assert!(sy > sx.abs(), "a cord from {ja:?} to {jb:?} leaves its {end} jack sideways ({sx:.0}, {sy:.0})");
+            }
+        }
+    }
+
+    /// When the devices glide to new places (switching between desk and rack), a cord comes to rest
+    /// without a loop again.
+    #[test]
+    fn cords_settle_after_the_devices_move() {
+        let jb = (500.0, 400.0);
+        for path in [&[(200.0, 150.0)][..], &[(900.0, 100.0), (300.0, 600.0)], &[(500.0, 900.0)], &[(520.0, 530.0)], &[(1500.0, 100.0), (500.0, 280.0)]] {
+            let c = settle((700.0, 400.0), jb, path);
+            let deg = turning(&c);
+            assert!(deg < 300.0, "after its device moved along {path:?} the cord turns {deg:.0}° along its length: a loop");
+        }
+    }
+
+    /// A cord pulled out of a free jack comes out in a gentle curve, without a coil that has to
+    /// unroll first: the hand moves away from the jack in several directions.
+    #[test]
+    fn a_new_cord_comes_out_without_a_loop() {
+        let ja = (400.0, 300.0);
+        let slot = move |_: &str, _n: usize| Some(ja);
+        for (dx, dy) in [(300.0, 0.0), (250.0, 200.0), (-250.0, 150.0), (20.0, 300.0), (-20.0, 300.0), (150.0, -200.0)] {
+            let mut c = Cord::fresh(1, 1, "a".into(), JackKind::Stereo, ja, [0, 200, 0], true);
+            let mut worst = 0;
+            for i in 0..90 {
+                // the hand pulls the end away over a second, then holds still
+                let t = (i as f32 / 60.0).min(1.0);
+                let h = Held { x: ja.0 + dx * t, y: ja.1 + dy * t, kind: None };
+                c.frame(1.0 / 60.0, 2, &slot, None, Some(h), false);
+                if i > 3 {
+                    worst = worst.max(crossings(&c));
                 }
             }
+            assert!(worst == 0, "a new cord pulled towards ({dx}, {dy}) crosses itself while it comes out");
         }
-        assert!(worst.0 > 0.34, "cord bends back out of the barrel: cos {:.2} with the other end at {:?}, barrel starting at {:.2}", worst.0, worst.1, worst.2);
     }
 }
+

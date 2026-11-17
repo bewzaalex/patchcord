@@ -16,9 +16,10 @@ use graph::Dir;
 use pw::Connection;
 use ui::scene::Scene;
 
-/// `patchcord --render out.png [rack] [demo] [hover | held] [save | presets]`: draws the live graph to a PNG
+/// `patchcord --render out.png [rack] [demo] [split] [hover | held] [save | presets]`: draws the live graph to a PNG
 /// without opening a window, after letting the cords settle (PATCHCORD_SCALE sets the scale, 1.5
-/// by default). "rack" puts the devices in the rack; "demo" adds a few cords to the picture (not
+/// by default). "rack" puts the devices in the rack; "split" shows every stereo jack as L and R;
+/// "demo" adds a few cords to the picture (not
 /// to PipeWire); "hover" rests the pointer on the jack the
 /// first cord comes from; "held" pulls a cord out of the first output
 /// and holds its plug in the air; "save" or "presets" opens that drop-down.
@@ -34,10 +35,20 @@ fn render_snapshot(path: &str, opts: &[String]) -> Result<(), String> {
     scene.apply(conn.events.try_iter().collect::<Vec<_>>());
     let synced = started.elapsed();
     scene.set_rack(opts.iter().any(|o| o == "rack"));
+    // every stereo jack as L above R
+    if opts.iter().any(|o| o == "split") {
+        for di in 0..scene.devs.len() {
+            for g in 0..scene.devs[di].split.len() {
+                if scene.devs[di].dev.groups[g].stereo && !scene.devs[di].split[g] {
+                    scene.toggle_split(di, g);
+                }
+            }
+        }
+    }
     // a plug in the hand, up and to the right of the jack it came from
     let held = opts.iter().any(|o| o == "held").then(|| scene.first_output()).flatten().and_then(|k| {
         let (x, y) = scene.spare(&k)?;
-        Some((scene.pull_new(&k)?, ui::cord::Held { x: x + 150.0, y: y + 110.0, vx: 0.0, lift: 1.0, kind: None }))
+        Some((scene.pull_new(&k)?, ui::cord::Held { x: x + 150.0, y: y + 110.0, kind: None }))
     });
     // a few more cords, in the picture only, for screenshots: (device, group) to (device, group)
     if opts.iter().any(|o| o == "demo") {
@@ -131,7 +142,7 @@ fn render_snapshot(path: &str, opts: &[String]) -> Result<(), String> {
         out.draw_pixmap(x, y, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
     }
     let width = w as f64 / s;
-    let mut panel = ui::panel::Panel::new(ui::panel::State { rack: scene.rack, locked: false, cables: 0, sag: 45, sound: false, lcd: ["NO PRESET".into(), "48 kHz · 1024 · 21.3 ms".into()], pressed: None });
+    let mut panel = ui::panel::Panel::new(ui::panel::State { rack: scene.rack, locked: false, align: true, cables: 0, sound: false, lcd: ["NO PRESET".into(), "48 kHz · 1024 · 21.3 ms".into()], pressed: None });
     let status = ui::panel::status(width, &format!("PipeWire {} · {} devices", scene.version.as_deref().unwrap_or("?"), scene.devs.len()), "", s);
     let presets = config::load_presets();
     panel.menu = match menu {

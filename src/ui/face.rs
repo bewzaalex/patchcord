@@ -128,10 +128,26 @@ fn label_w(t: &str) -> f64 {
     SECTION.width(t)
 }
 
+/// Rows of a split stereo group: L above R, each mult running to the right.
+const ROWS: [f64; 2] = [50.0, 84.0];
+/// In a split stereo group, the first jack of each row: right of its L / R label.
+const ROW_X: f64 = 38.0;
+
+/// A stereo group whose switch is on SPLIT: its L and R stand one above the other.
+fn stacked(dev: &Device, gi: usize, jd: &[JackDef]) -> bool {
+    dev.groups[gi].stereo && jd.iter().filter(|j| j.group == gi).count() == 2
+}
+
 fn group_w(dev: &Device, gi: usize, jd: &[JackDef], counts: &[usize]) -> f64 {
     let g = &dev.groups[gi];
-    let n: usize = jd.iter().enumerate().filter(|(_, j)| j.group == gi).map(|(i, _)| slots(counts[i])).sum();
-    (n as f64 * JP + 14.0).max(if g.stereo { 100.0 } else { 0.0 }).max((label_w(&g.label) + 48.0).ceil())
+    let mine = || jd.iter().enumerate().filter(|(_, j)| j.group == gi).map(|(i, _)| slots(counts[i]));
+    let jacks = if stacked(dev, gi, jd) {
+        // the longest row, and room for the switch right of its lower jacks
+        ROW_X + (mine().max().unwrap_or(1) - 1) as f64 * JP + 22.0 + 46.0
+    } else {
+        mine().sum::<usize>() as f64 * JP + 14.0
+    };
+    jacks.max(if g.stereo { 100.0 } else { 0.0 }).max((label_w(&g.label) + 48.0).ceil())
 }
 
 /// Width the face needs; a rack is as wide as its widest device.
@@ -152,9 +168,14 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
         let gw = group_w(dev, gi, jd, counts);
         let n: usize = jd.iter().enumerate().filter(|(_, j)| j.group == gi).map(|(i, _)| slots(counts[i])).sum();
         let mut jx = x + (gw - n as f64 * JP) / 2.0 + JP / 2.0;
-        for (i, _) in jd.iter().enumerate().filter(|(_, j)| j.group == gi) {
-            geo.jacks[i] = (jx, 62.0);
-            jx += slots(counts[i]) as f64 * JP;
+        let rows = stacked(dev, gi, jd);
+        for (r, (i, _)) in jd.iter().enumerate().filter(|(_, j)| j.group == gi).enumerate() {
+            if rows {
+                geo.jacks[i] = (x + ROW_X, ROWS[r]);
+            } else {
+                geo.jacks[i] = (jx, 62.0);
+                jx += slots(counts[i]) as f64 * JP;
+            }
         }
         if dev.groups[gi].stereo {
             geo.switches.push((gi, [x + gw - 42.0, 95.0, 36.0, 14.0]));
@@ -306,15 +327,23 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
                 SMALL.text(tx + 11.5, 31.0, f.inv, "middle", "OUT")
             );
         }
+        let rows = stacked(dev, gi, jd);
         for (i, j) in jd.iter().enumerate().filter(|(_, j)| j.group == gi) {
             let k = slots(counts[i]);
-            let (jx, _) = geo.jacks[i];
-            // parallel jacks of one port get a printed outline, like a mult on a patch bay
+            let (jx, jy) = geo.jacks[i];
+            // parallel jacks of one port get a printed outline, like a mult on a patch bay (lower
+            // in a row of a split stereo group, which has less room)
+            let h = if rows { 32.0 } else { 42.0 };
             if k > 1 {
-                let _ = write!(body, r#"<rect x="{}" y="41" width="{}" height="42" rx="21" fill="rgba(0,0,0,.08)" stroke="{}" stroke-width=".9" opacity=".5"/>"#, jx - 21.0, (k - 1) as f64 * JP + 42.0, f.print);
+                let _ = write!(body, r#"<rect x="{}" y="{}" width="{}" height="{h}" rx="{}" fill="rgba(0,0,0,.08)" stroke="{}" stroke-width=".9" opacity=".5"/>"#, jx - h / 2.0, jy - h / 2.0, (k - 1) as f64 * JP + h, h / 2.0, f.print);
             }
-            // the jacks themselves are pictures of their own, laid over the face (see `jack_pic`)
-            body.push_str(&JACK.text(jx + (k - 1) as f64 * JP / 2.0, 91.0, f.print, "middle", &j.label));
+            // the jacks themselves are pictures of their own, laid over the face (see `jack_pic`);
+            // in a split stereo group L and R are printed left of their rows
+            if rows {
+                body.push_str(&JACK.text(jx - 21.0, jy + 3.2, f.print, "end", &j.label));
+            } else {
+                body.push_str(&JACK.text(jx + (k - 1) as f64 * JP / 2.0, 91.0, f.print, "middle", &j.label));
+            }
         }
     }
     for (gi, [bx, by, _, _]) in &geo.switches {

@@ -1,4 +1,4 @@
-//! The top panel (a strip of painted metal with hardware keys, the SAG knob and the LCD), the
+//! The top panel (a strip of painted metal with hardware keys, the CABLES switch and the LCD), the
 //! status bar at the bottom, and the short notices. Sizes are in logical pixels.
 
 use std::fmt::Write;
@@ -22,10 +22,10 @@ pub enum Key {
     Desk,
     Rack,
     Lock,
+    Align,
     /// the cords switch: the knob, or one of its printed positions
     Cables,
     CablesAt(u8),
-    Sag,
     Arrange,
     Fit,
     Sound,
@@ -43,11 +43,11 @@ impl Key {
             Key::Desk => "Devices anywhere on a desk",
             Key::Rack => "Devices in a 19\" rack (R)",
             Key::Lock => "Lock devices in place (L)",
+            Key::Align => "Line devices up while dragging them on the desk; off: place them freely (G)",
             Key::Cables => "Cords: show · fade · hide: drag, turn the wheel or click (C)",
             Key::CablesAt(0) => "Show the cords",
             Key::CablesAt(1) => "Fade the cords",
-            Key::CablesAt(_) => "Hide the cords (the plugs stay)",
-            Key::Sag => "How much the cords sag: drag or turn the wheel",
+            Key::CablesAt(_) => "Hide the cords",
             Key::Arrange => "Arrange devices by signal flow (A)",
             Key::Fit => "Fit everything in the window (F)",
             Key::Sound => "Plug sounds",
@@ -61,10 +61,11 @@ impl Key {
 pub struct State {
     pub rack: bool,
     pub locked: bool,
+    /// devices dragged on the desk stick to each other's edges and centres
+    pub align: bool,
     /// 0 show, 1 fade, 2 hide
     pub cables: u8,
     /// 0…100
-    pub sag: u8,
     pub sound: bool,
     pub lcd: [String; 2],
     pub pressed: Option<Key>,
@@ -107,6 +108,7 @@ const ICONS: &[(Key, &str)] = &[
     (Key::Save, r#"<path d="M5 3h11l3 3v15H5z"/><path d="M8 3v5h7V3"/><path d="M8 21v-7h8v7"/>"#),
     (Key::Load, r#"<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h10"/>"#),
     (Key::Lock, r#"<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>"#),
+    (Key::Align, r#"<path d="M4 3v18"/><rect x="7.5" y="5" width="12" height="5" rx="1"/><rect x="7.5" y="14" width="7.5" height="5" rx="1"/>"#),
     (Key::Arrange, r#"<rect x="3.5" y="4" width="7" height="5" rx="1"/><rect x="3.5" y="15" width="7" height="5" rx="1"/><rect x="13.5" y="9.5" width="7" height="5" rx="1"/><path d="M10.5 6.5h1.5v11h-1.5M12 12h1.5"/>"#),
     (Key::Fit, r#"<path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/>"#),
     (Key::Sound, r#"<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7"/><path d="M19 6a8.5 8.5 0 0 1 0 12"/>"#),
@@ -239,7 +241,7 @@ impl Panel {
             *x += 22.0;
         };
         group(&mut o, &mut rects, &mut x, &[(Key::Undo, None, None), (Key::Redo, None, None), (Key::Save, None, None), (Key::Load, None, None)], "EDIT");
-        group(&mut o, &mut rects, &mut x, &[(Key::Desk, Some("DESK"), Some(!st.rack)), (Key::Rack, Some("RACK"), Some(st.rack)), (Key::Lock, None, Some(st.locked))], "LAYOUT");
+        group(&mut o, &mut rects, &mut x, &[(Key::Desk, Some("DESK"), Some(!st.rack)), (Key::Rack, Some("RACK"), Some(st.rack)), (Key::Lock, None, Some(st.locked)), (Key::Align, None, Some(st.align))], "LAYOUT");
         // the cords switch: three click positions with their names printed around it
         let (kx, ky) = (x + 44.0, KNOB_Y);
         let mut ticks = String::new();
@@ -264,18 +266,6 @@ impl Panel {
         o.push_str(&SECTION.text(kx, 54.0, LABEL, "middle", "CABLES"));
         rects.push((Key::Cables, [kx - 16.0, ky - 16.0, 32.0, 32.0]));
         x += 88.0 + 22.0;
-
-        // the SAG knob, level with the cords switch
-        let (kx, ky) = (x + 17.0, KNOB_Y);
-        let mut scale = String::new();
-        for i in 0..=10 {
-            let t = (-135.0 + 27.0 * i as f64).to_radians();
-            let _ = write!(scale, r#"<path d="M{},{} L{},{}" stroke="{LABEL}" stroke-width="1.2"/>"#, kx + 17.0 * t.sin(), ky - 17.0 * t.cos(), kx + 19.5 * t.sin(), ky - 19.5 * t.cos());
-        }
-        o.push_str(&knob_svg(kx, ky, -135.0 + 270.0 * st.sag as f64 / 100.0, &scale));
-        o.push_str(&SECTION.text(kx, 54.0, LABEL, "middle", "SAG"));
-        rects.push((Key::Sag, [kx - 20.0, ky - 20.0, 40.0, 40.0]));
-        x += 34.0 + 22.0;
 
         group(&mut o, &mut rects, &mut x, &[(Key::Arrange, None, None), (Key::Fit, None, None), (Key::Sound, None, Some(st.sound))], "VIEW");
 
