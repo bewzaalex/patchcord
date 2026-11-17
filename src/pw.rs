@@ -30,12 +30,32 @@ pub enum Kind {
     Link,
 }
 
+/// Whether a card's profile can work now (an HDMI output with nothing plugged in can't).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Avail {
+    Yes,
+    No,
+    Unknown,
+}
+
+/// One of a card's profiles: which inputs and outputs it has (PipeWire's device `Profile`).
+#[derive(Clone, PartialEq, Debug)]
+pub struct Profile {
+    pub index: u32,
+    pub name: String,
+    pub description: String,
+    pub available: Avail,
+    pub priority: i32,
+}
+
 /// From PipeWire to the app.
 pub enum Event {
     Added { id: u32, kind: Kind, props: Props },
     Removed(u32),
     /// A node's or device's full properties, and a node's state ("running", "idle", …).
     Info { id: u32, props: Props, state: Option<&'static str> },
+    /// A card's profiles (in PipeWire's order) and the one it is in.
+    Profiles { id: u32, list: Vec<Profile>, current: Option<u32> },
     /// Peak level of each meter's channels since the last report, 0…1.
     Levels(Vec<(u32, Vec<f32>)>),
     /// A value of PipeWire's "settings" metadata (clock.rate, clock.quantum…).
@@ -54,6 +74,8 @@ pub enum Cmd {
     /// Measure these output ports, (node, port) in channel order, as meter `id`.
     Meter { id: u32, ports: Vec<(u32, u32)>, channels: Vec<String> },
     Unmeter(u32),
+    /// Switch card `device` to its profile `index` (remembered by PipeWire for next time).
+    SetProfile { device: u32, index: u32 },
     Quit,
 }
 
@@ -107,6 +129,44 @@ fn props_of(d: &spa::utils::dict::DictRef) -> Props {
     d.iter().map(|(k, v)| (k.to_owned(), v.to_owned())).collect()
 }
 
+// keys of a profile object (spa/param/profile.h) and the availability values
+const PROFILE_INDEX: u32 = 1;
+const PROFILE_NAME: u32 = 2;
+const PROFILE_DESCRIPTION: u32 = 3;
+const PROFILE_PRIORITY: u32 = 4;
+const PROFILE_AVAILABLE: u32 = 5;
+const PROFILE_SAVE: u32 = 8;
+
+/// A profile param, as PipeWire sends it.
+fn profile_of(pod: &spa::pod::Pod) -> Option<Profile> {
+    use spa::pod::Value;
+    let (_, Value::Object(obj)) = spa::pod::deserialize::PodDeserializer::deserialize_any_from(pod.as_bytes()).ok()? else { return None };
+    let mut p = Profile { index: u32::MAX, name: String::new(), description: String::new(), available: Avail::Unknown, priority: 0 };
+    for prop in obj.properties {
+        match (prop.key, prop.value) {
+            (PROFILE_INDEX, Value::Int(v)) => p.index = v as u32,
+            (PROFILE_NAME, Value::String(v)) => p.name = v,
+            (PROFILE_DESCRIPTION, Value::String(v)) => p.description = v,
+            (PROFILE_PRIORITY, Value::Int(v)) => p.priority = v,
+            (PROFILE_AVAILABLE, Value::Id(id)) => p.available = [Avail::Unknown, Avail::No, Avail::Yes].get(id.0 as usize).copied().unwrap_or(Avail::Unknown),
+            _ => {}
+        }
+    }
+    (p.index != u32::MAX).then_some(p)
+}
+
+/// The profile param that switches a card to profile `index`, and has PipeWire remember it.
+fn profile_param(index: u32) -> Option<Vec<u8>> {
+    use spa::pod::{Property, PropertyFlags, Value};
+    let prop = |key, value| Property { key, flags: PropertyFlags::empty(), value };
+    let obj = spa::pod::Object {
+        type_: spa::utils::SpaTypes::ObjectParamProfile.as_raw(),
+        id: spa::param::ParamType::Profile.as_raw(),
+        properties: vec![prop(PROFILE_INDEX, Value::Int(index as i32)), prop(PROFILE_SAVE, Value::Bool(true))],
+    };
+    Some(spa::pod::serialize::PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &Value::Object(obj)).ok()?.0.into_inner())
+}
+
 /// A signal meter: a capture stream, its ports once they exist, and the passive links to them.
 /// A node or device bound to keep its info coming: its proxy and listener.
 type Bound = (Box<dyn Any>, Box<dyn Any>);
@@ -139,6 +199,8 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
 
     // bound nodes and devices (proxy and listener), so their info keeps coming
     let bound: Rc<RefCell<HashMap<u32, Bound>>> = Default::default();
+    // devices whose profiles changed, to ask for them again
+    let stale: Rc<RefCell<Vec<u32>>> = Default::default();
     let meters: Rc<RefCell<HashMap<u32, Meter>>> = Default::default();
 
     let _registry_listener = registry
@@ -148,6 +210,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
             let registry = registry.clone();
             let bound = bound.clone();
             let meters = meters.clone();
+            let stale = stale.clone();
             let core = core.clone();
             move |g| {
                 // the "settings" metadata: the clock rate and quantum
@@ -205,10 +268,42 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                     Kind::Device => {
                         if let Ok(dev) = registry.bind::<pw::device::Device, _>(g) {
                             let ev = events.clone();
+                            // its profiles, as they come (one param each) and whenever they change
+                            let profiles: RefCell<(BTreeMap<u32, Profile>, Option<u32>)> = Default::default();
+                            let pev = events.clone();
+                            let stale = stale.clone();
                             let l = dev
                                 .add_listener_local()
-                                .info(move |info| ev.send(Event::Info { id, props: info.props().map(props_of).unwrap_or_default(), state: None }))
+                                .info(move |info| {
+                                    // its profile changed (or what is plugged in): ask again, on the
+                                    // next tick (a listener can't reach its own device)
+                                    let profile = |p: &spa::param::ParamInfo| matches!(p.id(), spa::param::ParamType::Profile | spa::param::ParamType::EnumProfile);
+                                    if info.change_mask().contains(pw::device::DeviceChangeMask::PARAMS) && info.params().iter().any(profile) {
+                                        let mut s = stale.borrow_mut();
+                                        if !s.contains(&id) {
+                                            s.push(id);
+                                        }
+                                    }
+                                    ev.send(Event::Info { id, props: info.props().map(props_of).unwrap_or_default(), state: None })
+                                })
+                                .param(move |_, kind, index, _, pod| {
+                                    let Some(p) = pod.and_then(profile_of) else { return };
+                                    let mut s = profiles.borrow_mut();
+                                    match kind {
+                                        spa::param::ParamType::EnumProfile => {
+                                            // a new round of the list: what is gone goes
+                                            if index == 0 {
+                                                s.0.clear();
+                                            }
+                                            s.0.insert(p.index, p);
+                                        }
+                                        spa::param::ParamType::Profile => s.1 = Some(p.index),
+                                        _ => return,
+                                    }
+                                    pev.send(Event::Profiles { id, list: s.0.values().cloned().collect(), current: s.1 });
+                                })
                                 .register();
+                            dev.subscribe_params(&[spa::param::ParamType::EnumProfile, spa::param::ParamType::Profile]);
                             bound.borrow_mut().insert(id, (Box::new(dev), Box::new(l)));
                         }
                     }
@@ -298,12 +393,21 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
         })
         .register();
 
-    // meter levels go out 25 times a second, while there is something to show
+    // meter levels go out 25 times a second, while there is something to show; devices whose
+    // profiles changed are asked for them again
     let quiet = Rc::new(RefCell::new(true));
     let timer = mainloop.loop_().add_timer({
         let meters = meters.clone();
         let events = events.clone();
+        let stale = stale.clone();
+        let bound = bound.clone();
         move |_| {
+            for id in std::mem::take(&mut *stale.borrow_mut()) {
+                if let Some(dev) = bound.borrow().get(&id).and_then(|(d, _)| d.downcast_ref::<pw::device::Device>()) {
+                    dev.enum_params(0, Some(spa::param::ParamType::EnumProfile), 0, u32::MAX);
+                    dev.enum_params(0, Some(spa::param::ParamType::Profile), 0, u32::MAX);
+                }
+            }
             let mut out = Vec::new();
             let mut loud = false;
             for (id, m) in meters.borrow().iter() {
@@ -329,6 +433,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
         let registry = registry.clone();
         let meters = meters.clone();
         let events = events.clone();
+        let bound = bound.clone();
         move |cmd| match cmd {
             Cmd::Link { out_node, out_port, in_node, in_port } => {
                 let props = pw::properties::properties! {
@@ -354,6 +459,18 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
             },
             Cmd::Unmeter(id) => {
                 meters.borrow_mut().remove(&id);
+            }
+            Cmd::SetProfile { device, index } => {
+                let b = bound.borrow();
+                let dev = b.get(&device).and_then(|(d, _)| d.downcast_ref::<pw::device::Device>());
+                match (dev, profile_param(index)) {
+                    (Some(dev), Some(bytes)) => {
+                        if let Some(pod) = spa::pod::Pod::from_bytes(&bytes) {
+                            dev.set_param(spa::param::ParamType::Profile, 0, pod);
+                        }
+                    }
+                    _ => events.send(Event::Error(format!("cannot switch the profile of device {device}"))),
+                }
             }
             Cmd::Quit => mainloop.quit(),
         }

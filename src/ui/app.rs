@@ -13,12 +13,12 @@ use winit::window::{CursorIcon, Window, WindowId};
 
 use super::cord::Held;
 use super::ease;
-use super::face::LCD_CH;
+use super::face::{DEV_H, LCD_CH};
 use super::gpu::{Gpu, Sprite};
-use super::panel::{self, Key, Menu, MenuHit, Panel};
+use super::panel::{self, Key, Menu, MenuHit, Panel, ProfileHit};
 use crate::config::{self, Preset, Settings};
 use super::scene::{Hover, Layer, Scene, View, next_id};
-use crate::pw::Connection;
+use crate::pw::{Cmd, Connection};
 
 /// After zooming, faces are drawn sharp again once the zoom has been still this long.
 const RESCALE_DELAY: Duration = Duration::from_millis(250);
@@ -49,6 +49,20 @@ const TIP_DELAY: Duration = Duration::from_millis(450);
 
 /// A second click this soon, this close, is a double-click.
 const DOUBLE: Duration = Duration::from_millis(350);
+
+/// A card's profile list, open under its PROFILE key: drawn again when the card changes, placed
+/// under the key wherever the view puts it.
+struct ProfileList {
+    /// the device whose list it is
+    key: String,
+    /// what it was drawn from
+    sig: u64,
+    layer: Option<Layer>,
+    /// hit areas, relative to the list, in panel units
+    hits: Vec<(ProfileHit, [f64; 4])>,
+    /// its top left corner, in window pixels
+    at: (f64, f64),
+}
 
 pub struct App {
     conn: Connection,
@@ -82,6 +96,10 @@ pub struct App {
     /// since when the pointer is over what it is over, and that thing's tooltip once shown
     hover_since: Instant,
     tip: Option<Layer>,
+    /// a card's profile list, open under its PROFILE key
+    profiles: Option<ProfileList>,
+    /// the glow around the device under the pointer: whose, and what it was drawn for
+    glow: Option<(String, u64, Layer)>,
     settings: Settings,
     presets: Vec<Preset>,
     /// the preset last saved or loaded
@@ -130,6 +148,8 @@ impl App {
             notice: None,
             hover_since: now,
             tip: None,
+            profiles: None,
+            glow: None,
             settings,
             presets,
             current,
@@ -452,6 +472,8 @@ impl App {
             }
         }
 
+        self.place_profiles(dpi);
+        self.update_glow();
         let pulse = 0.5 + 0.5 * ((now - self.start).as_secs_f32() * 6.0).sin();
         let cords = self.scene.cord_layer(self.view, self.size, &rings, pulse);
         let cord_id = next_id();
@@ -470,6 +492,12 @@ impl App {
             _ => None,
         };
         for (di, d) in self.scene.devs.iter().enumerate() {
+            // the hovered device glows around its edges, under its face
+            if let Some((k, _, l)) = &self.glow
+                && *k == d.dev.key
+            {
+                sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (d.x + l.x) * v.s + v.x, y: (d.y + l.y) * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha: 1.0 });
+            }
             for l in [d.shade.as_ref().map(|(_, l)| l), d.face.as_ref(), d.lcd.as_ref().map(|(_, l)| l), d.meter.as_ref().map(|(_, l)| l)].into_iter().flatten() {
                 sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (d.x + l.x) * v.s + v.x, y: (d.y + l.y) * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha: 1.0 });
             }
@@ -500,6 +528,11 @@ impl App {
         }
         for l in self.panel.layers() {
             sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (l.x * dpi).round(), y: (l.y * dpi).round(), w: l.w * dpi, h: l.h * dpi, alpha: 1.0 });
+        }
+        if let Some(pl) = &self.profiles
+            && let Some(l) = &pl.layer
+        {
+            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: pl.at.0, y: pl.at.1, w: l.w * dpi, h: l.h * dpi, alpha: 1.0 });
         }
         if let Some(l) = &self.tip {
             // below and right of the pointer; kept inside the window, above the pointer near the bottom
@@ -533,10 +566,96 @@ impl App {
         self.animating = moving || self.view_to.is_some() || self.drag.is_some() || self.rescale_at.is_some() || self.notice.is_some() || faces_waiting || (self.scene.hover != Hover::None && self.tip.is_none() && now - self.hover_since < 2 * TIP_DELAY);
     }
 
+    /// The glow around the device under the pointer (not while dragging, nor over its switches).
+    fn update_glow(&mut self) {
+        let w = self.world(self.cursor);
+        let key = match &self.scene.hover {
+            Hover::Device(k) if self.drag.is_none() && self.scene.switch_at(w.0, w.1).is_none() && self.scene.profile_key_at(w.0, w.1).is_none() => k.clone(),
+            _ => {
+                self.glow = None;
+                return;
+            }
+        };
+        let Some(d) = self.scene.devs.iter().find(|d| d.dev.key == key) else { return };
+        let rack = self.scene.rack;
+        let mut h = std::hash::DefaultHasher::new();
+        std::hash::Hash::hash(&(&key, d.geo.w.to_bits(), rack, self.raster.to_bits()), &mut h);
+        let sig = std::hash::Hasher::finish(&h);
+        if self.glow.as_ref().is_none_or(|(k, s, _)| *k != key || *s != sig) {
+            self.glow = Some((key, sig, glow_layer(d.geo.w, rack, self.raster)));
+        }
+    }
+
+    /// What the pointer is over in the open profile list.
+    fn profile_hit(&self) -> Option<ProfileHit> {
+        let pl = self.profiles.as_ref()?;
+        let dpi = self.dpi();
+        let (x, y) = ((self.cursor.0 - pl.at.0) / dpi, (self.cursor.1 - pl.at.1) / dpi);
+        pl.hits.iter().find(|(_, [rx, ry, rw, rh])| x >= *rx && x <= rx + rw && y >= *ry && y <= ry + rh).map(|(h, _)| *h)
+    }
+
+    /// Switches the card whose list is open to its profile `index`.
+    fn set_profile(&mut self, index: u32) {
+        let Some(pl) = &self.profiles else { return };
+        if let Some(card) = self.scene.devs.iter().find(|d| d.dev.key == pl.key).and_then(|d| d.dev.card.as_ref()) {
+            self.conn.send(Cmd::SetProfile { device: card.id, index });
+        }
+    }
+
+    /// Draws the open profile list again when its card changed, and puts it under the key.
+    fn place_profiles(&mut self, dpi: f64) {
+        let Some(pl) = &mut self.profiles else { return };
+        let Some(d) = self.scene.devs.iter().find(|d| d.dev.key == pl.key) else {
+            self.profiles = None;
+            return;
+        };
+        let (Some(card), Some([kx, ky, kw, kh])) = (&d.dev.card, d.geo.profile) else {
+            self.profiles = None;
+            return;
+        };
+        let mut h = std::hash::DefaultHasher::new();
+        std::hash::Hash::hash(&(format!("{card:?}"), &d.dev.name, dpi.to_bits()), &mut h);
+        let sig = std::hash::Hasher::finish(&h);
+        if pl.sig != sig || pl.layer.is_none() {
+            let (layer, hits) = panel::profile_menu(&d.dev.name, card, dpi);
+            (pl.sig, pl.layer, pl.hits) = (sig, Some(layer), hits);
+        }
+        // under the key, its left edge at the key's, kept inside the window
+        let v = self.view;
+        let x = (d.x + kx) * v.s + v.x;
+        let y = (d.y + ky + kh) * v.s + v.y + 4.0 * dpi;
+        let _ = kw;
+        let w = panel::PROFILE_W * dpi;
+        pl.at = (x.min(self.size.0 as f64 - w - 6.0 * dpi).max(6.0 * dpi).round(), y.round());
+    }
+
     fn press(&mut self, button: MouseButton) {
         self.set_hover(Hover::None);
         let w = self.world(self.cursor);
         let (top, bottom) = self.field();
+        // a card's profile list takes the click; it stays open after a choice. A click anywhere
+        // else closes it (and does what it does); one on its own PROFILE key only closes it.
+        if let Some(pl) = &self.profiles {
+            match self.profile_hit() {
+                Some(ProfileHit::Codec(index)) => return self.set_profile(index),
+                Some(ProfileHit::Row(f)) => {
+                    let card = self.scene.devs.iter().find(|d| d.dev.key == pl.key).and_then(|d| d.dev.card.clone());
+                    if let Some(index) = card.and_then(|c| c.families().get(f).and_then(|fam| c.pick(fam))) {
+                        self.set_profile(index);
+                    }
+                    return;
+                }
+                Some(ProfileHit::Inside) => return,
+                None => {
+                    let own = self.scene.profile_key_at(w.0, w.1).is_some_and(|i| self.scene.devs[i].dev.key == pl.key);
+                    self.profiles = None;
+                    self.redraw();
+                    if own {
+                        return;
+                    }
+                }
+            }
+        }
         // the preset drop-down takes the click; a click elsewhere closes it
         if self.panel.menu.is_some() {
             let dpi = self.dpi();
@@ -601,6 +720,12 @@ impl App {
                 self.scene.pull_out(ci, true);
                 return self.after_patch();
             }
+        }
+        // a card's PROFILE key opens its list under it
+        if let Some(di) = self.scene.profile_key_at(w.0, w.1) {
+            self.profiles = Some(ProfileList { key: self.scene.devs[di].dev.key.clone(), sig: 0, layer: None, hits: Vec::new(), at: (0.0, 0.0) });
+            self.redraw();
+            return;
         }
         let plug = |scene: &mut Scene| -> Option<u64> {
             if let Some((ci, b)) = scene.plug_at(w.0, w.1) {
@@ -718,7 +843,15 @@ impl App {
             None => {
                 let (top, bottom) = self.field();
                 let dpi = self.dpi();
-                let (icon, hint) = if self.cursor.1 < top {
+                // the open profile list takes the pointer: nothing under it reacts
+                let in_list = self.profile_hit();
+                let (icon, hint) = if let Some(h) = in_list {
+                    match h {
+                        ProfileHit::Row(_) => (CursorIcon::Pointer, "click: switch to this profile".to_owned()),
+                        ProfileHit::Codec(_) => (CursorIcon::Pointer, "click: switch to this codec".to_owned()),
+                        ProfileHit::Inside => (CursorIcon::Default, String::new()),
+                    }
+                } else if self.cursor.1 < top {
                     match self.panel.hit(self.cursor.0 / dpi, self.cursor.1 / dpi) {
                         Some(Key::Cables) => (CursorIcon::EwResize, Key::Cables.hint().to_owned()),
                         Some(k) => (CursorIcon::Pointer, k.hint().to_owned()),
@@ -729,7 +862,7 @@ impl App {
                 } else {
                     (self.field_cursor(w), self.scene.hint_at(w.0, w.1, self.panel.state.locked))
                 };
-                let on_field = self.cursor.1 >= top && self.cursor.1 <= bottom && self.panel.menu.is_none();
+                let on_field = self.cursor.1 >= top && self.cursor.1 <= bottom && self.panel.menu.is_none() && in_list.is_none();
                 self.set_hover(if on_field { self.scene.hover_at(w.0, w.1) } else { Hover::None });
                 if hint != self.hint {
                     self.hint = hint;
@@ -757,7 +890,7 @@ impl App {
             CursorIcon::Grab
         } else if self.scene.free_jack_at(w.0, w.1).is_some() {
             CursorIcon::Crosshair
-        } else if self.scene.switch_at(w.0, w.1).is_some() {
+        } else if self.scene.switch_at(w.0, w.1).is_some() || self.scene.profile_key_at(w.0, w.1).is_some() {
             CursorIcon::Pointer
         } else if self.scene.device_at(w.0, w.1).is_some() && !self.panel.state.locked {
             CursorIcon::Move
@@ -799,6 +932,7 @@ impl App {
             KeyCode::KeyR => self.panel_key(if self.scene.rack { Key::Desk } else { Key::Rack }),
             KeyCode::Escape => {
                 self.panel.menu = None;
+                self.profiles = None;
                 self.redraw();
             }
             _ => {}
@@ -874,6 +1008,10 @@ impl ApplicationHandler<()> for App {
                 ElementState::Released => self.release(),
             },
             WindowEvent::MouseWheel { delta, .. } => {
+                // the profile list stays under its key: zooming closes it
+                if self.profiles.take().is_some() {
+                    self.redraw();
+                }
                 let f = match delta {
                     MouseScrollDelta::LineDelta(_, y) => 1.12f64.powf(y as f64),
                     MouseScrollDelta::PixelDelta(p) => (p.y * 0.0015).exp(),
@@ -953,6 +1091,23 @@ fn with_app_id(attrs: winit::window::WindowAttributes) -> winit::window::WindowA
     use winit::platform::{wayland::WindowAttributesExtWayland, x11::WindowAttributesExtX11};
     let attrs = WindowAttributesExtWayland::with_name(attrs, APP_ID, APP_ID);
     WindowAttributesExtX11::with_name(attrs, APP_ID, APP_ID)
+}
+
+/// The glow around a hovered device `w` wide: a thin amber ring along its edge and a soft halo,
+/// as in the mockup.
+fn glow_layer(w: f64, rack: bool, scale: f64) -> Layer {
+    let m = 26.0;
+    let (gw, gh) = (w + 2.0 * m, DEV_H + 2.0 * m);
+    let r = if rack { 4.0 } else { 13.0 };
+    let svg = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{gw}" height="{gh}" viewBox="0 0 {gw} {gh}"><defs><filter id="b" x="-20%" y="-50%" width="140%" height="200%"><feGaussianBlur stdDeviation="8"/></filter></defs><rect x="{m}" y="{m}" width="{w}" height="{DEV_H}" rx="{r}" fill="none" stroke="#ffaa3c" stroke-opacity=".3" stroke-width="12" filter="url(#b)"/><rect x="{}" y="{}" width="{}" height="{}" rx="{}" fill="none" stroke="#ffbe5a" stroke-opacity=".6" stroke-width="2"/></svg>"##,
+        m - 1.0,
+        m - 1.0,
+        w + 2.0,
+        DEV_H + 2.0,
+        r + 1.0
+    );
+    Layer { id: next_id(), pm: super::scene::rasterize(&super::text::svg_options(), &svg, scale), x: -m, y: -m, w: gw, h: gh }
 }
 
 pub fn background(w: u32, h: u32) -> Pixmap {

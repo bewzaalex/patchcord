@@ -11,7 +11,7 @@ use resvg::tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Rect, Transform};
 use resvg::usvg;
 
 use super::cord::{Cord, Held, RATE};
-use super::face::{self, BADGE, DEV_H, Geometry, JP, JackDef, JackKind, LCD_H, LCD_W, LCD_X, LCD_Y, PIC, RACK_MIN, SHADOW};
+use super::face::{self, BADGE, DEV_H, Geometry, JP, JackDef, JackKind, LCD_W, LCD_X, LCD_Y, PIC, RACK_MIN, SHADOW};
 use super::{ease, paint, text};
 use crate::config::Preset;
 
@@ -52,9 +52,8 @@ pub fn next_id() -> u64 {
 
 /// space between units in the rack
 const RACK_GAP: f64 = 3.0;
-/// the rails each side of the rack, and the margin above and below
-const RAIL: f64 = 34.0;
-const RACK_PAD: f64 = 14.0;
+/// the rack's frame around the stack of devices
+const FRAME: f64 = 7.0;
 /// pixels per world unit for the faces' shadows, whatever the zoom
 const SHADE_SCALE: f64 = 0.5;
 /// how long a frame may spend drawing pictures again at a new scale after zooming
@@ -895,9 +894,10 @@ impl Scene {
                 let sig = h.finish();
                 let changed = self.rack_bg.as_ref().is_none_or(|(s, _)| *s != sig);
                 if changed || (self.rack_scale != scale && may_rescale()) {
-                    let (w, ht) = (rw + 2.0 * RAIL, self.rack_h + 2.0 * RACK_PAD);
+                    // tight around the stack (the last unit's gap is not part of it)
+                    let (w, ht) = (rw + 2.0 * FRAME, (self.rack_h - RACK_GAP).max(0.0) + 2.0 * FRAME);
                     let pm = rasterize(&self.opt, &rack_svg(w, ht), scale);
-                    self.rack_bg = Some((sig, Layer { id: next_id(), pm, x: -RAIL, y: -RACK_PAD, w, h: ht }));
+                    self.rack_bg = Some((sig, Layer { id: next_id(), pm, x: -FRAME, y: -FRAME, w, h: ht }));
                     self.rack_scale = scale;
                 }
             }
@@ -936,21 +936,33 @@ impl Scene {
                 d.shade = Some((wsig, Layer { id: next_id(), pm, x: -SHADOW, y: -SHADOW, w: d.geo.w + 2.0 * SHADOW, h: DEV_H + 2.0 * SHADOW }));
             }
             let n = links.get(&di).copied().unwrap_or(0);
-            let line2 = format!(
-                "{:<11}{}",
-                d.dev.state.to_uppercase(),
-                match n {
-                    0 => "NO LINKS".to_owned(),
-                    1 => "1 LINK".to_owned(),
-                    n => format!("{n} LINKS"),
-                }
-            );
-            let text = format!("{}\n{line2}", face::marquee(&d.dev.name, ms));
+            let line2 = if d.dev.groups.is_empty() && d.dev.card.is_some() {
+                "NO INPUTS OR OUTPUTS".to_owned()
+            } else {
+                format!(
+                    "{:<11}{}",
+                    d.dev.state.to_uppercase(),
+                    match n {
+                        0 => "NO LINKS".to_owned(),
+                        1 => "1 LINK".to_owned(),
+                        n => format!("{n} LINKS"),
+                    }
+                )
+            };
+            // line 3: a card's profile (and codec), scrolling when long; else what it carries
+            let line3 = match &d.dev.card {
+                Some(c) => face::marquee(&c.summary(), ms),
+                None if d.dev.groups.iter().any(|g| g.ports.iter().any(|p| p.media == Media::Midi)) => "MIDI".to_owned(),
+                None if d.dev.groups.iter().any(|g| g.stereo) => "STEREO".to_owned(),
+                None => "MONO".to_owned(),
+            };
+            let text = format!("{}\n{line2}\n{line3}", face::marquee(&d.dev.name, ms));
             if d.lcd.as_ref().is_none_or(|(t, _)| *t != text) {
-                let (l1, l2) = text.split_once('\n').unwrap();
-                let pm = rasterize(&self.opt, &face::lcd(l1, l2), scale);
+                let l: Vec<&str> = text.split('\n').collect();
+                let card = d.dev.card.is_some();
+                let pm = rasterize(&self.opt, &face::lcd([l[0], l[1], l[2]], card), scale);
                 let x = d.geo.left + LCD_X;
-                d.lcd = Some((text, Layer { id: next_id(), pm, x, y: LCD_Y, w: LCD_W, h: LCD_H }));
+                d.lcd = Some((text, Layer { id: next_id(), pm, x, y: LCD_Y, w: LCD_W, h: face::lcd_h(card) }));
             }
             let lit = (d.level[0].round() as u8, d.level[1].round() as u8);
             if lit == (0, 0) {
@@ -1094,6 +1106,11 @@ impl Scene {
     }
 
     /// The SPLIT/JOIN switch under a world point: (device, group).
+    /// The device whose PROFILE key is under a world point.
+    pub fn profile_key_at(&self, x: f64, y: f64) -> Option<usize> {
+        self.devs.iter().enumerate().rev().find_map(|(di, d)| d.geo.profile.filter(|[kx, ky, kw, kh]| x >= d.x + kx && x <= d.x + kx + kw && y >= d.y + ky && y <= d.y + ky + kh).map(|_| di))
+    }
+
     pub fn switch_at(&self, x: f64, y: f64) -> Option<(usize, usize)> {
         self.devs.iter().enumerate().rev().find_map(|(di, d)| {
             d.geo.switches.iter().find_map(|(g, [bx, by, bw, bh])| (x >= d.x + bx && x <= d.x + bx + bw && y >= d.y + by && y <= d.y + by + bh).then_some((di, *g)))
@@ -1532,6 +1549,10 @@ impl Scene {
         if let Some(k) = self.free_jack_at(x, y) {
             return format!("{}  ·  drag: pull out a cord", self.jack_name(&k));
         }
+        if let Some(di) = self.profile_key_at(x, y) {
+            let card = self.devs[di].dev.card.as_ref().map_or(String::new(), |c| c.summary());
+            return format!("{card}  ·  click: choose a profile");
+        }
         if let Some((di, g)) = self.switch_at(x, y) {
             return if self.devs[di].split.get(g).copied().unwrap_or(false) { "Join L and R into one stereo jack".into() } else { "Split into separate L and R jacks".into() };
         }
@@ -1572,20 +1593,16 @@ fn ease_lit(lit: f32, to: f32, dt: f32) -> f32 {
     if lit < to { (lit + dt * 8.0).min(to) } else { (lit - dt * 5.0).max(to) }
 }
 
-/// The rack: a dark inside between two metal rails with a row of mounting holes each.
+/// The rack: just a thin metal frame hugging the stack of devices, dark inside (between the
+/// units).
 fn rack_svg(w: f64, h: f64) -> String {
-    let mut holes = String::new();
-    let mut y = 16.5;
-    while y < h - 6.0 {
-        for x in [RAIL / 2.0 - 2.0, w - RAIL / 2.0 + 2.0] {
-            holes += &format!(r##"<circle cx="{x}" cy="{y}" r="4" fill="#000" opacity=".4"/><circle cx="{x}" cy="{y}" r="3.2" fill="#050506"/>"##);
-        }
-        y += 21.0;
-    }
+    let i = FRAME - 2.0;
     format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}"><defs><linearGradient id="in" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0c0d0e"/><stop offset="1" stop-color="#17181a"/></linearGradient><linearGradient id="rail" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#6e7175"/><stop offset=".45" stop-color="#c4c7cb"/><stop offset=".7" stop-color="#8a8d91"/><stop offset="1" stop-color="#5d6064"/></linearGradient></defs><rect width="{w}" height="{h}" rx="4" fill="url(#in)" stroke="#000"/><rect x="0" width="{r}" height="{h}" fill="url(#rail)"/><rect x="{x2}" width="{r}" height="{h}" fill="url(#rail)"/>{holes}</svg>"##,
-        r = RAIL - 4.0,
-        x2 = w - RAIL + 4.0
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}"><defs><linearGradient id="steel" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#a6a9ad"/><stop offset=".5" stop-color="#8a8d91"/><stop offset="1" stop-color="#6e7175"/></linearGradient></defs><rect x=".5" y=".5" width="{}" height="{}" rx="4" fill="url(#steel)" stroke="#000"/><rect x="{i}" y="{i}" width="{}" height="{}" rx="2" fill="#0c0d0e" stroke="#2a2b2e"/></svg>"##,
+        w - 1.0,
+        h - 1.0,
+        w - 2.0 * i,
+        h - 2.0 * i
     )
 }
 
@@ -1645,7 +1662,7 @@ mod tests {
         let mut s = Scene::new();
         s.rack = false;
         for (k, &(x, y, w)) in at.iter().enumerate() {
-            let dev = Device { key: format!("d{k}"), name: format!("d{k}"), model: String::new(), finish: crate::graph::Finish::Metal, color: [0; 3], groups: Vec::new(), state: "idle" };
+            let dev = Device { key: format!("d{k}"), name: format!("d{k}"), model: String::new(), finish: crate::graph::Finish::Metal, color: [0; 3], groups: Vec::new(), state: "idle", card: None };
             let geo = Geometry { w, ..Default::default() };
             s.devs.push(DevView { dev, split: Vec::new(), defs: Vec::new(), counts: Vec::new(), geo, x, y, tx: x, ty: y, dx: x, dy: y, face: None, shade: None, face_sig: 0, face_scale: 0.0, lcd: None, level: [0.0; 2], meter: None });
         }

@@ -7,6 +7,7 @@ use super::face::paint_uri;
 use super::print::{SECTION, SMALL};
 use super::scene::{Layer, next_id, rasterize};
 use super::text;
+use crate::graph::Card;
 
 /// height of the top panel; its shadow falls a little below
 pub const H: f64 = 64.0;
@@ -100,6 +101,87 @@ pub enum MenuHit {
 }
 
 const MENU_W: f64 = 300.0;
+/// width of a card's profile list
+pub const PROFILE_W: f64 = 360.0;
+
+/// What a click in a card's profile list hits.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ProfileHit {
+    /// a family's row (by its place in `Card::families`)
+    Row(usize),
+    /// a codec of the profile in use: that profile's index
+    Codec(u32),
+    Inside,
+}
+
+/// A card's profile list, amber like the LCDs: a row per family (the one in use dark), its codecs
+/// as choices under it, profiles with nothing plugged in dimmed and marked. The layer is at (0, 0),
+/// `PROFILE_W` wide; the hit areas are relative to it.
+pub fn profile_menu(title: &str, card: &Card, dpi: f64) -> (Layer, Vec<(ProfileHit, [f64; 4])>) {
+    const INK: &str = "#3a2408";
+    let w = PROFILE_W;
+    // the title, its name shortened so " · PROFILE" stays in
+    let name = title.to_uppercase();
+    let name = if name.chars().count() > 34 { format!("{}…", name.chars().take(33).collect::<String>().trim_end()) } else { name };
+    let mut o = format!(r#"<text x="12" y="20" font-size="10" letter-spacing="1.5" fill="{INK}" opacity=".7">{} · PROFILE</text>"#, esc(&name));
+    let mut hits = Vec::new();
+    let mut y = 30.0;
+    let current = card.profile().map(|p| Card::split(&p.description).0);
+    for (fi, f) in card.families().iter().enumerate() {
+        let cur = current.as_deref() == Some(f.name.as_str());
+        let ink = if cur { "#f7bb62" } else { INK };
+        if cur {
+            let _ = write!(o, r#"<rect x="3" y="{y}" width="{}" height="24" fill="{INK}"/>"#, w - 6.0);
+        }
+        let room = if f.unplugged { 37 } else { 47 };
+        let name: String = if f.name.chars().count() > room { format!("{}…", f.name.chars().take(room - 1).collect::<String>()) } else { f.name.clone() };
+        let _ = write!(o, r#"<text x="12" y="{}" font-size="11.5" fill="{ink}" opacity="{}" xml:space="preserve">{}</text>"#, y + 16.0, if f.unplugged && !cur { 0.55 } else { 1.0 }, esc(&name));
+        if f.unplugged {
+            let tw = 70.0;
+            let _ = write!(
+                o,
+                r#"<rect x="{}" y="{}" width="{tw}" height="14" rx="2" fill="none" stroke="{ink}" stroke-opacity=".7"/><text x="{}" y="{}" font-size="8.5" letter-spacing=".8" fill="{ink}" opacity=".8" text-anchor="middle">UNPLUGGED</text>"#,
+                w - 12.0 - tw,
+                y + 5.0,
+                w - 12.0 - tw / 2.0,
+                y + 15.0
+            );
+        }
+        hits.push((ProfileHit::Row(fi), [0.0, y, w, 24.0]));
+        y += 24.0;
+        // the codecs of the family in use, as choices under it
+        if cur && f.members.iter().any(|(_, c)| c.is_some()) {
+            let mut x = 12.0;
+            let now = card.current;
+            for (index, codec) in &f.members {
+                let Some(c) = codec else { continue };
+                let cw = c.chars().count() as f64 * 6.6 + 14.0;
+                let on = now == Some(*index);
+                let _ = write!(
+                    o,
+                    r#"<rect x="{x}" y="{}" width="{cw}" height="17" rx="3" fill="{}" stroke="{INK}" stroke-width="1.5"/><text x="{}" y="{}" font-size="11" text-anchor="middle" fill="{}">{}</text>"#,
+                    y + 4.0,
+                    if on { INK } else { "none" },
+                    x + cw / 2.0,
+                    y + 16.5,
+                    if on { "#f7bb62" } else { INK },
+                    esc(c)
+                );
+                hits.push((ProfileHit::Codec(*index), [x, y + 4.0, cw, 17.0]));
+                x += cw + 6.0;
+            }
+            y += 26.0;
+        }
+    }
+    let h = y + 8.0;
+    hits.push((ProfileHit::Inside, [0.0, 0.0, w, h]));
+    let svg = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" font-family="Noto Sans Mono" font-weight="bold"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f7bb62"/><stop offset="1" stop-color="#e58f2c"/></linearGradient></defs><rect width="{w}" height="{h}" rx="5" fill="#121214"/><rect x="3" y="3" width="{}" height="{}" rx="3" fill="url(#g)"/>{o}</svg>"##,
+        w - 6.0,
+        h - 6.0
+    );
+    (Layer { id: next_id(), pm: rasterize(&text::svg_options(), &svg, dpi), x: 0.0, y: 0.0, w, h }, hits)
+}
 
 // icons on a 24-unit grid, drawn with round 2-unit strokes
 const ICONS: &[(Key, &str)] = &[

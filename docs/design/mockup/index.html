@@ -34,7 +34,7 @@
   .key .tri { display: inline-flex; gap: 3px; margin-left: 7px; vertical-align: 1px; }
   .key .tri i { width: 5px; height: 5px; border-radius: 50%; background: #3a1512; }
   .key .tri i.on { background: #ffb02e; box-shadow: 0 0 5px 1px rgba(255,170,40,.8); }
-  .knob { width: 34px; height: 34px; cursor: ns-resize; touch-action: none; }
+  .knob { width: 34px; height: 34px; cursor: pointer; touch-action: none; }
   .key.ico { min-width: 0; width: 38px; padding: 0; }
   .key.ico svg { width: 17px; height: 17px; display: block; margin: auto; fill: none; stroke: #e6e7e8; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   .lcd { margin-left: auto; min-width: 0; max-width: 340px; overflow: hidden; cursor: pointer; padding: 6px 12px; border-radius: 4px; color: #3a2408; white-space: nowrap;
@@ -43,15 +43,24 @@
   .lcd div { overflow: hidden; text-overflow: ellipsis; }
   .lcd div:last-child { font-weight: normal; }
   /* the preset list drops out of the LCD and looks like more of it */
-  #presets { position: absolute; right: 18px; top: calc(100% + 6px); width: 300px; padding: 8px 0; border-radius: 4px; z-index: 5;
+  #presets, #profiles { position: absolute; right: 18px; top: calc(100% + 6px); width: 300px; padding: 8px 0; border-radius: 4px; z-index: 5;
     color: #3a2408; font: bold 12px ui-monospace, "DejaVu Sans Mono", monospace; white-space: nowrap;
     background: linear-gradient(#f7bb62, #e58f2c); box-shadow: 0 0 0 3px #121214, 0 0 0 4px rgba(255,255,255,.2), 0 14px 30px rgba(0,0,0,.6); }
-  #presets.hide { display: none; }
-  #presets h2 { margin: 0 12px 6px; font-size: 10px; letter-spacing: 1.5px; opacity: .7; }
-  #presets .row { display: flex; align-items: center; gap: 8px; padding: 4px 12px; cursor: pointer; }
-  #presets .row:hover { background: rgba(58,36,8,.15); }
-  #presets .row.cur { background: #3a2408; color: #f7bb62; }
-  #presets .row span { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  #presets.hide, #profiles.hide { display: none; }
+  #presets h2, #profiles h2 { margin: 0 12px 6px; font-size: 10px; letter-spacing: 1.5px; opacity: .7; }
+  #presets .row, #profiles .row { display: flex; align-items: center; gap: 8px; padding: 4px 12px; cursor: pointer; }
+  #presets .row:hover, #profiles .row:hover { background: rgba(58,36,8,.15); }
+  #presets .row.cur, #profiles .row.cur { background: #3a2408; color: #f7bb62; }
+  #presets .row span, #profiles .row span { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  /* the profile list drops out of a card's PROFILE key: same amber as the LCDs */
+  #profiles { right: auto; top: auto; width: 330px; z-index: 6; }
+  #profiles .row b { min-width: 58px; font-size: 10px; letter-spacing: .8px; opacity: .75; }
+  #profiles .row.cur b { opacity: 1; }
+  #profiles .row.off span, #profiles .row.off b { opacity: .5; }
+  #profiles .row i { font-style: normal; font-size: 9px; letter-spacing: .8px; padding: 0 4px; border-radius: 2px; outline: 1px solid currentColor; opacity: .7; }
+  #profiles .codecs { display: flex; gap: 5px; padding: 2px 12px 6px 78px; flex-wrap: wrap; }
+  #profiles .codecs span { padding: 1px 6px; border-radius: 3px; font-size: 10px; cursor: pointer; outline: 1.5px solid #3a2408; }
+  #profiles .codecs span.cur { background: #3a2408; color: #f7bb62; }
   #presets .del { border: 0; background: none; color: inherit; font: inherit; cursor: pointer; opacity: .6; padding: 0 2px; }
   #presets .del:hover { opacity: 1; }
   #presets .empty { padding: 4px 12px; opacity: .7; font-weight: normal; }
@@ -72,13 +81,10 @@
   .dev svg { display: block; overflow: visible; }
   .dev.hl { box-shadow: 0 0 0 2px rgba(255,190,90,.55), 0 0 22px rgba(255,170,60,.25); }
   .dev.rack { border-radius: 3px; }
-  #rack { position: absolute; left: 0; top: 0; opacity: 0; transition: opacity .35s; border-radius: 4px;
-    background: linear-gradient(#0c0d0e, #17181a); box-shadow: 0 0 0 1px #000, 0 20px 40px rgba(0,0,0,.6); }
+  /* the rack: just a thin metal frame hugging the stack of devices */
+  #rack { position: absolute; left: 0; top: 0; opacity: 0; transition: opacity .35s; border-radius: 3px; background: #0c0d0e;
+    box-shadow: 0 0 0 1px #000, 0 0 0 5px #8a8d91, 0 0 0 6px #2a2b2e, 0 0 0 7px rgba(255,255,255,.08), 0 24px 44px rgba(0,0,0,.6); }
   #rack.show { opacity: 1; }
-  #rack i { position: absolute; top: 0; bottom: 0; width: 30px;
-    background: radial-gradient(circle at 15px 50%, #050506 3.2px, rgba(0,0,0,.4) 4px, transparent 4.6px) 0 6px / 30px 21px repeat-y,
-                linear-gradient(90deg, #6e7175, #c4c7cb 45%, #8a8d91 70%, #5d6064); }
-  #rack i:first-child { left: 0; } #rack i:last-child { right: 0; }
 
   #tip { position: absolute; z-index: 4; pointer-events: none; opacity: 0; transition: opacity .12s;
     background: rgba(18,19,21,.94); color: #e6e7e8; padding: 5px 9px; border-radius: 6px; font-size: 12px; white-space: nowrap;
@@ -107,32 +113,33 @@
   <div class="grp"><div class="keys">
     <button class="key" data-mode="desk"><span class="led"></span>DESK</button>
     <button class="key" data-mode="rack"><span class="led"></span>RACK</button>
-    <button class="key ico" id="lock" title="Lock devices in place (L)"><span class="led"></span><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></button></div><label>LAYOUT</label></div>
-  <div class="grp"><div class="keys"><button class="key" id="cablesKey">CABLES<span class="tri"><i></i><i></i><i></i></span></button></div><label>SHOW·FADE·HIDE</label></div>
-  <div class="grp"><svg class="knob" id="sag" viewBox="-20 -20 40 40"></svg><label>SAG</label></div>
+    <button class="key ico" id="lock" title="Lock devices in place (L)"><span class="led"></span><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></button>
+    <button class="key ico on" id="align" title="Line devices up while dragging them on the desk; off: place them freely (G)"><span class="led"></span><svg viewBox="0 0 24 24"><path d="M4 3v18"/><rect x="7.5" y="5" width="12" height="5" rx="1"/><rect x="7.5" y="14" width="7.5" height="5" rx="1"/></svg></button></div><label>LAYOUT</label></div>
+  <div class="grp"><svg id="cablesKnob" width="96" height="60" viewBox="-48 -26.5 96 60" style="cursor:pointer;touch-action:none"></svg></div>
   <div class="grp"><div class="keys"><button class="key ico" id="arrange" title="Arrange by signal flow"><svg viewBox="0 0 24 24"><rect x="3.5" y="4" width="7" height="5" rx="1"/><rect x="3.5" y="15" width="7" height="5" rx="1"/><rect x="13.5" y="9.5" width="7" height="5" rx="1"/><path d="M10.5 6.5h1.5v11h-1.5M12 12h1.5"/></svg></button><button class="key ico" id="fit" title="Fit to window (F)"><svg viewBox="0 0 24 24"><path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/></svg></button><button class="key ico" id="snd" title="Plug sounds"><span class="led"></span><svg viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7"/><path d="M19 6a8.5 8.5 0 0 1 0 12"/></svg></button></div><label>VIEW</label></div>
   <div class="lcd" id="lcd" title="Presets"><div id="lcd1"></div><div id="lcd2"></div></div>
   <div id="presets" class="hide"></div>
 </header>
+<div id="profiles" class="hide"></div>
 
 <div id="stage">
-  <div id="world"><div id="rack"><i></i><i></i></div></div>
+  <div id="world"><div id="rack"></div></div>
   <canvas id="cables"></canvas>
   <div id="tip"></div>
   <button id="helpBtn" title="Help (?)">?</button>
   <div id="help" class="hide">
     <h1>Patchcord — interactive mockup</h1>
     <table>
-      <tr><td>Drag from a jack</td><td>pull out a cord, drop it on a jack</td></tr>
-      <tr><td>Drag a plug</td><td>unplug it, move it, or drop it to remove</td></tr>
+      <tr><td>Drag from a jack</td><td>pull out a cord, drop it on a jack (those it fits glow)</td></tr>
+      <tr><td>Drag a cord's end</td><td>move it to another jack, or drop it to remove</td></tr>
       <tr><td>Free jack</td><td>every port keeps one; plug in and the mult grows</td></tr>
-      <tr><td>SPLIT / JOIN</td><td>stereo jack ⇄ separate L and R jacks</td></tr>
-      <tr><td><kbd>Shift</kbd> + drag</td><td>split L/R jacks: both cords at once</td></tr>
+      <tr><td>SPLIT / JOIN</td><td>stereo jack ⇄ L above R</td></tr>
+      <tr><td>PROFILE key</td><td>under a card's screen: its profiles (and codec)</td></tr>
       <tr><td>Drag a cord</td><td>grab it and swing it</td></tr>
       <tr><td>Double-click</td><td>pull a cord out</td></tr>
-      <tr><td>Drag a device</td><td>move it (reorder in RACK)</td></tr>
+      <tr><td>Drag a device</td><td>move it; on the desk it lines up with the others (ALIGN)</td></tr>
       <tr><td>Wheel / empty drag</td><td>zoom / pan</td></tr>
-      <tr><td><kbd>R</kbd> <kbd>L</kbd> <kbd>C</kbd> <kbd>F</kbd></td><td>rack/desk · lock · cables · fit</td></tr>
+      <tr><td><kbd>R</kbd> <kbd>L</kbd> <kbd>G</kbd> <kbd>C</kbd> <kbd>A</kbd> <kbd>F</kbd></td><td>rack/desk · lock · align · cables · arrange · fit</td></tr>
       <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd></td><td>undo (<kbd>Shift</kbd> redo)</td></tr>
       <tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>O</kbd></td><td>save a new preset / pick one (or click the LCD)</td></tr>
     </table>
@@ -195,19 +202,41 @@ const P = (n, full, t = 'audio') => ({ n, full, t });
 const stereo = (pre) => [P('L', pre + '_FL'), P('R', pre + '_FR')];
 // name: what PipeWire calls the node (node.description), shown on the panel and scrolled on the LCD.
 // Nodes of one card (sink, source, monitor) are merged into one device.
+// A card has profiles: which of its inputs and outputs exist right now (PipeWire's device
+// "Profile" param, what pavucontrol's Configuration tab picks). Its groups come from its profile;
+// a Bluetooth hi-fi profile also has codecs. `unplugged`: nothing is connected for it now (an HDMI
+// output without a screen with speakers): it can still be picked, its outputs just play nowhere. `short` names it in the list, beside the full name.
+const MONO = (pre) => [P('MONO', pre + '_MONO')];
+const RYZEN_DUPLEX = [{ label: 'PLAYBACK', dir: 'in', stereo: true, ports: stereo('playback') },
+                      { label: 'CAPTURE', dir: 'out', stereo: true, ports: stereo('capture') },
+                      { label: 'MONITOR', dir: 'out', stereo: true, ports: stereo('monitor') }];
 const DEVICES = [
   { id: 'cpal', title: 'cpal-pulseaudio-1293852', name: 'cpal-pulseaudio-1293852', model: 'APP · PULSEAUDIO CLIENT', finish: 'black', color: '#e8742a', gen: .6, x: 40, y: 40,
     groups: [{ label: 'OUTPUT', dir: 'out', stereo: true, ports: stereo('output') }] },
   { id: 'jlab', title: 'JLab GO Work 2', name: 'JLab GO Work 2 [JLab GO Work 2]', model: 'BLUETOOTH HEADSET', finish: 'metal', color: '#5b7fe0', gen: .3, pass: true, x: 540, y: 40,
-    groups: [{ label: 'PLAYBACK', dir: 'in', stereo: true, ports: stereo('playback') },
-             { label: 'MIC', dir: 'out', ports: [P('MONO', 'capture_MONO')] },
-             { label: 'MONITOR', dir: 'out', stereo: true, ports: stereo('monitor') }] },
+    profile: 0, codec: 'AAC', profiles: [
+      { short: 'HI-FI', name: 'High Fidelity Playback (A2DP Sink)', codecs: ['SBC', 'SBC-XQ', 'AAC'],
+        groups: [{ label: 'PLAYBACK', dir: 'in', stereo: true, ports: stereo('playback') },
+                 { label: 'MONITOR', dir: 'out', stereo: true, ports: stereo('monitor') }] },
+      { short: 'HEADSET', name: 'Headset Head Unit (HSP/HFP)', codecs: ['CVSD', 'mSBC'],
+        groups: [{ label: 'PLAYBACK', dir: 'in', ports: MONO('playback') },
+                 { label: 'MIC', dir: 'out', ports: MONO('capture') },
+                 { label: 'MONITOR', dir: 'out', ports: MONO('monitor') }] },
+      { short: 'OFF', name: 'Off', groups: [] }] },
   { id: 'btcap', title: 'Bluetooth internal capture stream', name: 'Bluetooth internal capture stream', model: 'BLUEZ · STREAM', finish: 'cream', color: '#3fae5a', pass: true, x: 540, y: 220,
     groups: [{ label: 'INPUT', dir: 'in', ports: [P('MONO', 'input_MONO')] }, { label: 'MONITOR', dir: 'out', ports: [P('MONO', 'monitor_MONO')] }] },
-  { id: 'ryzen', title: 'Ryzen HD Audio Controller', name: 'Ryzen HD Audio Controller Analog Stereo', model: 'ALSA · PCI · ANALOG STEREO', finish: 'metal', color: '#2bb0a8', gen: .15, pass: true, x: 540, y: 400,
-    groups: [{ label: 'PLAYBACK', dir: 'in', stereo: true, ports: stereo('playback') },
-             { label: 'CAPTURE', dir: 'out', stereo: true, ports: stereo('capture') },
-             { label: 'MONITOR', dir: 'out', stereo: true, ports: stereo('monitor') }] },
+  { id: 'ryzen', title: 'Ryzen HD Audio Controller', name: 'Ryzen HD Audio Controller', model: 'ALSA · PCI', finish: 'metal', color: '#2bb0a8', gen: .15, pass: true, x: 540, y: 400,
+    profile: 0, profiles: [
+      { short: 'DUPLEX', name: 'Analog Stereo Duplex', groups: RYZEN_DUPLEX },
+      { short: 'OUTPUT', name: 'Analog Stereo Output', groups: [RYZEN_DUPLEX[0], RYZEN_DUPLEX[2]] },
+      { short: 'INPUT', name: 'Analog Stereo Input', groups: [RYZEN_DUPLEX[1]] },
+      { short: 'PRO', name: 'Pro Audio', groups: RYZEN_DUPLEX },
+      { short: 'OFF', name: 'Off', groups: [] }] },
+  { id: 'radeon', title: 'Radeon High Definition Audio Controller', name: 'Radeon High Definition Audio Controller', model: 'ALSA · PCI · HDMI', finish: 'metal', color: '#9b5bd0', pass: true, x: 540, y: 580,
+    profile: 2, profiles: [
+      { short: 'HDMI', name: 'Digital Stereo (HDMI) Output', unplugged: true, groups: [{ label: 'HDMI', dir: 'in', stereo: true, ports: stereo('playback') }, { label: 'MONITOR', dir: 'out', stereo: true, ports: stereo('monitor') }] },
+      { short: 'HDMI 2', name: 'Digital Stereo (HDMI 2) Output', unplugged: true, groups: [{ label: 'HDMI 2', dir: 'in', stereo: true, ports: stereo('playback-2') }, { label: 'MONITOR', dir: 'out', stereo: true, ports: stereo('monitor-2') }] },
+      { short: 'OFF', name: 'Off', groups: [] }] },
   { id: 'alsamidi', title: '14:Midi Through', name: '14:Midi Through', model: 'ALSA MIDI · CLIENT 14', finish: 'navy', color: '#c05bd0', x: 40, y: 220,
     groups: [{ label: 'MIDI', dir: 'in', ports: [P('PORT 0', '0:Midi Through Port-0', 'midi')] }, { label: 'MIDI', dir: 'out', ports: [P('PORT 0', '0:Midi Through Port-0', 'midi')] }] },
   { id: 'bridge', title: 'Midi-Bridge', name: 'Midi-Bridge', model: 'PIPEWIRE MIDI', finish: 'navy', color: '#d23b32', x: 40, y: 400,
@@ -229,13 +258,22 @@ const FINISH = {
 
 // ---------------- state ----------------
 const RACK_MIN = 1000, RACK_GAP = 3, DEV_H = 128, JP = 48;
-const S = { locked: false, mode: 'desk', rackW: RACK_MIN, cableMode: 0, sag: .45, sound: true, view: { x: 0, y: 0, s: 1 }, vt: null, edited: false };
-const devs = DEVICES.map((d) => ({ ...d, dx: d.x, dy: d.y, tx: d.x, ty: d.y, W: 0, H: DEV_H, lvl: 0, shown: 0, running: null }));
+const S = { locked: false, align: true, mode: 'desk', rackW: RACK_MIN, cableMode: 0, sound: true, view: { x: 0, y: 0, s: 1 }, vt: null, edited: false };
+const devs = DEVICES.map((d) => ({ ...d, dx: d.x, dy: d.y, tx: d.x, ty: d.y, W: 0, H: DEV_H, lvl: [0, 0], shown: '', running: null }));
 const ports = new Map(), jacks = new Map(), links = new Set();
-for (const d of devs) for (const g of d.groups) for (const p of g.ports) {
-  Object.assign(p, { dev: d, group: g, key: d.id + ':' + g.dir + ':' + p.full });
-  ports.set(p.key, p);
+// a device's groups: its own, or those of its card's profile (fresh copies: a group keeps its SPLIT
+// switch and jacks). Ports keep their keys across profiles, so links to them come back.
+function setGroups(d) {
+  for (const g of d.groups || []) for (const p of g.ports) ports.delete(p.key);
+  for (const g of d.groups || []) for (const j of g.jacks || []) jacks.delete(j.key);
+  const src = d.profiles ? d.profiles[d.profile].groups : d.groups;
+  d.groups = src.map((g) => ({ ...g, ports: g.ports.map((p) => ({ ...p })), jacks: null, split: false }));
+  for (const g of d.groups) for (const p of g.ports) {
+    Object.assign(p, { dev: d, group: g, key: d.id + ':' + g.dir + ':' + p.full });
+    ports.set(p.key, p);
+  }
 }
+for (const d of devs) setGroups(d);
 let rackOrder = [];
 const cables = [];
 let seq = 0, slotSeq = 0;
@@ -272,20 +310,14 @@ $('#hex').setAttribute('points', Array.from({ length: 6 }, (_, k) => {
 const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;');
 const BLACK = "'Arial Black', 'DejaVu Sans', sans-serif";
 const textW = (t, size) => { measure.font = `900 ${size}px ${BLACK}`; return measure.measureText(t).width; };
-// every panel title uses the same size: one line, else two, else two ending in "…".
-// Lines break after a space, "-", "_" or ":", and inside a word only when nothing else fits.
+// every panel title is one line at the same size, ending in "…" when it doesn't fit: the LCD
+// scrolls the full name
 const TITLE = 14;
 function fitTitle(name, maxW) {
-  const t = name.toUpperCase(), size = TITLE;
-  if (textW(t, size) <= maxW) return { size, lines: [t] };
-  const parts = t.split(/(?<=[ \-_:])/);
-  let l1 = '', i = 0;
-  while (i < parts.length && textW(l1 + parts[i], size) <= maxW) l1 += parts[i++];
-  let rest = parts.slice(i).join('');
-  if (!l1) { let k = 0; while (k < t.length && textW(t.slice(0, k + 1), size) <= maxW) k++; l1 = t.slice(0, k); rest = t.slice(k); }
-  let l2 = rest;
-  if (textW(l2, size) > maxW) { while (l2 && textW(l2 + '…', size) > maxW) l2 = l2.slice(0, -1); l2 = l2.trimEnd() + '…'; }
-  return { size, lines: [l1.trimEnd(), l2] };
+  let t = name.toUpperCase();
+  if (textW(t, TITLE) <= maxW) return t;
+  while (t && textW(t + '…', TITLE) > maxW) t = t.slice(0, -1);
+  return t.trimEnd() + '…';
 }
 const LCD_CH = 27; // characters the LCD shows on one line
 // a port is a mult: one jack per cord plugged in, plus one free jack
@@ -293,9 +325,14 @@ const measure = document.createElement('canvas').getContext('2d');
 const IDW_ = 190; // width of the name and LCD block
 const slots = (j) => (j.count || 0) + 1;
 const labelW = (t) => { measure.font = 'bold 8.5px Arial, Helvetica, sans-serif'; return measure.measureText(t).width + t.length * .8; };
-const groupW = (g) => Math.max(g.jacks.reduce((s, j) => s + slots(j), 0) * JP + 14, g.stereo ? 100 : 0, Math.ceil(labelW(g.label)) + 8 + 6 + 30 + 4);
+// a split stereo group: L above R, each mult running to the right of its L / R label
+const ROWS = [50, 84], ROW_X = 38;
+const stacked = (g) => g.stereo && g.split;
+const groupW = (g) => Math.max(
+  stacked(g) ? ROW_X + (Math.max(...g.jacks.map(slots)) - 1) * JP + 22 + 46 : g.jacks.reduce((s, j) => s + slots(j), 0) * JP + 14,
+  g.stereo ? 100 : 0, Math.ceil(labelW(g.label)) + 8 + 6 + 30 + 4);
 const naturalW = (d, rack) => 2 * (rack ? 30 : 0) + 32 + IDW_ + 14 + d.groups.reduce((s, g) => s + groupW(g) + 10, 0) - 10 + 40;
-const faceSig = (d) => S.mode + (S.mode === 'rack' ? S.rackW : '') + d.groups.map((g) => g.jacks.map(slots).join(',')).join('|');
+const faceSig = (d) => S.mode + (S.mode === 'rack' ? S.rackW : '') + d.groups.map((g) => g.jacks.map(slots).join(',')).join('|') + '|' + (d.profiles ? d.profile + d.codec : '');
 function renderDevice(d) {
   const rack = S.mode === 'rack', f = FINISH[d.finish];
   const EAR = rack ? 30 : 0, PAD = 16, IDW = IDW_, H = DEV_H;
@@ -316,15 +353,22 @@ function renderDevice(d) {
       ? `<rect x="${x + gw - 30}" y="22.5" width="23" height="11" rx="2" fill="none" stroke="${f.print}" stroke-width=".9"/><text x="${x + gw - 18.5}" y="31" font-size="7.5" fill="${f.print}" text-anchor="middle">IN</text>`
       : `<rect x="${x + gw - 30}" y="22.5" width="23" height="11" rx="2" fill="${f.print}"/><text x="${x + gw - 18.5}" y="31" font-size="7.5" fill="${inv}" text-anchor="middle">OUT</text>`;
     let jx = x + (gw - n * JP) / 2 + JP / 2;
-    for (const j of g.jacks) {
+    const rows = stacked(g);
+    g.jacks.forEach((j, r) => {
       const k = slots(j);
-      j.lx = jx; j.ly = 62;
-      // parallel jacks of one port get a printed outline, like a mult on a patch bay
-      if (k > 1) body += `<rect x="${jx - 21}" y="41" width="${(k - 1) * JP + 42}" height="42" rx="21" fill="rgba(0,0,0,.08)" stroke="${f.print}" stroke-width=".9" opacity=".5"/>`;
-      for (let i = 0; i < k; i++) body += `<use href="#jack-${j.kind}" x="${jx + i * JP}" y="62"/>`;
-      body += `<text x="${jx + (k - 1) * JP / 2}" y="91" font-size="${j.kind === 'stereo' ? 7.5 : 9}" fill="${f.print}" text-anchor="middle" letter-spacing="${j.kind === 'stereo' ? .6 : 0}">${j.n}</text>`;
-      jx += k * JP;
-    }
+      if (rows) { j.lx = x + ROW_X; j.ly = ROWS[r]; } else { j.lx = jx; j.ly = 62; }
+      // parallel jacks of one port get a printed outline, like a mult on a patch bay (lower in a
+      // row of a split stereo group, which has less room)
+      const h = rows ? 32 : 42;
+      if (k > 1) body += `<rect x="${j.lx - h / 2}" y="${j.ly - h / 2}" width="${(k - 1) * JP + h}" height="${h}" rx="${h / 2}" fill="rgba(0,0,0,.08)" stroke="${f.print}" stroke-width=".9" opacity=".5"/>`;
+      // the L and R of a split stereo jack keep its gold ring: still the same pair
+      const pic = g.stereo && j.kind === 'mono' ? 'stereo' : j.kind;
+      for (let i = 0; i < k; i++) body += `<use href="#jack-${pic}" x="${j.lx + i * JP}" y="${j.ly}"/>`;
+      body += rows
+        ? `<text x="${j.lx - 21}" y="${j.ly + 3.2}" font-size="9" fill="${f.print}" text-anchor="end">${j.n}</text>`
+        : `<text x="${j.lx + (k - 1) * JP / 2}" y="91" font-size="${j.kind === 'stereo' ? 7.5 : 9}" fill="${f.print}" text-anchor="middle" letter-spacing="${j.kind === 'stereo' ? .6 : 0}">${j.n}</text>`;
+      if (!rows) jx += k * JP;
+    });
     if (g.stereo) {
       // a little hardware switch: one stereo jack, or L and R apart
       const bx = x + gw - 42, by = 97;
@@ -341,7 +385,6 @@ function renderDevice(d) {
   let ox = rack ? mx - 4 - span(outs) : x;
   const gx1 = ox - 10;
   for (const g of outs) ox = group(g, ox);
-
   let grille = '';
   if (rack && gx1 - gx0 > 50) {
     for (let y = 30; y <= 98; y += 9.5)
@@ -353,10 +396,13 @@ function renderDevice(d) {
     leds += `<rect class="led" x="${mx + c * 11}" y="${92 - i * 7.6}" width="8" height="5.4" rx="1" fill="rgba(0,0,0,.5)"/>`;
 
   const r = rack ? 3 : 12;
-  const ttl = fitTitle(d.name, IDW - 14);
-  const title = ttl.lines.length === 1
-    ? `<text x="${x0}" y="40" font-size="${ttl.size}">${esc(ttl.lines[0])}</text>`
-    : `<text x="${x0}" y="${44 - ttl.size - 2}" font-size="${ttl.size}">${esc(ttl.lines[0])}</text><text x="${x0}" y="45" font-size="${ttl.size}">${esc(ttl.lines[1])}</text>`;
+  const title = `<text x="${x0}" y="33" font-size="${TITLE}">${esc(fitTitle(d.name, IDW - 4))}</text>`;
+  // a card's PROFILE key, under its screen: the list of its profiles drops out of it
+  // (centred under it, clear of the corner screws)
+  const kx = x0 + (IDW - 92) / 2;
+  d.prof = d.profiles ? { x: kx, y: 107, w: 92, h: 14 } : null;
+  const profKey = d.prof ? `<rect x="${kx}" y="107" width="92" height="14" rx="2.5" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/>` +
+    `<text x="${kx + 46}" y="116.8" font-size="7.6" fill="#e6e7e8" text-anchor="middle" letter-spacing=".7">PROFILE ▾</text>` : '';
   const screws = (rack ? [] : [[11, 11], [W - 11, 11], [11, H - 11], [W - 11, H - 11]])
     .map(([sx, sy], i) => `<use href="#screw" transform="translate(${sx},${sy}) rotate(${(i * 37 + d.name.length * 11) % 90})"/>`).join('');
   // paint: solid base, then the texture on top, so the face stays painted even if the texture fails
@@ -381,15 +427,17 @@ function renderDevice(d) {
     <rect x="${EAR}" y="0" width="${W - 2 * EAR}" height="${H}" rx="${r}" fill="none" stroke="rgba(0,0,0,.65)" stroke-width="1"/>
     ${screws}
     <g font-family="${BLACK}" font-weight="900" fill="${f.print}">${title}</g>
-    <text x="${x0}" y="57" font-size="7.8" fill="${f.sub}" letter-spacing="1">${d.model}</text>
-    <circle class="st" cx="${x0 + IDW - 5}" cy="54" r="3.2" fill="#2a1d0a" stroke="rgba(0,0,0,.6)" stroke-width=".8"/>
-    <rect x="${x0 - 1.5}" y="64.5" width="${IDW + 3}" height="43" rx="4" fill="#111214"/>
-    <rect x="${x0 + 1.5}" y="67.5" width="${IDW - 3}" height="37" rx="2" fill="url(#gLcd)"/>
-    <rect x="${x0 + 1.5}" y="67.5" width="${IDW - 3}" height="37" rx="2" fill="none" stroke="rgba(110,45,0,.35)" stroke-width="3"/>
+    <text x="${x0}" y="46" font-size="7.8" fill="${f.sub}" letter-spacing="1">${d.model}</text>
+    <circle class="st" cx="${x0 + IDW - 5}" cy="43" r="3.2" fill="#2a1d0a" stroke="rgba(0,0,0,.6)" stroke-width=".8"/>
+    <rect x="${x0 - 1.5}" y="51" width="${IDW + 3}" height="${d.prof ? 52 : 63}" rx="4" fill="#111214"/>
+    <rect x="${x0 + 1.5}" y="54" width="${IDW - 3}" height="${d.prof ? 46 : 57}" rx="2" fill="url(#gLcd)"/>
+    <rect x="${x0 + 1.5}" y="54" width="${IDW - 3}" height="${d.prof ? 46 : 57}" rx="2" fill="none" stroke="rgba(110,45,0,.35)" stroke-width="3"/>
     <g font-family="ui-monospace, 'DejaVu Sans Mono', monospace" fill="#3a2408" style="white-space:pre">
-      <text class="lcd1" x="${x0 + 9}" y="83" font-size="10.5"></text>
-      <text class="lcd2" x="${x0 + 9}" y="98" font-size="10.5" font-weight="normal">48 kHz  IDLE</text>
+      <text class="lcd1" x="${x0 + 9}" y="${d.prof ? 67 : 70}" font-size="10.5"></text>
+      <text class="lcd2" x="${x0 + 9}" y="${d.prof ? 80.5 : 86}" font-size="10.5" font-weight="normal">48 kHz  IDLE</text>
+      <text class="lcd3" x="${x0 + 9}" y="${d.prof ? 94 : 102}" font-size="10.5" font-weight="normal"></text>
     </g>
+    ${profKey}
     ${body}${grille}${leds}
     <text x="${mx + 9.5}" y="112" font-size="7.5" fill="${f.print}" text-anchor="middle" letter-spacing=".6">SIG</text>
   </svg>`;
@@ -402,6 +450,8 @@ function renderDevice(d) {
   d.stEl = d.el.querySelector('.st');
   d.lcd2 = d.el.querySelector('.lcd2');
   d.lcd1 = d.el.querySelector('.lcd1');
+  d.lcd3 = d.el.querySelector('.lcd3');
+  d.scroll3 = -1;
   d.scroll = -1;
   d.running = null; d.shown = -1;
   d.sig = faceSig(d);
@@ -435,21 +485,20 @@ function reconcile(quiet) {
     const fresh = jacks.get(c.a.jack.key) === c.a.jack && jacks.get(c.b.jack.key) === c.b.jack;
     if (want.has(key) && fresh && !have.has(key)) have.add(key); else kill(c);
   }
-  for (const [key, [A, B]] of want) if (!have.has(key)) {
-    const c = newCable(A, B, A.dev.color);
-    c.a.ins = c.b.ins = quiet ? 0 : 1;
-  }
+  for (const [key, [A, B]] of want) if (!have.has(key)) newCable(A, B, A.dev.color);
   updateInfo();
 }
 
 // ---------------- cables ----------------
 const N = 22, GRAV = 2000, DAMP = .965, ITER = 20, STIFF = .35;
-const end = () => ({ jack: null, slot: ++slotSeq, rank: 0, kind: 'mono', held: false, free: false, ins: 0, lift: 0, ang: -Math.PI / 2, x: 0, y: 0, placed: false });
+// one end of a cord: in a jack, in the hand, or dropped. As in Reason, it ends straight in its jack:
+// no plug stands out of the panel
+const end = () => ({ jack: null, slot: ++slotSeq, rank: 0, kind: 'mono', held: false, free: false, x: 0, y: 0, placed: false });
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 const live = (c) => !c.dying && c.a.jack && c.b.jack;
-const PLUG = 1.7; // size of a plug in the hand
-const BOOT_TAIL = -12; // the boot runs this far back from the grip, tapering down to the cord
-const HOLD = PLUG * (30 - BOOT_TAIL); // from where the cord leaves the boot to the middle of the grip
+// at 60 frames a second something goes the fraction k of the way each frame: the same pace at
+// any refresh rate
+const ease = (k, dt) => 1 - Math.pow(1 - k, dt * 60);
 const slotPos = (j, i) => ({ x: j.dev.x + j.lx + i * JP, y: j.dev.y + j.ly });
 const spare = (j) => slotPos(j, j.count || 0);
 
@@ -463,11 +512,14 @@ function newCable(a, b, color) {
     const x = p0.x + (p1.x - p0.x) * t, y = p0.y + (p1.y - p0.y) * t + sag;
     c.pts.push({ x, y, px: x, py: y });
   }
-  if (a && b) c.L = targetLen(dist(p0, p1));
+  c.L = a && b ? targetLen(p1.x - p0.x, p1.y - p0.y) : 0;
   cables.push(c);
   return c;
 }
-const targetLen = (d) => d * (1.03 + .2 * S.sag) + 30 + 140 * S.sag;
+// a third longer than the distance, as in Reason, so it hangs in a deep, calm U and drops out of
+// its jacks; a little more between jacks side by side. The same in the hand: it doesn't grow
+// when it goes in
+const targetLen = (dx, dy) => Math.hypot(dx, dy) * 1.3 + Math.min(30, Math.abs(dx) * .4);
 const cableBetween = (A, B) => cables.find((c) => live(c) && c.a.jack === A && c.b.jack === B);
 
 // one plug per jack: each cord on a port has its own jack of the mult, in the order they were plugged in
@@ -489,24 +541,20 @@ function buildSlots() {
   const rw = Math.max(RACK_MIN, ...devs.map((d) => naturalW(d, true)));
   if (S.mode === 'rack' && rw !== S.rackW) S.rackW = rw;
   let rack = false;
-  for (const d of devs) if (faceSig(d) !== d.sig) { renderDevice(d); rack = true; }
+  for (const d of devs) if (faceSig(d) !== d.sig) { renderDevice(d); rack = true; crowded = true; }
   if (rack && S.mode === 'rack') layoutRack(drag && drag.type === 'device' ? drag.d : null);
 }
 const cordsAt = (j) => cables.filter((c) => !c.dying && (c.a.jack === j || c.b.jack === j));
 
-function placeEnds(c) {
+function placeEnds(c, dt) {
   for (const s of ['a', 'b']) {
     const e = c[s];
     if (e.free) { const p = c.pts[s === 'a' ? 0 : c.pts.length - 1]; e.x = p.x; e.y = p.y; continue; }
-    if (e.held) {
-      const hx = drag.p.x + e.off.x, hy = drag.p.y + e.off.y, l = HOLD * e.lift;
-      e.x = hx - Math.cos(e.ang) * l; e.y = hy - Math.sin(e.ang) * l;
-      continue;
-    }
-    // seated plugs glide when their mult closes up or opens
+    if (e.held) { e.x = drag.p.x; e.y = drag.p.y; continue; }
+    // ends in jacks glide when their mult closes up or opens
     const p = slotPos(e.jack, e.rank);
     if (!e.placed || (drag && drag.type === 'device')) { e.x = p.x; e.y = p.y; e.placed = true; }
-    else { e.x += (p.x - e.x) * .3; e.y += (p.y - e.y) * .3; }
+    else { const k = ease(.3, dt); e.x += (p.x - e.x) * k; e.y += (p.y - e.y) * k; }
   }
 }
 
@@ -518,16 +566,13 @@ function step(c, dt) {
     p.px = p.x; p.py = p.y; p.x += vx; p.y += vy + g;
   }
   const pinA = !c.a.free, pinB = !c.b.free, k = c.grab;
-  const axA = c.a.held && c.a.lift > .3, axB = c.b.held && c.b.lift > .3;
+  // the ends are pinned where they are (in a jack or in the hand); a dropped end falls
   const pin = () => {
     if (pinA) { pts[0].x = c.a.x; pts[0].y = c.a.y; }
     if (pinB) { pts[n - 1].x = c.b.x; pts[n - 1].y = c.b.y; }
-    // the cord leaves a plug in the hand straight out of its boot
-    if (axA) { pts[1].x = c.a.x - Math.cos(c.a.ang) * seg; pts[1].y = c.a.y - Math.sin(c.a.ang) * seg; }
-    if (axB) { pts[n - 2].x = c.b.x - Math.cos(c.b.ang) * seg; pts[n - 2].y = c.b.y - Math.sin(c.b.ang) * seg; }
     if (k >= 0) { pts[k].x += (drag.hand.x - pts[k].x) * .35; pts[k].y += (drag.hand.y - pts[k].y) * .35; }
   };
-  const w = (i) => ((i === 0 && pinA) || (i === n - 1 && pinB) || (i === 1 && axA) || (i === n - 2 && axB) || i === k ? 0 : 1);
+  const w = (i) => ((i === 0 && pinA) || (i === n - 1 && pinB) || i === k ? 0 : 1);
   pin();
   for (let it = 0; it < ITER; it++) {
     for (let i = 0; i < n - 1; i++) {
@@ -550,35 +595,16 @@ function step(c, dt) {
   }
 }
 
-function updateCable(c, now) {
+function updateCable(c, now, dt) {
   const a = c.a, b = c.b;
-  // plug pose: a held or dropped plug turns its tip away from the cord; near a jack it turns to face the panel
   for (const s of ['a', 'b']) {
-    const e = c[s], P = c.pts, n = P.length;
-    let lift = 0;
-    if (e.held) {
-      lift = 1;
-      if (drag.magnet) lift = clamp((dist(drag.p, spare(drag.magnet)) - 4) / 70, 0, 1);
-    } else if (e.free) lift = 1;
-    e.lift += (lift - e.lift) * .22;
-    if (e.held || e.free) {
-      const p0 = s === 'a' ? P[0] : P[n - 1], p3 = s === 'a' ? P[4] : P[n - 5];
-      let want = Math.atan2(p0.y - p3.y, p0.x - p3.x);
-      if (e.held) want += clamp(drag.v.x * .0006, -.5, .5);
-      e.ang += wrapA(want - e.ang) * .16;
-    }
-    e.ins *= .82;
-    const o = c[s === 'a' ? 'b' : 'a'];
+    const e = c[s], o = c[s === 'a' ? 'b' : 'a'];
     if (e.jack) e.kind = e.jack.kind;
     else if (e.held) e.kind = (drag.magnet || e.orig || o.jack || { kind: e.kind }).kind;
   }
   c.stereo = a.kind === 'stereo' || b.kind === 'stereo';
-  placeEnds(c);
-  if (!a.free && !b.free) {
-    const d = dist(a, b);
-    const t = a.held || b.held ? Math.max(90, d + 60 + 60 * S.sag) : targetLen(d);
-    c.L += (t - c.L) * (t > c.L ? (a.held || b.held ? .12 : .05) : .03);
-  }
+  placeEnds(c, dt);
+  if (!a.free && !b.free) c.L += (targetLen(a.x - b.x, a.y - b.y) - c.L) * ease(.2, dt);
   step(c, 1 / 120); step(c, 1 / 120);
   let len = 0;
   for (let i = 1; i < c.pts.length; i++) len += dist(c.pts[i], c.pts[i - 1]);
@@ -628,116 +654,6 @@ function drawShadow(c, alpha) {
   }
   ctx.globalAlpha = 1;
 }
-// points along the cord, measured from one end
-function along(c, s, ds) {
-  const P = c.pts, n = P.length, at = s === 'a' ? (i) => P[i] : (i) => P[n - 1 - i];
-  const out = [];
-  let acc = 0, i = 0, a = at(0), b = at(1), l = dist(a, b);
-  for (const d of ds) {
-    while (acc + l < d && i < n - 2) { acc += l; i++; a = at(i); b = at(i + 1); l = dist(a, b); }
-    const t = l ? clamp((d - acc) / l, 0, 1) : 0;
-    out.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, ang: Math.atan2(b.y - a.y, b.x - a.x) });
-  }
-  return out;
-}
-// seen from the front, a seated plug is its ribbed boot: round where it meets the jack, bending down into the cord
-const BOOT = Array.from({ length: 14 }, (_, i) => i * 2.4);
-function drawSeated(c, s, e, alpha) {
-  const col = c.color, k = 1 + e.ins * .2, R = 12.2 * k;
-  const sm = along(c, s, BOOT), h = sm[0];
-  ctx.save(); ctx.globalAlpha = alpha;
-  ctx.fillStyle = 'rgba(0,0,0,.32)';
-  ctx.beginPath(); ctx.arc(h.x + 3, h.y + 6, R + 1.5, 0, TAU); ctx.fill();
-  const dark = shade(col, -.6), lite = shade(col, .38), rim = shade(col, -.72);
-  for (let j = sm.length - 1; j >= 1; j--) {
-    const q = sm[j], u = j / (sm.length - 1);
-    const r = R - (R - 4.6) * Math.pow(u, .75);
-    const rx = r * (1 - .55 * Math.min(1, u * 2.5));
-    // light comes from the top-left: shade across the boot toward that side
-    let nx = -Math.sin(q.ang), ny = Math.cos(q.ang);
-    if (nx * -.6 + ny * -.8 < 0) { nx = -nx; ny = -ny; }
-    const g = ctx.createLinearGradient(q.x + nx * r, q.y + ny * r, q.x - nx * r, q.y - ny * r);
-    g.addColorStop(0, shade(col, .2)); g.addColorStop(.25, lite); g.addColorStop(.55, col); g.addColorStop(1, dark);
-    ctx.fillStyle = g;
-    ctx.beginPath(); ctx.ellipse(q.x, q.y, Math.max(rx, 1.8), r, q.ang, 0, TAU); ctx.fill();
-    ctx.strokeStyle = rim; ctx.globalAlpha = alpha * .55; ctx.lineWidth = .9; ctx.stroke(); ctx.globalAlpha = alpha;
-  }
-  // the rounded back of the plug, nearest to us
-  const cg = ctx.createRadialGradient(h.x - R * .35, h.y - R * .4, 1, h.x, h.y, R);
-  cg.addColorStop(0, lite); cg.addColorStop(.55, col); cg.addColorStop(1, dark);
-  ctx.fillStyle = cg; ctx.beginPath(); ctx.arc(h.x, h.y, R, 0, TAU); ctx.fill();
-  ctx.strokeStyle = rim; ctx.lineWidth = .9; ctx.stroke();
-  ctx.strokeStyle = 'rgba(0,0,0,.18)';
-  for (const rr of [.72, .45]) { ctx.beginPath(); ctx.arc(h.x, h.y, R * rr, 0, TAU); ctx.stroke(); }
-  ctx.fillStyle = 'rgba(255,255,255,.45)';
-  ctx.beginPath(); ctx.ellipse(h.x - R * .38, h.y - R * .42, R * .3, R * .14, -.7, 0, TAU); ctx.fill();
-  ctx.restore();
-}
-// in the hand, the whole plug shows from the side: boot, ribbed grip, collar, sleeve, contacts, tip.
-// While it turns to face a jack it gets shorter until only its back shows.
-function drawSide(c, e, alpha) {
-  const col = c.color, f = Math.max(.05, e.lift);
-  const rc = (cordW(c) + 2.2) / 2 / PLUG; // the cord's radius in plug units
-  const bootR = (x) => rc + (6.4 - rc) * Math.pow((x - BOOT_TAIL) / (16 - BOOT_TAIL), 1.6);
-  const t0 = e.kind === 'stereo' ? 85 : 77.6, tipEnd = t0 + 10.5;
-  // the outline of the whole plug, for its shadow and its boot
-  const outline = () => {
-    ctx.beginPath(); ctx.moveTo(BOOT_TAIL, -rc);
-    for (let x = BOOT_TAIL + 2; x <= 16; x += 2) ctx.lineTo(x, -bootR(x));
-    ctx.lineTo(44, -7); ctx.lineTo(44, -4.9); ctx.lineTo(47.5, -4.9); ctx.lineTo(47.5, -3.7); ctx.lineTo(t0 + 5, -3.7);
-    ctx.quadraticCurveTo(tipEnd - .5, -3.2, tipEnd, 0); ctx.quadraticCurveTo(tipEnd - .5, 3.2, t0 + 5, 3.7);
-    ctx.lineTo(47.5, 3.7); ctx.lineTo(47.5, 4.9); ctx.lineTo(44, 4.9); ctx.lineTo(44, 7);
-    for (let x = 16; x >= BOOT_TAIL + 2; x -= 2) ctx.lineTo(x, bootR(x));
-    ctx.lineTo(BOOT_TAIL, rc); ctx.closePath();
-  };
-  const place = (x, y) => {
-    ctx.translate(x, y); ctx.rotate(e.ang);
-    if (Math.cos(e.ang) < 0) ctx.scale(1, -1); // keep the highlight on top
-    ctx.scale(PLUG * f, PLUG); ctx.translate(-BOOT_TAIL, 0); // the boot's thin end sits where the cord is pinned
-  };
-  const across = (r, stops) => {
-    const g = ctx.createLinearGradient(0, -r, 0, r);
-    stops.forEach(([o, s]) => g.addColorStop(o, s)); return g;
-  };
-  const chrome = (r) => across(r, [[0, '#7a7d82'], [.28, '#ffffff'], [.5, '#c3c6ca'], [.8, '#5a5d62'], [1, '#8e9195']]);
-  const paint = (r) => across(r, [[0, shade(col, -.35)], [.28, shade(col, .4)], [.55, col], [1, shade(col, -.65)]]);
-  const band = (x0, x1, r, fill) => { ctx.fillStyle = fill; ctx.fillRect(x0 - .15, -r, x1 - x0 + .3, 2 * r); };
-
-  ctx.save(); ctx.globalAlpha = alpha * clamp(e.lift * 2.2, 0, 1);
-  // shadow: same offset as the cord's shadow, so the two meet
-  ctx.save(); place(e.x + 7, e.y + 12);
-  ctx.filter = `blur(${2.5 * S.view.s}px)`; ctx.fillStyle = 'rgba(0,0,0,.4)'; outline(); ctx.fill(); ctx.restore();
-
-  place(e.x, e.y);
-  // boot and grip in one piece of rubber, then the ribs
-  ctx.fillStyle = paint(7);
-  ctx.beginPath(); ctx.moveTo(BOOT_TAIL, -rc);
-  for (let x = BOOT_TAIL + 2; x <= 16; x += 2) ctx.lineTo(x, -bootR(x));
-  ctx.lineTo(16.5, -7); ctx.lineTo(42.5, -7); ctx.quadraticCurveTo(44.2, -7, 44.2, -5.5); ctx.lineTo(44.2, 5.5); ctx.quadraticCurveTo(44.2, 7, 42.5, 7);
-  ctx.lineTo(16.5, 7);
-  for (let x = 16; x >= BOOT_TAIL + 2; x -= 2) ctx.lineTo(x, bootR(x));
-  ctx.lineTo(BOOT_TAIL, rc); ctx.closePath(); ctx.fill();
-  ctx.strokeStyle = shade(col, -.6); ctx.lineWidth = 1.1; ctx.globalAlpha *= .75;
-  for (let x = 1; x < 36; x += 3.2) {
-    const r = (x <= 16 ? bootR(x) : 7) - .7;
-    ctx.beginPath(); ctx.moveTo(x, -r); ctx.lineTo(x, r); ctx.stroke();
-  }
-  ctx.globalAlpha /= .75;
-  // collar and sleeve
-  band(44, 47.5, 4.9, chrome(4.9));
-  band(47.5, 75, 3.7, chrome(3.7));
-  // mono (TS): sleeve | insulator | tip. stereo (TRS): sleeve | insulator | ring | insulator | tip
-  const black = across(3.7, [[0, '#111'], [.3, '#555'], [1, '#050505']]);
-  band(75, 77.6, 3.7, black);
-  if (e.kind === 'stereo') { band(77.6, 82.4, 3.7, chrome(3.7)); band(82.4, 85, 3.7, black); }
-  // tip: one piece, with a groove before the rounded point
-  ctx.fillStyle = chrome(3.7);
-  ctx.beginPath(); ctx.moveTo(t0 - .15, -3.7); ctx.lineTo(t0 + 3, -3.7); ctx.lineTo(t0 + 4, -2.7); ctx.lineTo(t0 + 5, -3.6);
-  ctx.quadraticCurveTo(tipEnd - .5, -3.2, tipEnd, 0); ctx.quadraticCurveTo(tipEnd - .5, 3.2, t0 + 5, 3.6);
-  ctx.lineTo(t0 + 4, 2.7); ctx.lineTo(t0 + 3, 3.7); ctx.lineTo(t0 - .15, 3.7); ctx.closePath(); ctx.fill();
-  ctx.restore();
-}
-
 let focus = new Set();
 function draw(now) {
   const dpr = devicePixelRatio || 1, v = S.view;
@@ -765,16 +681,11 @@ function draw(now) {
   const order = [...cables].sort((u, v) => (held(u) - held(v)) || (focus.has(u) - focus.has(v)));
   for (const c of order) { const a = alphaOf(c); if (a > .01) drawShadow(c, a); }
   for (const c of order) { const a = alphaOf(c); if (a > .01) drawCord(c, a); }
-  const plugs = [];
-  for (const c of cables) for (const s of ['a', 'b']) {
-    const e = c[s];
-    plugs.push({ c, s, e, z: e.held ? 99 : e.free ? 50 : 0 });
-  }
-  plugs.sort((u, v) => u.z - v.z);
-  for (const { c, s, e } of plugs) {
-    const a = held(c) ? c.alpha : focus.size && !focus.has(c) ? .55 * c.alpha : c.alpha;
-    if (e.lift < .6) drawSeated(c, s, e, a * clamp(1 - e.lift * 1.8, 0, 1));
-    if (e.lift > .05) drawSide(c, e, a);
+  // alignment guides while a device is dragged on the desk
+  if (guides.length) {
+    ctx.fillStyle = 'rgba(255,200,90,.85)';
+    const lw = 1.5 / v.s;
+    for (const [x0, y0, x1, y1] of guides) ctx.fillRect(x0 === x1 ? x0 - lw / 2 : x0, y0 === y1 ? y0 - lw / 2 : y0, x0 === x1 ? lw : x1 - x0, y0 === y1 ? lw : y1 - y0);
   }
 }
 
@@ -793,14 +704,17 @@ function updateSignal(now) {
     if (c.b.jack.dev.pass) t.out = Math.max(t.out, t.in * .9);
   }
   for (const d of devs) {
-    const l = lv.get(d), base = Math.max(l.out, l.in);
-    const wob = base ? base * (.62 + .25 * Math.sin(now / 130 + d.dx) + .2 * Math.random()) : 0;
-    d.lvl += (wob - d.lvl) * (wob > d.lvl ? .6 : .15);
-    const lit = Math.round(clamp(d.lvl, 0, 1) * 10);
-    if (lit !== d.shown) {
-      d.shown = lit;
+    const l = lv.get(d), base = d.groups.length ? Math.max(l.out, l.in) : 0;
+    // each channel its own: L and R move apart, as music does; up at once, down slowly
+    const lit = [0, 1].map((ch) => {
+      const wob = base ? base * (.62 + .25 * Math.sin(now / (130 + 23 * ch) + d.dx + ch * 2) + .2 * Math.random()) : 0;
+      d.lvl[ch] += (wob - d.lvl[ch]) * (wob > d.lvl[ch] ? .6 : .15);
+      return Math.round(clamp(d.lvl[ch], 0, 1) * 10);
+    });
+    if (lit.join() !== d.shown) {
+      d.shown = lit.join();
       d.leds.forEach((r, i) => {
-        const c = i % 10, ch = i < 10 ? 0 : 1, on = c < lit - ch * (Math.random() < .5 ? 1 : 0);
+        const c = i % 10, on = c < lit[i < 10 ? 0 : 1];
         r.setAttribute('fill', on ? (c >= 9 ? '#ff3b2f' : c >= 7 ? '#ffb02e' : '#4cff6a') : 'rgba(0,0,0,.5)');
       });
     }
@@ -812,10 +726,21 @@ function updateSignal(now) {
       const loop = nm + '   ·  ' + nm;
       d.lcd1.textContent = long ? loop.slice(pos, pos + LCD_CH) : nm;
     }
-    const run = base > .01;
+    // line 3: a card's profile (and codec), scrolling when long; else the format
+    const pr = d.profiles && d.profiles[d.profile];
+    const l3 = pr ? pr.name + (pr.codecs ? ' · ' + d.codec : '') + (pr.unplugged ? ' · UNPLUGGED' : '') : (d.groups.some((g) => g.stereo) ? 'STEREO' : d.groups.some((g) => g.ports[0].t === 'midi') ? 'MIDI' : 'MONO');
+    const long3 = l3.length > LCD_CH;
+    const pos3 = long3 ? Math.max(0, Math.floor(now / 280) % (l3.length + 6 + 8) - 8) : 0;
+    if (pos3 + l3 !== d.scroll3) {
+      d.scroll3 = pos3 + l3;
+      const loop = l3 + '   ·  ' + l3;
+      d.lcd3.textContent = long3 ? loop.slice(pos3, pos3 + LCD_CH) : l3;
+    }
+    const off = d.profiles && !d.groups.length;
+    const run = off ? 'off' : base > .01;
     if (run !== d.running) {
       d.running = run;
-      d.lcd2.textContent = run ? '48 kHz  RUNNING' : '48 kHz  IDLE';
+      d.lcd2.textContent = off ? 'NO INPUTS OR OUTPUTS' : run ? '48 kHz  RUNNING' : '48 kHz  IDLE';
       d.stEl.setAttribute('fill', run ? '#4cff6a' : '#6a4a12');
       d.stEl.style.filter = run ? 'drop-shadow(0 0 2.5px #4cff6a)' : '';
     }
@@ -845,8 +770,8 @@ function layoutRack(dragged = null) {
   let y = 0;
   for (const d of order) { if (d !== dragged) { d.tx = 0; d.ty = y; } y += d.H + RACK_GAP; }
   const rk = $('#rack');
-  rk.style.transform = 'translate(-34px,-14px)';
-  rk.style.width = (S.rackW + 68) + 'px'; rk.style.height = (y + 28) + 'px';
+  rk.style.transform = 'none';
+  rk.style.width = S.rackW + 'px'; rk.style.height = Math.max(0, y - RACK_GAP) + 'px';
   return order;
 }
 function setMode(m) {
@@ -892,6 +817,82 @@ function fit(anim) {
   const s = clamp(Math.min((W - 2 * m) / (b.x1 - b.x0), (H - 2 * m) / (b.y1 - b.y0 + 60)), .3, 1.3);
   const t = { s, x: (W - (b.x1 - b.x0) * s) / 2 - b.x0 * s, y: Math.max(m * .6, (H - (b.y1 - b.y0 + 60) * s) / 2) - b.y0 * s };
   if (anim) S.vt = t; else S.view = t;
+}
+
+// ---------------- the desk: devices line up and never lie over one another ----------------
+// GAP: how close devices may come. SNAP: how near (screen pixels) an edge or centre must come to
+// another's to stick to it; UNSNAP: how far the hand must then pull it to come free.
+const GAP = 8, SNAP = 16, UNSNAP = 32;
+let guides = [], snapped = [null, null], crowded = true;
+const apart = (a, b, gap) => a.x + a.w + gap <= b.x || b.x + b.w + gap <= a.x || a.y + DEV_H + gap <= b.y || b.y + DEV_H + gap <= a.y;
+const others = (d) => devs.filter((o) => o !== d);
+const freeAt = (d, x, y) => others(d).every((o) => apart({ x, y, w: d.W }, { x: o.dx, y: o.dy, w: o.W }, GAP));
+// the furthest point on the way from `from` to `to` where the device keeps clear
+function reach(d, from, to) {
+  if (freeAt(d, to.x, to.y)) return to;
+  const at = (m) => ({ x: from.x + (to.x - from.x) * m, y: from.y + (to.y - from.y) * m });
+  let lo = 0, hi = 1;
+  for (let i = 0; i < 14; i++) { const m = (lo + hi) / 2; const p = at(m); if (freeAt(d, p.x, p.y)) lo = m; else hi = m; }
+  return at(lo);
+}
+// where a device held at `at` settles: lined up by the left edges, centres or right edges, or by
+// the tops, or right beside, above or below another; held there until pulled well away. Only
+// places where it keeps clear of the others count.
+function snap(d, at) {
+  if (!S.align) { snapped = [null, null]; return at; }
+  const px = 1 / S.view.s, xs = [], ys = [];
+  for (const o of others(d)) {
+    xs.push(o.dx, o.dx + (o.W - d.W) / 2, o.dx + o.W - d.W, o.dx + o.W + GAP, o.dx - GAP - d.W);
+    ys.push(o.dy, o.dy + DEV_H + GAP, o.dy - DEV_H - GAP);
+  }
+  const choices = (held, raw, all) => {
+    const near = all.filter((v) => Math.abs(v - raw) < SNAP * px).sort((a, b) => Math.abs(a - raw) - Math.abs(b - raw));
+    return [...(held !== null && Math.abs(held - raw) < UNSNAP * px ? [held] : []), ...near, null];
+  };
+  const cx = choices(snapped[0], at.x, xs), cy = choices(snapped[1], at.y, ys);
+  snapped = [null, null];
+  outer: for (const x of cx) for (const y of cy) if (freeAt(d, x ?? at.x, y ?? at.y)) { snapped = [x, y]; break outer; }
+  return { x: snapped[0] ?? at.x, y: snapped[1] ?? at.y };
+}
+// the guide lines: every edge or centre the device shares with another on the axis it sticks on
+function guidesAt(d, at) {
+  const lines = (x, w) => [x, x + w / 2, x + w], same = (a, b) => Math.abs(a - b) < .5, out = [];
+  for (const o of others(d)) {
+    const y0 = Math.min(at.y, o.dy) - 14, y1 = Math.max(at.y, o.dy) + DEV_H + 14;
+    const x0 = Math.min(at.x, o.dx) - 14, x1 = Math.max(at.x + d.W, o.dx + o.W) + 14;
+    if (snapped[0] !== null && same(snapped[0], at.x))
+      for (const v of lines(at.x, d.W)) if (lines(o.dx, o.W).some((t) => same(t, v))) out.push([v, y0, v, y1]);
+    if (snapped[1] !== null && same(snapped[1], at.y) && same(at.y, o.dy))
+      for (const v of lines(at.y, DEV_H)) out.push([x0, v, x1, v]);
+  }
+  return out;
+}
+// a device dragged on the desk: pushed against another it stops there and slides along its edge
+function dragDevice(d, x, y) {
+  const from = { x: d.dx, y: d.dy };
+  let to = snap(d, { x, y });
+  if (freeAt(d, from.x, from.y) && !freeAt(d, to.x, to.y)) {
+    const s = reach(d, from, to), ax = reach(d, s, { x, y: s.y }), ay = reach(d, s, { x: s.x, y });
+    to = Math.abs(ax.x - s.x) >= Math.abs(ay.y - s.y) ? ax : ay;
+  }
+  guides = guidesAt(d, to);
+  d.x = d.tx = d.dx = to.x; d.y = d.ty = d.dy = to.y;
+}
+// devices that came to lie over one another (one grew) move apart: the one further right moves
+// right, or the lower one down, whichever is shorter. They glide there.
+function makeRoom() {
+  for (let it = 0; it < 200; it++) {
+    let moved = false;
+    for (const a of devs) for (const b of devs) {
+      if (a === b || b.dx < a.dx || (b.dx === a.dx && b.dy < a.dy)) continue;
+      if (apart({ x: a.dx, y: a.dy, w: a.W }, { x: b.dx, y: b.dy, w: b.W }, GAP)) continue;
+      const right = a.dx + a.W + GAP - b.dx, down = a.dy + DEV_H + GAP - b.dy;
+      if (b.dy >= a.dy && down < right) b.dy += down; else b.dx += right;
+      if (S.mode === 'desk') { b.tx = b.dx; b.ty = b.dy; }
+      moved = true;
+    }
+    if (!moved) break;
+  }
 }
 
 // ---------------- pointer ----------------
@@ -944,6 +945,62 @@ function hitSwitch(w, d) {
   }
   return null;
 }
+const hitProfile = (w, d) => {
+  const r = d.prof;
+  return r && w.x >= d.x + r.x && w.x <= d.x + r.x + r.w && w.y >= d.y + r.y && w.y <= d.y + r.y + r.h;
+};
+
+// ---------------- card profiles ----------------
+// A new profile changes which inputs and outputs the card has: its jacks follow, and cords to
+// jacks that are gone fall out (PipeWire removes their links with the ports).
+function setProfile(d, i, codec) {
+  i = clamp(i, 0, d.profiles.length - 1);
+  const pr = d.profiles[i];
+  if (i === d.profile && (!codec || codec === d.codec)) return;
+  const changed = i !== d.profile;
+  d.profile = i;
+  if (pr.codecs) d.codec = codec && pr.codecs.includes(codec) ? codec : pr.codecs.includes(d.codec) ? d.codec : pr.codecs[0];
+  if (changed) {
+    setGroups(d);
+    for (const g of d.groups) buildJacks(d, g);
+    for (const k of [...links]) { const [o, n] = k.split('>'); if (!ports.has(o) || !ports.has(n)) links.delete(k); }
+    reconcile(false);
+    sndPlug('in');
+  }
+  renderDevice(d);
+  crowded = true;
+  $('#st2').textContent = `${d.title} · profile: ${pr.name}${pr.codecs ? ' · codec ' + d.codec : ''}`;
+  if (!prof.classList.contains('hide')) openProfiles(d, true);
+}
+// the list drops out of the PROFILE key, amber like the LCDs: the full names, the short ones
+// printed on the face beside them, and the codecs of the current one when it has some
+const prof = $('#profiles');
+function openProfiles(d, keep) {
+  if (!keep && prof.dataset.dev === d.id) { prof.classList.add('hide'); prof.dataset.dev = ''; return; }
+  prof.dataset.dev = d.id;
+  prof.innerHTML = `<h2>${esc(d.title.toUpperCase())} · PROFILE</h2>` + d.profiles.map((p, i) => {
+    const cur = i === d.profile;
+    const row = `<div class="row${cur ? ' cur' : ''}${p.unplugged ? ' off' : ''}" data-i="${i}"><b>${p.short}</b><span>${esc(p.name)}</span>${p.unplugged ? '<i>UNPLUGGED</i>' : ''}</div>`;
+    const codecs = cur && p.codecs ? `<div class="codecs">${p.codecs.map((c) => `<span class="${c === d.codec ? 'cur' : ''}" data-c="${c}">${c}</span>`).join('')}</div>` : '';
+    return row + codecs;
+  }).join('');
+  const r = stage.getBoundingClientRect(), v = S.view;
+  const x = r.left + v.x + (d.x + d.prof.x) * v.s, y = r.top + v.y + (d.y + d.prof.y + d.prof.h) * v.s;
+  prof.style.left = Math.max(8, Math.min(innerWidth - 340, x)) + 'px';
+  prof.style.top = (y + 6) + 'px';
+  prof.classList.remove('hide');
+}
+prof.addEventListener('click', (e) => {
+  const d = devs.find((x) => x.id === prof.dataset.dev);
+  if (!d) return;
+  const c = e.target.closest('[data-c]'), row = e.target.closest('.row');
+  if (c) setProfile(d, d.profile, c.dataset.c);
+  // it stays open after a choice (to try another, or pick a codec): a click anywhere else, the
+  // PROFILE key again, Escape, panning or zooming close it
+  else if (row) setProfile(d, +row.dataset.i);
+});
+addEventListener('pointerdown', (e) => { if (!prof.contains(e.target) && !e.target.closest?.('#stage')) { prof.classList.add('hide'); prof.dataset.dev = ''; } });
+
 const need = (side) => (side === 'b' ? 'in' : 'out');
 const canPlug = (j, side, t) => j.dir === need(side) && j.t === t;
 
@@ -956,11 +1013,11 @@ function startPlugDrag(w, ends, type) {
     e.held = true;
     e.orig = e.jack; e.jack = null;
     it.other = c[it.s === 'a' ? 'b' : 'a'].jack;
-    // lift the plug with its tip pointing away from the cord
-    const P = c.pts, n = P.length, p0 = it.s === 'a' ? P[0] : P[n - 1], p3 = it.s === 'a' ? P[4] : P[n - 5];
-    e.ang = dist(p0, p3) > 2 ? Math.atan2(p0.y - p3.y, p0.x - p3.x) : -Math.PI / 2;
   }
-  const targets = [...jacks.values()].filter((j) => canPlug(j, ends[0].s, type));
+  // the jacks it fits, not those already patched to its other end: they take no second cord
+  const it0 = ends[0], orig = it0.c[it0.s].orig;
+  const targets = [...jacks.values()].filter((j) => canPlug(j, it0.s, type) &&
+    (j === orig || !it0.other || !cableBetween(it0.s === 'a' ? j : it0.other, it0.s === 'b' ? j : it0.other)));
   drag = { type: 'plug', ends, p, v: { x: 0, y: 0 }, hand: w, targets, magnet: null, t: type, moved: 0, start: { ...w } };
   drag.magnet = magnetAt(w);
 }
@@ -973,6 +1030,9 @@ function magnetAt(w) {
 stage.addEventListener('pointerdown', (e) => {
   audio();
   const w = toWorld(e);
+  // a click anywhere but on the key it came from closes the profile list
+  const pd = hitDevice(w);
+  if (prof.dataset.dev && !(pd && pd.id === prof.dataset.dev && hitProfile(w, pd))) { prof.classList.add('hide'); prof.dataset.dev = ''; }
   stage.setPointerCapture(e.pointerId);
   if (e.button === 1 || e.button === 2) { drag = { type: 'pan', sx: w.sx, sy: w.sy, v0: { ...S.view } }; S.vt = null; return; }
   const plug = hitPlug(w);
@@ -1008,6 +1068,7 @@ stage.addEventListener('pointerdown', (e) => {
   if (cab) { cab.c.grab = cab.k; drag = { type: 'rope', c: cab.c, hand: w }; return; }
   const d = hitDevice(w);
   if (d) {
+    if (hitProfile(w, d)) { openProfiles(d); return; }
     const g = hitSwitch(w, d);
     if (g) { toggleSplit(d, g); return; }
     if (S.locked) { drag = { type: 'pan', sx: w.sx, sy: w.sy, v0: { ...S.view } }; S.vt = null; return; }
@@ -1033,8 +1094,8 @@ stage.addEventListener('pointermove', (e) => {
     S.view.x = drag.v0.x + w.sx - drag.sx; S.view.y = drag.v0.y + w.sy - drag.sy;
   } else if (drag.type === 'device') {
     const d = drag.d;
-    d.x = d.tx = w.x - drag.off.x; d.y = d.ty = w.y - drag.off.y;
-    if (S.mode === 'desk') { d.dx = d.x; d.dy = d.y; } else layoutRack(d);
+    if (S.mode === 'desk') dragDevice(d, w.x - drag.off.x, w.y - drag.off.y);
+    else { d.x = d.tx = w.x - drag.off.x; d.y = d.ty = w.y - drag.off.y; layoutRack(d); }
   } else {
     drag.hand = w;
     if (drag.type === 'plug') {
@@ -1050,6 +1111,7 @@ stage.addEventListener('pointerup', () => {
   if (drag.type === 'plug') dropPlugs();
   else if (drag.type === 'rope') drag.c.grab = -1;
   else if (drag.type === 'device' && S.mode === 'rack') { rackOrder = layoutRack(drag.d); layoutRack(); }
+  guides = []; snapped = [null, null];
   drag = null;
   showTip(null);
 });
@@ -1065,7 +1127,7 @@ function dropPlugs() {
     if (e.orig) unlink(it.s === 'a' ? e.orig : it.other, it.s === 'b' ? e.orig : it.other);
     e.held = false;
     if (ok) {
-      e.jack = q; e.ins = drag.moved > 6 ? 1 : 0;
+      e.jack = q;
       if (q !== e.orig) e.slot = ++slotSeq; // it goes into the free jack at the end of the mult
       if (it.s === 'a') c.color = q.dev.color;
       link(c.a.jack, c.b.jack);
@@ -1094,6 +1156,7 @@ stage.addEventListener('dblclick', (e) => {
 stage.addEventListener('contextmenu', (e) => e.preventDefault());
 stage.addEventListener('wheel', (e) => {
   e.preventDefault(); S.vt = null;
+  prof.classList.add('hide'); prof.dataset.dev = '';
   const w = toWorld(e), v = S.view, s = clamp(v.s * Math.exp(-e.deltaY * .0015), .25, 2.5);
   v.x = w.sx - w.x * s; v.y = w.sy - w.y * s; v.s = s;
 }, { passive: false });
@@ -1107,7 +1170,7 @@ function updateHover(w) {
   focus = new Set();
   let cur = 'default', text = '';
   const plug = hitPlug(w), jack = plug ? null : hitJack(w), cab = plug || jack ? null : hitCable(w), dev = plug || jack || cab ? null : hitDevice(w);
-  const sw = dev && hitSwitch(w, dev);
+  const sw = dev && hitSwitch(w, dev), pk = dev && !sw && hitProfile(w, dev);
   if (plug) {
     focus.add(plug.c); cur = 'grab'; text = cordText(plug.c);
   } else if (jack) {
@@ -1118,18 +1181,22 @@ function updateHover(w) {
     focus.add(cab.c); cur = 'grab'; text = cordText(cab.c);
   } else if (sw) {
     cur = 'pointer'; text = sw.split ? 'Join L and R into one stereo jack' : 'Split into separate L and R jacks';
+  } else if (pk) {
+    const pr = dev.profiles[dev.profile];
+    cur = 'pointer'; text = `${dev.title} · profile <b>${esc(pr.name)}</b>${pr.codecs ? ' · codec <b>' + dev.codec + '</b>' : ''}`;
   } else if (dev) {
     for (const c of cables) if (live(c) && (c.a.jack.dev === dev || c.b.jack.dev === dev)) focus.add(c);
     cur = S.locked ? 'default' : 'move';
     text = dev.name;
   }
-  for (const d of devs) d.el.classList.toggle('hl', d === dev && !sw);
+  for (const d of devs) d.el.classList.toggle('hl', d === dev && !sw && !pk);
   stage.style.cursor = cur;
   showTip(text ? w : null, text);
   $('#st2').textContent = plug ? 'drag: unplug or move · double-click: remove'
     : jack ? 'drag: pull out a cord' + (jack.group.jacks.length === 2 && jack.group.stereo ? ' · Shift: L and R together' : '')
     : cab ? 'drag: swing the cord · double-click: pull it out'
     : sw ? 'click: ' + (sw.split ? 'join' : 'split')
+    : pk ? 'click: choose a profile'
     : dev ? `${dev.title} — ${S.locked ? 'locked (L to unlock)' : 'drag to move'}` : 'wheel: zoom · drag: pan';
 }
 function showTip(w, html) {
@@ -1178,34 +1245,34 @@ function sndPlug(kind) {
 }
 
 // ---------------- top panel ----------------
-function drawKnob() {
-  const a = (-135 + 270 * S.sag) * Math.PI / 180;
-  let ticks = '';
-  for (let i = 0; i <= 10; i++) {
-    const t = (-135 + 27 * i) * Math.PI / 180;
-    ticks += `<path d="M${17 * Math.sin(t)},${-17 * Math.cos(t)} L${19.5 * Math.sin(t)},${-19.5 * Math.cos(t)}" stroke="#26272a" stroke-width="1.2"/>`;
-  }
-  $('#sag').innerHTML = `${ticks}
-    <defs><radialGradient id="gKnob" cx=".38" cy=".3" r=".8"><stop offset="0" stop-color="#5a5b5f"/><stop offset="1" stop-color="#151618"/></radialGradient></defs>
+// CABLES: a switch with three click positions, their names printed around it, as in the app:
+// SHOW to the left, FADE straight up, HIDE to the right
+const SWITCH = [-90, 0, 90];
+function drawCablesKnob() {
+  const L = '#26272a', rad = (d) => d * Math.PI / 180;
+  let o = '';
+  [['SHOW', 'end', -19, 0], ['FADE', 'middle', 0, -20.5], ['HIDE', 'start', 19, 0]].forEach(([name, anchor, dx, dy], i) => {
+    const a = rad(SWITCH[i]);
+    o += `<path d="M${15 * Math.sin(a)},${-15 * Math.cos(a)} L${16.8 * Math.sin(a)},${-16.8 * Math.cos(a)}" stroke="${L}" stroke-width="1.4"/>`;
+    o += `<text data-cm="${i}" x="${dx * 1.15}" y="${dy + 2.5}" text-anchor="${anchor}" font-size="7.5" font-weight="bold" letter-spacing=".6" fill="${L}">${name}</text>`;
+  });
+  const a = rad(SWITCH[S.cableMode]);
+  o += `<defs><radialGradient id="gKnob" cx=".38" cy=".3" r=".8"><stop offset="0" stop-color="#5a5b5f"/><stop offset="1" stop-color="#151618"/></radialGradient></defs>
     <circle r="14.5" fill="#111" opacity=".5" cy="1.5"/><circle r="14" fill="url(#gKnob)" stroke="#0c0c0d"/>
     <circle r="10.5" fill="none" stroke="rgba(255,255,255,.08)"/>
-    <path d="M${4 * Math.sin(a)},${-4 * Math.cos(a)} L${12 * Math.sin(a)},${-12 * Math.cos(a)}" stroke="#ffb02e" stroke-width="2.4" stroke-linecap="round"/>`;
+    <path d="M${4 * Math.sin(a)},${-4 * Math.cos(a)} L${12 * Math.sin(a)},${-12 * Math.cos(a)}" stroke="#ffb02e" stroke-width="2.4" stroke-linecap="round"/>
+    <text y="24" text-anchor="middle" font-size="9" font-weight="bold" letter-spacing="1.2" fill="${L}">CABLES</text>`;
+  $('#cablesKnob').innerHTML = o;
 }
-const knob = $('#sag');
-knob.addEventListener('pointerdown', (e) => {
-  knob.setPointerCapture(e.pointerId);
-  const y0 = e.clientY, s0 = S.sag;
-  const mv = (ev) => { S.sag = clamp(s0 + (y0 - ev.clientY) / 150, 0, 1); drawKnob(); };
-  const up = () => { knob.removeEventListener('pointermove', mv); knob.removeEventListener('pointerup', up); };
-  knob.addEventListener('pointermove', mv); knob.addEventListener('pointerup', up);
+function setCableMode(m) { S.cableMode = m; drawCablesKnob(); }
+// a printed name clicks straight to its position; the knob moves on one; the wheel steps
+const cknob = $('#cablesKnob');
+cknob.addEventListener('click', (e) => {
+  const at = e.target.closest?.('[data-cm]');
+  setCableMode(at ? +at.dataset.cm : (S.cableMode + 1) % 3);
 });
-knob.addEventListener('wheel', (e) => { e.preventDefault(); S.sag = clamp(S.sag - e.deltaY * .0008, 0, 1); drawKnob(); }, { passive: false });
-function setCableMode(m) {
-  S.cableMode = m;
-  document.querySelectorAll('#cablesKey .tri i').forEach((i, k) => i.classList.toggle('on', k === m));
-}
+cknob.addEventListener('wheel', (e) => { e.preventDefault(); setCableMode(clamp(S.cableMode + Math.sign(e.deltaY), 0, 2)); }, { passive: false });
 document.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)));
-$('#cablesKey').addEventListener('click', () => setCableMode((S.cableMode + 1) % 3));
 // ---------------- presets: named slots of patch + layout, kept in the config ----------------
 // The app keeps them in ~/.config/patchcord; the mockup stands in with browser storage (or memory).
 const STORE_KEY = 'patchcord.presets';
@@ -1219,7 +1286,7 @@ function preset() {
     splits: Object.fromEntries(devs.map((d) => [d.id, d.groups.map((g, i) => (g.split ? i : -1)).filter((i) => i >= 0)])),
     desk: Object.fromEntries(devs.map((d) => [d.id, { x: Math.round(d.dx), y: Math.round(d.dy) }])),
     rack: rackOrder.map((d) => d.id),
-    mode: S.mode, sag: S.sag,
+    mode: S.mode,
   };
 }
 function saveSlot(name) {
@@ -1251,7 +1318,6 @@ function applyPreset(p) {
     const byId = new Map(devs.map((d) => [d.id, d])), seen = p.rack.map((id) => byId.get(id)).filter(Boolean);
     rackOrder = [...seen, ...devs.filter((d) => !seen.includes(d))];
   }
-  if (typeof p.sag === 'number') { S.sag = clamp(p.sag, 0, 1); drawKnob(); }
   // links to devices that are not here now are skipped, like PipeWire would
   const known = p.links.filter((k) => { const [o, i] = String(k).split('>'); return ports.has(o) && ports.has(i); });
   links.clear(); for (const k of known) links.add(k);
@@ -1301,6 +1367,8 @@ $('#lcd').addEventListener('click', openLoad);
 
 const toggleLock = () => { S.locked = !S.locked; $('#lock').classList.toggle('on', S.locked); };
 $('#lock').addEventListener('click', toggleLock);
+const toggleAlign = () => { S.align = !S.align; $('#align').classList.toggle('on', S.align); };
+$('#align').addEventListener('click', toggleAlign);
 $('#undo').addEventListener('click', undo);
 $('#redo').addEventListener('click', redo);
 $('#arrange').addEventListener('click', arrange);
@@ -1311,12 +1379,14 @@ addEventListener('keydown', (e) => {
   if (e.ctrlKey && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if (e.ctrlKey && e.key.toLowerCase() === 's') { e.preventDefault(); openSave(); return; }
   if (e.ctrlKey && e.key.toLowerCase() === 'o') { e.preventDefault(); openLoad(); return; }
-  if (e.key === 'Escape') { closePop(); return; }
+  if (e.key === 'Escape') { closePop(); prof.classList.add('hide'); prof.dataset.dev = ''; return; }
   if (e.ctrlKey || e.altKey || e.target.closest?.('input')) return;
   const k = e.key.toLowerCase();
   if (k === 'r') setMode(S.mode === 'rack' ? 'desk' : 'rack');
   else if (k === 'c') setCableMode((S.cableMode + 1) % 3);
   else if (k === 'l') toggleLock();
+  else if (k === 'g') toggleAlign();
+  else if (k === 'a') arrange();
   else if (k === 'f' || k === '0') fit(true);
   else if (k === '?') $('#help').classList.toggle('hide');
 });
@@ -1328,15 +1398,19 @@ function resize() {
 }
 addEventListener('resize', resize);
 
+let last = 0;
 function frame(now) {
+  const dt = last ? Math.min((now - last) / 1000, .05) : 1 / 60;
+  last = now;
   if (S.vt) {
-    const v = S.view, t = S.vt;
-    v.x += (t.x - v.x) * .15; v.y += (t.y - v.y) * .15; v.s += (t.s - v.s) * .15;
+    const v = S.view, t = S.vt, k = ease(.15, dt);
+    v.x += (t.x - v.x) * k; v.y += (t.y - v.y) * k; v.s += (t.s - v.s) * k;
     if (Math.abs(t.s - v.s) < .001 && Math.abs(t.x - v.x) < .5) S.vt = null;
   }
   world.style.transform = `translate(${S.view.x}px,${S.view.y}px) scale(${S.view.s})`;
   for (const d of devs) {
-    if (!(drag && drag.type === 'device' && drag.d === d)) { d.x += (d.tx - d.x) * .18; d.y += (d.ty - d.y) * .18; }
+    const k = ease(.18, dt);
+    if (!(drag && drag.type === 'device' && drag.d === d)) { d.x += (d.tx - d.x) * k; d.y += (d.ty - d.y) * k; }
     d.el.style.transform = `translate(${d.x}px,${d.y}px)`;
   }
   if (drag && drag.type === 'plug') {
@@ -1347,7 +1421,8 @@ function frame(now) {
     p.x += v.x * dt; p.y += v.y * dt;
   }
   buildSlots();
-  for (const c of [...cables]) updateCable(c, now);
+  if (crowded && !(drag && drag.type === 'device')) { crowded = false; makeRoom(); }
+  for (const c of [...cables]) updateCable(c, now, dt);
   draw(now);
   updateSignal(now);
   requestAnimationFrame(frame);
@@ -1361,7 +1436,6 @@ buildSlots();
 setMode('desk');
 fit(false);
 resize();
-drawKnob();
 setCableMode(0);
 $('#snd').classList.add('on');
 if (!store.slots.length) saveSlot('HOME STUDIO');

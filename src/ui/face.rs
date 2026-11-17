@@ -25,11 +25,18 @@ const EAR: f64 = 30.0;
 const TITLE: f64 = 14.0;
 /// characters the LCD shows on one line
 pub const LCD_CH: usize = 27;
-/// where the LCD's text area is, relative to the face (without rack ears)
+/// where the LCD's text area is, relative to the face (without rack ears): three lines, a little
+/// shorter on a card, whose PROFILE key sits under it
 pub const LCD_X: f64 = PAD + 1.5;
-pub const LCD_Y: f64 = 67.5;
+pub const LCD_Y: f64 = 54.0;
 pub const LCD_W: f64 = IDW - 3.0;
-pub const LCD_H: f64 = 37.0;
+pub fn lcd_h(card: bool) -> f64 {
+    if card { 46.0 } else { 57.0 }
+}
+/// a card's PROFILE key, under its LCD (centred, clear of the corner screws)
+const KEY_W: f64 = 92.0;
+const KEY_Y: f64 = 107.0;
+const KEY_H: f64 = 14.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum JackKind {
@@ -98,6 +105,8 @@ pub struct Geometry {
     pub meter: f64,
     /// the free space between inputs and outputs in a rack, for the grille
     pub grille: Option<(f64, f64)>,
+    /// a card's PROFILE key (x, y, w, h)
+    pub profile: Option<[f64; 4]>,
 }
 
 struct Fin {
@@ -163,7 +172,8 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
     let natural = natural_w(dev, jd, counts, rack);
     let w = rack_w.map_or(natural, |r| r.max(natural));
     let mx = w - ear - PAD - 22.0;
-    let mut geo = Geometry { w, jacks: vec![(0.0, 0.0); jd.len()], switches: Vec::new(), left: ear, groups: vec![(0.0, 0.0); dev.groups.len()], meter: mx, grille: None };
+    let profile = dev.card.is_some().then(|| [ear + PAD + (IDW - KEY_W) / 2.0, KEY_Y, KEY_W, KEY_H]);
+    let mut geo = Geometry { w, jacks: vec![(0.0, 0.0); jd.len()], switches: Vec::new(), left: ear, groups: vec![(0.0, 0.0); dev.groups.len()], meter: mx, grille: None, profile };
     let place = |gi: usize, x: f64, geo: &mut Geometry| -> f64 {
         let gw = group_w(dev, gi, jd, counts);
         let n: usize = jd.iter().enumerate().filter(|(_, j)| j.group == gi).map(|(i, _)| slots(counts[i])).sum();
@@ -202,48 +212,18 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
     geo
 }
 
-/// The name in capitals at one size: one line, else two, else two ending in "…". Lines break
-/// after a space, "-", "_" or ":", and inside a word only when nothing else fits.
-fn fit_title(name: &str, max_w: f64) -> Vec<String> {
-    let t = name.to_uppercase();
+/// The name in capitals at one size, on one line, ending in "…" when it doesn't fit (the LCD
+/// scrolls the full name).
+fn fit_title(name: &str, max_w: f64) -> String {
+    let mut t = name.to_uppercase();
     let w = |s: &str| text::width(text::BLACK, s, TITLE, 0.0);
     if w(&t) <= max_w {
-        return vec![t];
+        return t;
     }
-    let mut parts: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    for c in t.chars() {
-        cur.push(c);
-        if matches!(c, ' ' | '-' | '_' | ':') {
-            parts.push(std::mem::take(&mut cur));
-        }
+    while !t.is_empty() && w(&format!("{t}…")) > max_w {
+        t.pop();
     }
-    if !cur.is_empty() {
-        parts.push(cur);
-    }
-    let mut l1 = String::new();
-    let mut i = 0;
-    while i < parts.len() && w(&format!("{l1}{}", parts[i])) <= max_w {
-        l1.push_str(&parts[i]);
-        i += 1;
-    }
-    let mut rest: String = parts[i..].concat();
-    if l1.is_empty() {
-        let chars: Vec<char> = t.chars().collect();
-        let mut k = 0;
-        while k < chars.len() && w(&chars[..=k].iter().collect::<String>()) <= max_w {
-            k += 1;
-        }
-        l1 = chars[..k].iter().collect();
-        rest = chars[k..].iter().collect();
-    }
-    if w(&rest) > max_w {
-        while !rest.is_empty() && w(&format!("{rest}…")) > max_w {
-            rest.pop();
-        }
-        rest = format!("{}…", rest.trim_end());
-    }
-    vec![l1.trim_end().to_owned(), rest]
+    format!("{}…", t.trim_end())
 }
 
 fn esc(t: &str) -> String {
@@ -372,12 +352,17 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
     }
 
     let r = if rack { 3.0 } else { 12.0 };
-    let lines = fit_title(&dev.name, IDW - 14.0);
-    let title = if lines.len() == 1 {
-        format!(r#"<text x="{x0}" y="40" font-size="{TITLE}">{}</text>"#, esc(&lines[0]))
-    } else {
-        format!(r#"<text x="{x0}" y="{}" font-size="{TITLE}">{}</text><text x="{x0}" y="45" font-size="{TITLE}">{}</text>"#, 44.0 - TITLE - 2.0, esc(&lines[0]), esc(&lines[1]))
-    };
+    let title = format!(r#"<text x="{x0}" y="33" font-size="{TITLE}">{}</text>"#, esc(&fit_title(&dev.name, IDW - 4.0)));
+    // a card's PROFILE key: a dark key with a small arrow, like the SPLIT switches
+    let key = geo.profile.map_or(String::new(), |[kx, ky, kw, kh]| {
+        let tx = kx + kw / 2.0 - 6.0;
+        format!(
+            r##"<rect x="{kx}" y="{ky}" width="{kw}" height="{kh}" rx="2.5" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/>{}<path d="M{},{} l3.2,0 l-1.6,2.2 z" fill="#e6e7e8"/>"##,
+            SWITCH.text(tx, ky + 9.8, "#e6e7e8", "middle", "PROFILE"),
+            tx + 24.0,
+            ky + 6.0
+        )
+    });
     let screws: String = if rack {
         String::new()
     } else {
@@ -435,10 +420,11 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
 {screws}
 <g font-weight="900" fill="{print}">{title}</g>
 {model}
-<circle cx="{led}" cy="54" r="5" fill="{glow}" opacity=".35"/><circle cx="{led}" cy="54" r="3.2" fill="{lamp}" stroke="rgba(0,0,0,.6)" stroke-width=".8"/>
-<rect x="{lx}" y="64.5" width="{lw}" height="43" rx="4" fill="#111214"/>
-<rect x="{ix}" y="67.5" width="{iw}" height="37" rx="2" fill="url(#gLcd)"/>
-<rect x="{ix}" y="67.5" width="{iw}" height="37" rx="2" fill="none" stroke="rgba(110,45,0,.35)" stroke-width="3"/>
+<circle cx="{led}" cy="43" r="5" fill="{glow}" opacity=".35"/><circle cx="{led}" cy="43" r="3.2" fill="{lamp}" stroke="rgba(0,0,0,.6)" stroke-width=".8"/>
+<rect x="{lx}" y="{fy}" width="{lw}" height="{fh}" rx="4" fill="#111214"/>
+<rect x="{ix}" y="{LCD_Y}" width="{iw}" height="{lh}" rx="2" fill="url(#gLcd)"/>
+<rect x="{ix}" y="{LCD_Y}" width="{iw}" height="{lh}" rx="2" fill="none" stroke="rgba(110,45,0,.35)" stroke-width="3"/>
+{key}
 {body}{grille}{leds}
 {sig}
 </g>
@@ -450,7 +436,10 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
         c = h - 1.5,
         d = w - 2.0 * ear,
         print = f.print,
-        model = SMALL.text(x0, 57.0, f.sub, "start", &dev.model),
+        model = SMALL.text(x0, 46.0, f.sub, "start", &dev.model),
+        lh = lcd_h(dev.card.is_some()),
+        fy = LCD_Y - 3.0,
+        fh = lcd_h(dev.card.is_some()) + 6.0,
         led = x0 + IDW - 5.0,
         lx = x0 - 1.5,
         lw = IDW + 3.0,
@@ -469,11 +458,16 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
 }
 
 /// The LCD's two lines of text, as a document the size of the LCD's text area.
-pub fn lcd(line1: &str, line2: &str) -> String {
+pub fn lcd(lines: [&str; 3], card: bool) -> String {
+    let h = lcd_h(card);
+    let (y1, step) = if card { (13.0, 13.5) } else { (16.0, 16.0) };
     format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{LCD_W}" height="{LCD_H}" viewBox="0 0 {LCD_W} {LCD_H}" font-family="Noto Sans Mono" fill="#3a2408" xml:space="preserve"><text x="7.5" y="15.5" font-size="10.5" font-weight="bold">{}</text><text x="7.5" y="30.5" font-size="10.5">{}</text></svg>"##,
-        esc(line1),
-        esc(line2)
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{LCD_W}" height="{h}" viewBox="0 0 {LCD_W} {h}" font-family="Noto Sans Mono" fill="#3a2408" xml:space="preserve"><text x="7.5" y="{y1}" font-size="10.5" font-weight="bold">{}</text><text x="7.5" y="{}" font-size="10.5">{}</text><text x="7.5" y="{}" font-size="10.5">{}</text></svg>"##,
+        esc(lines[0]),
+        y1 + step,
+        esc(lines[1]),
+        y1 + 2.0 * step,
+        esc(lines[2])
     )
 }
 

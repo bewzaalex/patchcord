@@ -147,12 +147,13 @@ fn status(scene: &Scene, width: f64, dpi: f64) -> Layer {
 }
 
 /// `patchcord --render out.png [rack] [demo] [split] [hover | held] [save | presets]
-/// [only=NAME,NAME…] [size=WxH]`: draws the live graph to a PNG without opening a window, after
+/// [profile[=NAME]] [only=NAME,NAME…] [size=WxH]`: draws the live graph to a PNG without opening a window, after
 /// letting the cords settle (PATCHCORD_SCALE sets the scale, 1.5 by default). "rack" puts the
 /// devices in the rack; "split" shows every stereo jack as L and R; "demo" adds a few cords to the
 /// picture (not to PipeWire); "hover" rests the pointer on the jack the first cord comes from;
 /// "held" pulls a cord out of the first output and holds its end in the air; "save" or "presets"
-/// opens that drop-down. "only" shows just the devices whose names start with those, arranged by
+/// opens that drop-down; "profile" opens a card's profile list (the named one's, else a
+/// Bluetooth card's). "only" shows just the devices whose names start with those, arranged by
 /// signal flow; "size" makes the picture W×H pixels, with the devices fitted into it.
 pub fn render(path: &str, opts: &[String]) -> Result<(), String> {
     let menu = opts.iter().map(String::as_str).find(|o| matches!(*o, "save" | "presets"));
@@ -251,6 +252,17 @@ pub fn render(path: &str, opts: &[String]) -> Result<(), String> {
     };
     let status = status(&scene, w as f64 / s, s);
     let mut out = compose(&scene, view, (w, h), s, held.map(|(seq, _)| (seq, None)), &mut panel, &status);
+    // a card's profile list, open under its PROFILE key (a Bluetooth one first: it has codecs)
+    if let Some(name) = opt("profile").or(opts.iter().any(|o| o == "profile").then_some(""))
+        && let Some(d) = scene.devs.iter().filter(|d| d.dev.card.is_some() && d.dev.name.starts_with(name)).max_by_key(|d| d.dev.model.contains("BLUETOOTH"))
+        && let (Some(card), Some([kx, ky, _, kh])) = (&d.dev.card, d.geo.profile)
+    {
+        let (l, _) = panel::profile_menu(&d.dev.name, card, s);
+        if let Some(pm) = &l.pm {
+            let (px, py) = ((d.x + kx) * view.s + view.x, (d.y + ky + kh) * view.s + view.y + 4.0 * s);
+            out.draw_pixmap(px.round() as i32, py.round() as i32, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+        }
+    }
     if let Some(k) = &hover
         && let Some((x, y)) = scene.slot_pos(k, 0)
     {

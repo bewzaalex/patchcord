@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::{Duration, Instant};
 
-use crate::pw::{Event, Kind, METER_PREFIX, Props};
+use crate::pw::{Avail, Event, Kind, METER_PREFIX, Profile, Props};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Dir {
@@ -72,6 +72,83 @@ pub struct Device {
     pub groups: Vec<Group>,
     /// "running", "idle" or "suspended": the busiest of its nodes
     pub state: &'static str,
+    /// a sound card's profiles, when it has some
+    pub card: Option<Card>,
+}
+
+/// A sound card: its PipeWire device and its profiles (see `pw::Profile`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Card {
+    pub id: u32,
+    pub profiles: Vec<Profile>,
+    pub current: Option<u32>,
+}
+
+/// Profiles that differ only in their codec, together: one row of the PROFILE list, its codecs as
+/// choices. Off, and the profiles of a sound card, are families of one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Family {
+    pub name: String,
+    /// (profile index, codec)
+    pub members: Vec<(u32, Option<String>)>,
+    /// nothing is plugged in for it (an HDMI output without a screen with speakers)
+    pub unplugged: bool,
+}
+
+impl Card {
+    pub fn profile(&self) -> Option<&Profile> {
+        self.profiles.iter().find(|p| Some(p.index) == self.current)
+    }
+
+    /// A profile's family and codec: "High Fidelity Playback (A2DP Sink, codec AAC)" is
+    /// "High Fidelity Playback (A2DP Sink)" with AAC.
+    pub fn split(description: &str) -> (String, Option<String>) {
+        if let Some(i) = description.rfind(", codec ")
+            && description.ends_with(')')
+        {
+            return (format!("{})", &description[..i]), Some(description[i + 8..description.len() - 1].to_owned()));
+        }
+        (description.to_owned(), None)
+    }
+
+    /// The profiles by family, in PipeWire's order.
+    pub fn families(&self) -> Vec<Family> {
+        let mut out: Vec<Family> = Vec::new();
+        for p in &self.profiles {
+            let (name, codec) = Card::split(&p.description);
+            let gone = p.available == Avail::No;
+            match out.iter_mut().find(|f| f.name == name) {
+                Some(f) => {
+                    f.members.push((p.index, codec));
+                    f.unplugged &= gone;
+                }
+                None => out.push(Family { name, members: vec![(p.index, codec)], unplugged: gone }),
+            }
+        }
+        out
+    }
+
+    /// The profile a family's row stands for: the one with the codec in use now, if it has it,
+    /// else the one PipeWire ranks first.
+    pub fn pick(&self, family: &Family) -> Option<u32> {
+        let codec = self.profile().and_then(|p| Card::split(&p.description).1);
+        let rank = |i: &u32| self.profiles.iter().find(|p| p.index == *i).map_or(i32::MIN, |p| p.priority);
+        family.members.iter().find(|(_, c)| c.is_some() && *c == codec).map(|(i, _)| *i).or_else(|| family.members.iter().map(|(i, _)| *i).max_by_key(rank))
+    }
+
+    /// What the LCD says: the profile in use, its codec, and whether anything is plugged in.
+    pub fn summary(&self) -> String {
+        let Some(p) = self.profile() else { return "PROFILE ?".into() };
+        let (name, codec) = Card::split(&p.description);
+        let mut s = name;
+        if let Some(c) = codec {
+            s = format!("{s} · {c}");
+        }
+        if p.available == Avail::No {
+            s.push_str(" · UNPLUGGED");
+        }
+        s
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -89,6 +166,8 @@ pub struct Graph {
     state: HashMap<u32, &'static str>,
     /// when each node appeared: streams show only once they have lived a little
     born: HashMap<u32, Instant>,
+    /// each card's profiles and the one it is in, by device
+    profiles: HashMap<u32, (Vec<Profile>, Option<u32>)>,
     pub synced: bool,
 }
 
@@ -121,8 +200,13 @@ impl Graph {
                 self.objects.insert(*id, (*kind, props.clone()));
                 true
             }
+            Event::Profiles { id, list, current } => {
+                let new = (list.clone(), *current);
+                self.profiles.insert(*id, new.clone()) != Some(new)
+            }
             Event::Removed(id) => {
                 self.born.remove(id);
+                self.profiles.remove(id);
                 self.info.remove(id);
                 self.state.remove(id);
                 self.objects.remove(id).is_some()
@@ -226,6 +310,14 @@ impl Graph {
             };
             boxes.entry(key).or_default().push(node);
         }
+        // sound cards show even when their profile has no inputs or outputs (Off, or an HDMI
+        // output nobody picked), so they can be switched on
+        let card_of = |key: &str| self.of(Kind::Device).find(|(_, p)| key.strip_prefix("device:") == p.get("device.name").map(|s| s.as_str())).map(|(id, _)| id);
+        for (id, p) in self.of(Kind::Device) {
+            if self.profiles.get(&id).is_some_and(|(l, _)| !l.is_empty()) && p.get("media.class").is_some_and(|c| c == "Audio/Device") {
+                boxes.entry(format!("device:{}", p.get("device.name").map_or("?", |s| s))).or_default();
+            }
+        }
 
         let mut out: Vec<Device> = boxes
             .into_iter()
@@ -236,8 +328,11 @@ impl Graph {
                     (if c.ends_with("Sink") { 0 } else if c.ends_with("Source") { 1 } else { 2 }, *n)
                 };
                 nodes.sort_by_key(rank);
-                let first = self.props(nodes[0]).expect("node");
-                let dev = first.get("device.id").and_then(|d| d.parse::<u32>().ok()).and_then(|d| self.props(d));
+                let card_id = card_of(&key);
+                let none = Props::new();
+                // a card without nodes (its profile has none) speaks for itself
+                let first = nodes.first().and_then(|n| self.props(*n)).unwrap_or(&none);
+                let dev = first.get("device.id").and_then(|d| d.parse::<u32>().ok()).or(card_id).and_then(|d| self.props(d));
 
                 // apps: the program's name first; a stream's own names are often generic ("audio stream")
                 let app = first.get("media.class").is_some_and(|c| c.starts_with("Stream/"));
@@ -273,6 +368,10 @@ impl Graph {
                     name,
                     groups,
                     state,
+                    card: card_id.and_then(|id| {
+                        let (profiles, current) = self.profiles.get(&id)?;
+                        (!profiles.is_empty()).then(|| Card { id, profiles: profiles.clone(), current: *current })
+                    }),
                 }
             })
             .collect();
@@ -419,5 +518,51 @@ fn finish(hardware: bool, class: &str) -> Finish {
         Finish::Cream
     } else {
         Finish::Black
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn card(profiles: &[(u32, &str, Avail, i32)], current: u32) -> Card {
+        Card {
+            id: 1,
+            profiles: profiles.iter().map(|&(index, d, available, priority)| Profile { index, name: String::new(), description: d.into(), available, priority }).collect(),
+            current: Some(current),
+        }
+    }
+
+    /// Bluetooth profiles that differ only in their codec are one family with codecs, picked by
+    /// codec; the LCD says the family and the codec.
+    #[test]
+    fn codecs_are_choices_of_one_profile() {
+        let c = card(
+            &[
+                (0, "Off", Avail::Yes, 0),
+                (1, "High Fidelity Playback (A2DP Sink, codec SBC)", Avail::Yes, 132),
+                (2, "High Fidelity Playback (A2DP Sink, codec AAC)", Avail::Yes, 133),
+                (3, "Headset Head Unit (HSP/HFP, codec CVSD)", Avail::Yes, 5),
+                (4, "Headset Head Unit (HSP/HFP, codec mSBC)", Avail::Yes, 6),
+            ],
+            1,
+        );
+        let f = c.families();
+        assert_eq!(f.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["Off", "High Fidelity Playback (A2DP Sink)", "Headset Head Unit (HSP/HFP)"]);
+        assert_eq!(f[1].members, [(1, Some("SBC".into())), (2, Some("AAC".into()))]);
+        assert_eq!(c.summary(), "High Fidelity Playback (A2DP Sink) · SBC");
+        // the row in use keeps its codec; another row takes its best one
+        assert_eq!(c.pick(&f[1]), Some(1));
+        assert_eq!(c.pick(&f[2]), Some(4));
+        assert_eq!(c.pick(&f[0]), Some(0));
+    }
+
+    /// A profile with nothing plugged in is marked so, in the list and on the LCD.
+    #[test]
+    fn an_unplugged_profile_says_so() {
+        let c = card(&[(0, "Off", Avail::Yes, 0), (1, "Digital Stereo (HDMI) Output", Avail::No, 5900)], 1);
+        let f = c.families();
+        assert!(!f[0].unplugged && f[1].unplugged);
+        assert_eq!(c.summary(), "Digital Stereo (HDMI) Output · UNPLUGGED");
     }
 }
