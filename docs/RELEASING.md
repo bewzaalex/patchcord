@@ -38,6 +38,18 @@ newer C library and PipeWire. Their contents are set in `Cargo.toml` under
    for f in docs/screenshots/*.png; do magick $f -strip -define png:compression-level=9 $f; done
    ```
 
+   The README's animation is a short scripted session, played on your live graph (nothing is
+   linked in PipeWire): an app patched into speakers or headphones it isn't patched to yet, MIDI
+   from Midi-Bridge to BLE MIDI, a device dragged into line, the rack and back. So start an app
+   playing first; a step whose devices aren't there is skipped:
+
+   ```sh
+   cfg=$(mktemp -d) frames=$(mktemp -d)
+   XDG_CONFIG_HOME=$cfg cargo run --release -- --record $frames
+   ffmpeg -framerate 25 -i $frames/f%04d.png -vf "fps=20,scale=900:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=192:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle" -y docs/screenshots/demo.gif
+   rm -rf $cfg $frames
+   ```
+
 4. **Crates**, if `Cargo.lock` changed: `python3 packaging/flatpak/cargo-sources.py`.
 5. **Check** locally: `python3 .github/scripts/release.py version` must print the new version.
 6. **Commit, tag and push**:

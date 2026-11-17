@@ -1179,12 +1179,26 @@ impl Scene {
     }
 
     /// Jacks the plug in the hand fits: inputs for the input end, outputs for the output end,
-    /// of the same kind of signal as the jack at the cord's other end.
+    /// of the same kind of signal as the jack at the cord's other end, and not patched to that
+    /// jack already (it takes no second cord; see `drop_held`). The jack it was pulled out of
+    /// always fits.
     pub fn targets(&self, seq: u64) -> Vec<String> {
         let Some(c) = self.cord_index(seq).map(|i| &self.cords[i]) else { return Vec::new() };
-        let (dir, other) = if c.b.held { (Dir::In, c.a.jack.as_ref()) } else { (Dir::Out, c.b.jack.as_ref()) };
+        let (dir, other, orig) = if c.b.held { (Dir::In, c.a.jack.as_ref(), c.b.orig.as_ref()) } else { (Dir::Out, c.b.jack.as_ref(), c.a.orig.as_ref()) };
         let media = other.and_then(|k| self.jack(k)).map_or(Media::Audio, |(_, j)| j.media);
-        self.jacks.keys().filter(|k| self.jack(k).is_some_and(|(_, j)| j.dir == dir && j.media == media)).cloned().collect()
+        let free = |k: &String| {
+            Some(k) == orig
+                || other.is_none_or(|o| {
+                    let (x, y) = if dir == Dir::In { (o, k) } else { (k, o) };
+                    !self.patched(x, y)
+                })
+        };
+        self.jacks.keys().filter(|k| self.jack(k).is_some_and(|(_, j)| j.dir == dir && j.media == media) && free(k)).cloned().collect()
+    }
+
+    /// Whether a cord is plugged in from jack `out` to jack `inp`.
+    fn patched(&self, out: &str, inp: &str) -> bool {
+        self.cords.iter().any(|c| c.live() && c.a.jack.as_deref() == Some(out) && c.b.jack.as_deref() == Some(inp))
     }
 
     /// Port pairs one cord between two jacks stands for: L→L and R→R between stereo jacks,
@@ -1306,7 +1320,7 @@ impl Scene {
             Some(t) == orig.as_ref()
                 || other.as_ref().is_none_or(|o| {
                     let (x, y) = pair(t, o);
-                    !self.cords.iter().any(|c| c.live() && c.a.jack.as_deref() == Some(x.as_str()) && c.b.jack.as_deref() == Some(y.as_str()))
+                    !self.patched(&x, &y)
                 })
         });
         let (mut add, mut del) = (Vec::new(), Vec::new());
@@ -1685,6 +1699,33 @@ mod tests {
             assert_eq!((s.devs[1].dx, s.devs[1].dy), (150.0, below), "held at (157, {y})");
             assert!(s.guides.iter().any(|g| g[0] == 300.0 && g[2] == 300.0), "no guide along the centres: {:?}", s.guides);
         }
+    }
+
+    /// A new cord from a jack doesn't offer the jacks that jack is already patched to: they take
+    /// no second cord.
+    #[test]
+    fn a_new_cord_is_not_offered_jacks_it_is_patched_to() {
+        use crate::graph::{Group, Port};
+        let group = |label: &str, dir: Dir, ids: [u32; 2]| Group {
+            label: label.into(),
+            dir,
+            ports: ids.iter().zip(["FL", "FR"]).map(|(&id, ch)| Port { id, node: id, name: format!("p{id}"), label: ch.into(), dir, media: Media::Audio, channel: ch.into() }).collect(),
+            stereo: true,
+            meter: false,
+        };
+        let mut s = desk(&[(0.0, 0.0, 300.0), (400.0, 0.0, 300.0), (400.0, 200.0, 300.0)]);
+        for (d, g) in s.devs.iter_mut().zip([group("OUTPUT", Dir::Out, [1, 2]), group("PLAYBACK", Dir::In, [3, 4]), group("PLAYBACK", Dir::In, [5, 6])]) {
+            d.dev.groups = vec![g];
+            d.split = vec![false];
+        }
+        s.index();
+        let key = |s: &Scene, di: usize| s.devs[di].defs[0].key.clone();
+        let (out, b, c) = (key(&s, 0), key(&s, 1), key(&s, 2));
+        s.show_cord(&out, &b);
+        let seq = s.pull_new(&out).unwrap();
+        let t = s.targets(seq);
+        assert!(t.contains(&c), "the free input is offered: {t:?}");
+        assert!(!t.contains(&b), "the input it is already patched to is offered: {t:?}");
     }
 
     /// Devices that come to lie over one another (one grew) move apart.

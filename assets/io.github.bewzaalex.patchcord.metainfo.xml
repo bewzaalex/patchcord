@@ -32,11 +32,11 @@
   <screenshots>
     <screenshot type="default">
       <caption>Devices on the desk, patched with cords</caption>
-      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.2.0/docs/screenshots/desk.png</image>
+      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.2.1/docs/screenshots/desk.png</image>
     </screenshot>
     <screenshot>
       <caption>The same devices in a rack</caption>
-      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.2.0/docs/screenshots/rack.png</image>
+      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.2.1/docs/screenshots/rack.png</image>
     </screenshot>
   </screenshots>
   <description>
@@ -53,6 +53,16 @@
     </ul>
   </description>
   <releases>
+    <release version="0.2.1" date="2026-11-17">
+      <url type="details">https://github.com/bewzaalex/patchcord/releases/tag/v0.2.1</url>
+      <description>
+        <p>A fix for patching, and an animation in the README.</p>
+        <ul>
+          <li>While a cord's end is in the hand, a jack already patched to its other end no longer glows as a place it fits: it takes no second cord, and the cord used to fall out there</li>
+          <li>The README shows Patchcord in use: cords patched, a device dragged into line, the rack and back</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-11-17">
       <url type="details">https://github.com/bewzaalex/patchcord/releases/tag/v0.2.0</url>
       <description>

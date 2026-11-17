@@ -13,7 +13,7 @@ hangs, swings and settles like a real one.
 ![Linux](https://img.shields.io/badge/Linux-Wayland_%7C_X11-fcc624?logo=linux&logoColor=black)
 ![PipeWire](https://img.shields.io/badge/PipeWire-1.0+-4a86c5)
 
-<img src="docs/screenshots/desk.png" width="720" alt="Devices on the desk, connected with patch cords">
+<img src="docs/screenshots/demo.gif" width="900" alt="Patching cords between devices on the desk, dragging a device into line, and switching to the rack and back">
 
 </div>
 
@@ -123,7 +123,7 @@ To uninstall, delete those three files.
 
 | | |
 | --- | --- |
-| Drag from a jack's free slot | pull out a cord; drop its end on a jack to link (the jacks it fits glow, the others fade) |
+| Drag from a jack's free slot | pull out a cord; drop its end on a jack to link (the jacks it fits glow, the others fade; a jack already patched to it takes no second cord) |
 | Drag a cord's end | move it to another jack, or drop it in empty space to unlink |
 | Double-click a cord or its end | pull it out (unlink) |
 | SPLIT / JOIN | one stereo jack, or separate L and R jacks, L above R; the stereo jacks its cords lead to follow, and theirs in turn, and so does a new stream that starts playing into a split pair |
@@ -146,8 +146,9 @@ layout, by PipeWire's node and port names). Loading a preset takes away the link
 devices it knows that it doesn't have; devices started later keep theirs. The Flatpak keeps them
 in `~/.var/app/io.github.bewzaalex.patchcord/config/patchcord` instead.
 
-`patchcord --render out.png [rack] [demo] [hover | held] [save | presets]` draws the current graph to a PNG without
-opening a window, optionally in the rack, with a few cords added to the picture only (`demo`, for screenshots), with the pointer on a jack, with a cord's end in the hand or with a preset drop-down open (`PATCHCORD_SCALE` sets the scale, 1.5 by default). `PATCHCORD_DEBUG=1` prints which GPU it uses.
+`patchcord --render out.png [rack] [demo] [split] [hover | held] [save | presets]` draws the current graph to a PNG without
+opening a window, optionally in the rack, with a few cords added to the picture only (`demo`, for screenshots), with every stereo jack split, with the pointer on a jack, with a cord's end in the hand or with a preset drop-down open (`PATCHCORD_SCALE` sets the scale, 1.5 by default).
+`patchcord --record DIR` plays a short scripted session on the current graph (cords patched, a device dragged into line, the rack and back) and saves it as frames for the README's animation; neither changes anything in PipeWire. `PATCHCORD_DEBUG=1` prints which GPU it uses.
 
 ## Development
 

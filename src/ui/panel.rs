@@ -129,6 +129,11 @@ impl Panel {
         Panel { state, rects: Vec::new(), layer: None, menu: None, menu_rects: Vec::new(), menu_layer: None }
     }
 
+    /// Where a key is (x, y, w, h), once the panel has been drawn.
+    pub fn rect(&self, key: Key) -> Option<[f64; 4]> {
+        self.rects.iter().find(|(k, _)| *k == key).map(|(_, r)| *r)
+    }
+
     /// The key under a point in logical pixels.
     pub fn hit(&self, x: f64, y: f64) -> Option<Key> {
         self.rects.iter().find(|(_, [rx, ry, rw, rh])| x >= *rx && x <= rx + rw && y >= *ry && y <= ry + rh).map(|(k, _)| *k)
