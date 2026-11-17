@@ -1147,6 +1147,15 @@ impl Scene {
         self.slots();
     }
 
+    /// Shows only the devices whose names start with one of `names`, and the cords between them
+    /// (for pictures).
+    pub fn keep_only(&mut self, names: &[&str]) {
+        self.devs.retain(|d| names.iter().any(|n| d.dev.name.starts_with(n)));
+        self.index();
+        self.cords.retain(|c| [&c.a, &c.b].iter().all(|e| e.jack.as_ref().is_some_and(|k| self.jacks.contains_key(k))));
+        self.slots();
+    }
+
     /// The first output jack, for snapshots that show a plug in the hand.
     pub fn first_output(&self) -> Option<String> {
         self.devs.iter().flat_map(|d| d.defs.iter()).find(|j| j.dir == Dir::Out).map(|j| j.key.clone())

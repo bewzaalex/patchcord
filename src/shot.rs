@@ -12,14 +12,14 @@ use resvg::usvg;
 
 use crate::config;
 use crate::graph::Dir;
-use crate::pw::Connection;
+use crate::pw::{Cmd, Connection, Event};
 use crate::ui::cord::Held;
 use crate::ui::panel::{self, Key, Panel};
 use crate::ui::scene::{Hover, Layer, Scene, View, rasterize};
 use crate::ui::{self, ease};
 
-/// A scene on the live graph, with all devices shown.
-fn live_scene() -> Result<(Scene, Duration), String> {
+/// A scene on the live graph, with all devices shown, and the connection to PipeWire it came from.
+fn live_scene() -> Result<(Scene, Connection, Duration), String> {
     let conn = Connection::start(Arc::new(|| {}));
     let mut scene = Scene::new();
     let started = Instant::now();
@@ -28,7 +28,39 @@ fn live_scene() -> Result<(Scene, Duration), String> {
         scene.apply([ev]);
     }
     scene.apply(conn.events.try_iter().collect::<Vec<_>>());
-    Ok((scene, started.elapsed()))
+    Ok((scene, conn, started.elapsed()))
+}
+
+/// Starts the meters the scene asked for. Only those: links the scene wants (cords plugged in for
+/// the picture) never reach PipeWire.
+fn start_meters(scene: &mut Scene, conn: &Connection) {
+    for cmd in scene.outbox.drain(..) {
+        if matches!(cmd, Cmd::Meter { .. } | Cmd::Unmeter(_)) {
+            conn.send(cmd);
+        }
+    }
+}
+
+/// The signal levels measured since the last look, into the scene. Nothing else: the graph stays
+/// as it was, so the cords in the picture stay too.
+fn levels(scene: &mut Scene, conn: &Connection) {
+    let levels: Vec<Event> = conn.events.try_iter().filter(|e| matches!(e, Event::Levels(_))).collect();
+    scene.apply(levels);
+}
+
+/// Lets the cords settle for `secs` (as many frames at 60 a second), the meters measuring in
+/// real time meanwhile.
+fn settle(scene: &mut Scene, conn: &Connection, secs: f64, held: Option<(u64, Held)>) {
+    let start = Instant::now();
+    for i in 0..(secs * 60.0) as usize {
+        levels(scene, conn);
+        scene.tick(1.0 / 60.0, None, held, false);
+        // the meters need the time to pass
+        let due = Duration::from_secs_f64(i as f64 / 60.0);
+        if let Some(wait) = due.checked_sub(start.elapsed()) {
+            std::thread::sleep(wait);
+        }
+    }
 }
 
 /// The key of a jack: on the first device whose name starts with `dev`, in its group `group`.
@@ -114,15 +146,22 @@ fn status(scene: &Scene, width: f64, dpi: f64) -> Layer {
     panel::status(width, &format!("PipeWire {} · {} devices", scene.version.as_deref().unwrap_or("?"), scene.devs.len()), "", dpi)
 }
 
-/// `patchcord --render out.png [rack] [demo] [split] [hover | held] [save | presets]`: draws the
-/// live graph to a PNG without opening a window, after letting the cords settle (PATCHCORD_SCALE
-/// sets the scale, 1.5 by default). "rack" puts the devices in the rack; "split" shows every
-/// stereo jack as L and R; "demo" adds a few cords to the picture (not to PipeWire); "hover"
-/// rests the pointer on the jack the first cord comes from; "held" pulls a cord out of the first
-/// output and holds its end in the air; "save" or "presets" opens that drop-down.
+/// `patchcord --render out.png [rack] [demo] [split] [hover | held] [save | presets]
+/// [only=NAME,NAME…] [size=WxH]`: draws the live graph to a PNG without opening a window, after
+/// letting the cords settle (PATCHCORD_SCALE sets the scale, 1.5 by default). "rack" puts the
+/// devices in the rack; "split" shows every stereo jack as L and R; "demo" adds a few cords to the
+/// picture (not to PipeWire); "hover" rests the pointer on the jack the first cord comes from;
+/// "held" pulls a cord out of the first output and holds its end in the air; "save" or "presets"
+/// opens that drop-down. "only" shows just the devices whose names start with those, arranged by
+/// signal flow; "size" makes the picture W×H pixels, with the devices fitted into it.
 pub fn render(path: &str, opts: &[String]) -> Result<(), String> {
     let menu = opts.iter().map(String::as_str).find(|o| matches!(*o, "save" | "presets"));
-    let (mut scene, synced) = live_scene()?;
+    let opt = |name: &str| opts.iter().find_map(|o| o.strip_prefix(name)?.strip_prefix('='));
+    let (mut scene, conn, synced) = live_scene()?;
+    start_meters(&mut scene, &conn);
+    if let Some(names) = opt("only") {
+        scene.keep_only(&names.split(',').collect::<Vec<_>>());
+    }
     scene.set_rack(opts.iter().any(|o| o == "rack"));
     // every stereo jack as L above R
     if opts.iter().any(|o| o == "split") {
@@ -155,6 +194,15 @@ pub fn render(path: &str, opts: &[String]) -> Result<(), String> {
         if scene.rack {
             // the rack in the order of the signal flow
             scene.arrange();
+        } else if opt("only").is_some() {
+            // a few devices in the order of the signal flow, zigzag, so the cords hang between them
+            scene.arrange();
+            let mut order: Vec<(f64, f64, String, f64)> = scene.devs.iter().map(|d| (d.dx, d.dy, d.dev.key.clone(), d.geo.w)).collect();
+            order.sort_by(|a, b| (a.0, a.1).partial_cmp(&(b.0, b.1)).unwrap());
+            let step = order.iter().map(|o| o.3).sum::<f64>() / order.len().max(1) as f64 * 0.62;
+            for (i, (_, _, k, _)) in order.iter().enumerate() {
+                scene.move_device(k, i as f64 * step, (i % 2) as f64 * 218.0);
+            }
         } else {
             // on the desk: what plays on the left, what it plays into on the right, three rows
             let place = [["Vivaldi", "Ryzen", "Midi-Bridge"], ["JLab GO Work 2", "Bluetooth internal", "BLE MIDI"]];
@@ -174,10 +222,8 @@ pub fn render(path: &str, opts: &[String]) -> Result<(), String> {
     if let Some(k) = &hover {
         scene.hover = Hover::Jack(k.clone());
     }
-    // let the cords settle
-    for _ in 0..360 {
-        scene.tick(1.0 / 60.0, None, held, false);
-    }
+    // let the cords settle, and the meters show what plays
+    settle(&mut scene, &conn, 6.0, held);
     let s: f64 = std::env::var("PATCHCORD_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.5);
     let (x0, y0, x1, y1) = scene.bounds().ok_or("no devices")?;
     // room for the cords that hang below the devices
@@ -185,10 +231,17 @@ pub fn render(path: &str, opts: &[String]) -> Result<(), String> {
     let m = 60.0;
     // the field between the top panel and the status bar, as in the window
     let top = panel::H * s;
-    let view = View { s, x: -(x0 - m) * s, y: top - (y0 - m) * s };
-    let (w, h) = (((x1 - x0 + 2.0 * m) * s).max(1200.0 * s) as u32, ((y1 - y0 + 2.0 * m + 80.0 + panel::H + panel::STATUS_H) * s) as u32);
+    let size = opt("size").and_then(|v| v.split_once('x')).and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)));
+    let ((w, h), view) = match size {
+        // the devices fitted between the panel and the status bar
+        Some((w, h)) => ((w, h), scene.fit(w as f64, h as f64 - top - panel::STATUS_H * s, top, 2.0 * s)),
+        None => (
+            (((x1 - x0 + 2.0 * m) * s).max(1200.0 * s) as u32, ((y1 - y0 + 2.0 * m + 80.0 + panel::H + panel::STATUS_H) * s) as u32),
+            View { s, x: -(x0 - m) * s, y: top - (y0 - m) * s },
+        ),
+    };
     let t = Instant::now();
-    scene.prepare(s, 0);
+    scene.prepare(view.s, 0);
     let mut panel = new_panel(&scene);
     let presets = config::load_presets();
     panel.menu = match menu {
@@ -229,6 +282,8 @@ const MAGNET: f64 = 34.0;
 /// A session played by a script, frame by frame, with a pointer drawn on the frames.
 struct Rec {
     scene: Scene,
+    /// for the meters' levels only
+    conn: Connection,
     view: View,
     view_to: View,
     /// the scale the faces are drawn at (they are stretched to the view, as in the window)
@@ -285,6 +340,7 @@ impl Rec {
         if let Some((key, off)) = self.dragged.clone() {
             self.scene.drag_device(&key, hand.0 - off.0, hand.1 - off.1, DPI / self.view.s);
         }
+        levels(&mut self.scene, &self.conn);
         self.scene.tick(dt, None, held, self.dragged.is_some());
         self.scene.prepare(self.raster, (self.frame as f64 * 1000.0 / FPS) as u128);
         self.panel.state.rack = self.scene.rack;
@@ -409,16 +465,15 @@ fn playing_into_new(scene: &Scene) -> Option<(String, String)> {
 /// for the README's animation. Nothing is linked in PipeWire.
 pub fn record(dir: &str) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let (mut scene, _) = live_scene()?;
+    let (mut scene, conn, _) = live_scene()?;
+    start_meters(&mut scene, &conn);
     scene.set_rack(false);
-    for _ in 0..360 {
-        scene.tick(1.0 / 60.0, None, None, false);
-    }
+    settle(&mut scene, &conn, 6.0, None);
     let cursor = r##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M3 2 L3 19.5 L7.6 15.2 L10.7 22 L13.6 20.7 L10.6 14 L16.8 14 Z" fill="#fff" stroke="#111" stroke-width="1.4" stroke-linejoin="round"/></svg>"##;
     let cursor = rasterize(&usvg::Options::default(), cursor, DPI).ok_or("cursor")?;
     let status = status(&scene, SIZE.0 as f64 / DPI, DPI);
     let panel = new_panel(&scene);
-    let mut rec = Rec { scene, view: View { x: 0.0, y: 0.0, s: 1.0 }, view_to: View { x: 0.0, y: 0.0, s: 1.0 }, raster: 0.0, panel, status, cursor, ptr: (SIZE.0 as f64 * 0.55, SIZE.1 as f64 * 0.7), down: false, held: None, dragged: None, dir: Path::new(dir).to_owned(), frame: 0 };
+    let mut rec = Rec { scene, conn, view: View { x: 0.0, y: 0.0, s: 1.0 }, view_to: View { x: 0.0, y: 0.0, s: 1.0 }, raster: 0.0, panel, status, cursor, ptr: (SIZE.0 as f64 * 0.55, SIZE.1 as f64 * 0.7), down: false, held: None, dragged: None, dir: Path::new(dir).to_owned(), frame: 0 };
     rec.view = rec.fit();
     rec.view_to = rec.view;
     // faces drawn once, sharp enough for the desk and the rack
