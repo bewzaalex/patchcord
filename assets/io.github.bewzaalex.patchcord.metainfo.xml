@@ -32,11 +32,11 @@
   <screenshots>
     <screenshot type="default">
       <caption>Devices on the desk, patched with cords</caption>
-      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.2.1/docs/screenshots/desk.png</image>
+      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.2.2/docs/screenshots/desk.png</image>
     </screenshot>
     <screenshot>
       <caption>The same devices in a rack</caption>
-      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.2.1/docs/screenshots/rack.png</image>
+      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.2.2/docs/screenshots/rack.png</image>
     </screenshot>
   </screenshots>
   <description>
@@ -53,6 +53,15 @@
     </ul>
   </description>
   <releases>
+    <release version="0.2.2" date="2026-11-17">
+      <url type="details">https://github.com/bewzaalex/patchcord/releases/tag/v0.2.2</url>
+      <description>
+        <p>Stereo signal meters again.</p>
+        <ul>
+          <li>The signal meters show both channels: sometimes only the left one moved, with an app's right channel measured as its left, when PipeWire changed a meter's ports while setting it up</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.1" date="2026-11-17">
       <url type="details">https://github.com/bewzaalex/patchcord/releases/tag/v0.2.1</url>
       <description>

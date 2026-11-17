@@ -118,9 +118,12 @@ struct Meter {
     _listener: pw::stream::StreamListener<()>,
     targets: Vec<(u32, u32)>,
     node: Option<u32>,
-    /// our input ports: (port.id index, global id)
-    ports: Vec<(u32, u32)>,
+    /// our input ports now, by channel (`port.id`): their global ids. A stream's ports can go
+    /// and come back with new ids while its format is set up, so this keeps the latest of each.
+    ports: BTreeMap<u32, u32>,
+    /// the links to the ports, and which ports (global ids) they were made to
     links: Vec<pw::link::Link>,
+    linked: Vec<u32>,
     peaks: Rc<RefCell<Vec<f32>>>,
 }
 
@@ -210,17 +213,22 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                         }
                     }
                     Kind::Port => {
-                        // one of our meters' ports: once all are there, link them to what they measure
+                        // one of our meters' input ports: once each channel has one, link them,
+                        // channel by channel, to what they measure (again if they changed)
                         let node: Option<u32> = props.get("node.id").and_then(|n| n.parse().ok());
                         let index: u32 = props.get("port.id").and_then(|n| n.parse().ok()).unwrap_or(0);
+                        let input = props.get("port.direction").is_some_and(|d| d == "in");
                         for m in meters.borrow_mut().values_mut() {
                             if let Some(me) = m.node
                                 && m.node == node
+                                && input
                             {
-                                m.ports.push((index, id));
-                                if m.ports.len() == m.targets.len() && m.links.is_empty() {
-                                    m.ports.sort();
-                                    for (&(tn, tp), &(_, mine)) in m.targets.iter().zip(&m.ports) {
+                                m.ports.insert(index, id);
+                                let now: Vec<u32> = m.ports.values().copied().collect();
+                                if now.len() == m.targets.len() && now != m.linked {
+                                    m.links.clear();
+                                    m.linked = now.clone();
+                                    for (&(tn, tp), &mine) in m.targets.iter().zip(&now) {
                                         let p = pw::properties::properties! {
                                             "link.output.node" => tn.to_string(),
                                             "link.output.port" => tp.to_string(),
@@ -245,8 +253,13 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
         .global_remove({
             let events = events.clone();
             let bound = bound.clone();
+            let meters = meters.clone();
             move |id| {
                 bound.borrow_mut().remove(&id);
+                // a meter's port gone: it is linked again when a new one comes
+                for m in meters.borrow_mut().values_mut() {
+                    m.ports.retain(|_, p| *p != id);
+                }
                 events.send(Event::Removed(id));
             }
         })
@@ -335,7 +348,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
             }
             Cmd::Meter { id, ports, channels } => match meter(&core, id, &channels) {
                 Ok((stream, listener, peaks)) => {
-                    meters.borrow_mut().insert(id, Meter { _stream: stream, _listener: listener, targets: ports, node: None, ports: Vec::new(), links: Vec::new(), peaks });
+                    meters.borrow_mut().insert(id, Meter { _stream: stream, _listener: listener, targets: ports, node: None, ports: BTreeMap::new(), links: Vec::new(), linked: Vec::new(), peaks });
                 }
                 Err(e) => events.send(Event::Error(format!("cannot start meter: {e}"))),
             },
