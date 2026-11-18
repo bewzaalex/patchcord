@@ -58,25 +58,34 @@
   #defaults .row button { border: 0; background: none; color: inherit; font: inherit; font-size: 14px; line-height: 1; cursor: pointer; opacity: .6; padding: 0 2px; }
   #defaults .row button:hover { opacity: 1; }
   #defaults .row b { font-size: 10px; letter-spacing: .8px; opacity: .75; }
+  /* hidden devices: the list drops out of the HIDDEN key; system nodes are listed dimmed, for reference */
+  #hidden { right: auto; width: 380px; }
+  #hidden h2 { margin: 0 12px 6px; font-size: 10px; letter-spacing: 1.5px; opacity: .7; }
+  #hidden .row b { font-size: 10px; letter-spacing: .8px; opacity: .75; }
+  #hidden .row.sys { cursor: default; opacity: .62; }
+  #hidden .row.sys:hover { background: none; }
+  #hidden .row i { font-style: normal; font-weight: normal; font-size: 10.5px; opacity: .8; }
+  #hidden .tip { margin: 6px 14px 2px; font-weight: normal; font-size: 10.5px; opacity: .75; white-space: normal; }
+  .key .cnt { position: absolute; right: 4px; top: 3px; font: bold 9px ui-monospace, monospace; color: #f7bb62; }
   .dev.find { animation: find 1.6s ease-out; }
   @keyframes find { 0%, 40% { box-shadow: 0 0 0 3px rgba(255,190,90,.95), 0 0 34px rgba(255,170,60,.6); } 100% { box-shadow: 0 0 0 0 rgba(255,190,90,0), 0 0 0 rgba(255,170,60,0); } }
   #lcd div:last-child { font-weight: normal; }
   /* the preset list drops out of the LCD and looks like more of it */
-  #presets, #profiles, #ports, #defaults { position: absolute; right: 18px; top: calc(100% + 6px); width: 300px; padding: 8px 0; border-radius: 4px; z-index: 5;
+  #presets, #profiles, #ports, #defaults, #hidden { position: absolute; right: 18px; top: calc(100% + 6px); width: 300px; padding: 8px 0; border-radius: 4px; z-index: 5;
     color: #3a2408; font: bold 12px ui-monospace, "DejaVu Sans Mono", monospace; white-space: nowrap;
     background: linear-gradient(#f7bb62, #e58f2c); box-shadow: 0 0 0 3px #121214, 0 0 0 4px rgba(255,255,255,.2), 0 14px 30px rgba(0,0,0,.6); }
-  #presets.hide, #profiles.hide, #ports.hide, #defaults.hide { display: none; }
+  #presets.hide, #profiles.hide, #ports.hide, #defaults.hide, #hidden.hide { display: none; }
   #presets h2, #profiles h2, #ports h2, #defaults h2 { margin: 0 12px 6px; font-size: 10px; letter-spacing: 1.5px; opacity: .7; }
-  #presets .row, #profiles .row, #ports .row, #defaults .row { display: flex; align-items: center; gap: 8px; padding: 4px 12px; cursor: pointer; }
-  #presets .row:hover, #profiles .row:hover, #ports .row:hover, #defaults .row:hover { background: rgba(58,36,8,.15); }
+  #presets .row, #profiles .row, #ports .row, #defaults .row, #hidden .row { display: flex; align-items: center; gap: 8px; padding: 4px 12px; cursor: pointer; }
+  #presets .row:hover, #profiles .row:hover, #ports .row:hover, #defaults .row:hover, #hidden .row:hover { background: rgba(58,36,8,.15); }
   #presets .row.cur, #profiles .row.cur, #ports .row.cur, #defaults .row.cur { background: #3a2408; color: #f7bb62; }
-  #presets .row span, #profiles .row span, #ports .row span, #defaults .row span { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  #presets .row span, #profiles .row span, #ports .row span, #defaults .row span, #hidden .row span { flex: 1; overflow: hidden; text-overflow: ellipsis; }
   /* every amber list alike: no title (it drops out of the key that names it); sections under a
      heading with a rule running to the edge; rows inset, so a dark one never touches a heading */
-  #ports > h2, #defaults > h2 { display: flex; align-items: center; gap: 8px; margin: 12px 12px 5px; opacity: .8; }
-  #ports > h2:first-child, #defaults > h2:first-child { margin-top: 4px; }
-  #ports > h2::after, #defaults > h2::after { content: ""; flex: 1; height: 1.5px; background: rgba(58,36,8,.4); }
-  #presets .row, #profiles .row, #ports .row, #defaults .row { margin: 1px 6px; padding: 4px 8px; border-radius: 3px; }
+  #ports > h2, #defaults > h2, #hidden > h2 { display: flex; align-items: center; gap: 8px; margin: 12px 12px 5px; opacity: .8; }
+  #ports > h2:first-child, #defaults > h2:first-child, #hidden > h2:first-child { margin-top: 4px; }
+  #ports > h2::after, #defaults > h2::after, #hidden > h2::after { content: ""; flex: 1; height: 1.5px; background: rgba(58,36,8,.4); }
+  #presets .row, #profiles .row, #ports .row, #defaults .row, #hidden .row { margin: 1px 6px; padding: 4px 8px; border-radius: 3px; }
   /* the profile list drops out of a card's PROFILE key: same amber as the LCDs */
   #profiles { right: auto; top: auto; width: 330px; z-index: 6; }
   /* a device output's ports, out of its PORT key: the same amber list, and the latency offset */
@@ -123,23 +132,6 @@
     background: rgba(18,19,21,.94); color: #e6e7e8; padding: 5px 9px; border-radius: 6px; font-size: 12px; white-space: nowrap;
     box-shadow: 0 6px 16px rgba(0,0,0,.5); }
   #tip.show { opacity: 1; }
-  /* B: an app's streams in a drawer that slides out under its device: a little channel strip each */
-  .drawer { position: absolute; left: 0; top: 0; pointer-events: auto; display: flex; gap: 6px; padding: 10px 12px 12px;
-    border-radius: 0 0 8px 8px; background: linear-gradient(#1d1e21, #141517); box-shadow: inset 0 6px 8px -4px rgba(0,0,0,.8), 0 10px 18px rgba(0,0,0,.5);
-    border: 1px solid #000; border-top: 0; font: bold 9px Arial, Helvetica, sans-serif; color: #d5d7d9; letter-spacing: .6px; }
-  .drawer .strip { width: 62px; display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 6px 4px 7px; border-radius: 5px;
-    background: rgba(255,255,255,.04); box-shadow: inset 0 0 0 1px rgba(0,0,0,.6); }
-  .drawer .strip b { font-size: 11px; color: #f3efe6; background: #b45a2e; border-radius: 3px; padding: 0 7px; }
-  .drawer .strip span { font-weight: normal; opacity: .7; font-size: 8.5px; }
-  .drawer .row { display: flex; align-items: flex-end; gap: 6px; }
-  .drawer .lv { display: flex; flex-direction: column-reverse; gap: 2px; }
-  .drawer .lv i { width: 6px; height: 3.4px; border-radius: 1px; background: rgba(0,0,0,.6); }
-  .drawer svg { cursor: ns-resize; touch-action: none; }
-  .drawer button { font: inherit; font-size: 7.5px; color: #e6e7e8; background: #1b1c1e; border: 1px solid rgba(255,255,255,.18); border-radius: 3px; padding: 2px 5px; cursor: pointer;
-    display: flex; align-items: center; gap: 4px; }
-  .drawer button i { width: 5px; height: 5px; border-radius: 50%; background: #3a1411; }
-  .drawer button.on i { background: #ff3b2f; box-shadow: 0 0 4px #ff3b2f; }
-  .drawer button.cue.on i { background: #5fd4ff; box-shadow: 0 0 4px #5fd4ff; }
   /* while listening, the pointer stays the desktop's own; a small headphones badge rides beside it */
   #cueBadge { position: absolute; z-index: 4; pointer-events: none; display: none; width: 20px; height: 20px; border-radius: 50%;
     background: #121315; box-shadow: 0 0 0 1.5px #5fd4ff, 0 3px 8px rgba(0,0,0,.5); }
@@ -171,10 +163,11 @@
     <button class="key ico" id="lock" title="Lock devices in place (L)"><span class="led"></span><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></button>
     <button class="key ico on" id="align" title="Line devices up while dragging them on the desk; off: place them freely (G)"><span class="led"></span><svg viewBox="0 0 24 24"><path d="M4 3v18"/><rect x="7.5" y="5" width="12" height="5" rx="1"/><rect x="7.5" y="14" width="7.5" height="5" rx="1"/></svg></button></div><label>LAYOUT</label></div>
   <div class="grp"><svg id="cablesKnob" width="96" height="60" viewBox="-48 -26.5 96 60" style="cursor:pointer;touch-action:none"></svg></div>
-  <div class="grp"><div class="keys"><button class="key ico" id="arrange" title="Arrange by signal flow"><svg viewBox="0 0 24 24"><rect x="3.5" y="4" width="7" height="5" rx="1"/><rect x="3.5" y="15" width="7" height="5" rx="1"/><rect x="13.5" y="9.5" width="7" height="5" rx="1"/><path d="M10.5 6.5h1.5v11h-1.5M12 12h1.5"/></svg></button><button class="key ico" id="fit" title="Fit to window (F)"><svg viewBox="0 0 24 24"><path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/></svg></button><button class="key ico" id="snd" title="Plug sounds"><span class="led"></span><svg viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7"/><path d="M19 6a8.5 8.5 0 0 1 0 12"/></svg></button></div><label>VIEW</label></div>
+  <div class="grp"><div class="keys"><button class="key ico" id="arrange" title="Arrange by signal flow"><svg viewBox="0 0 24 24"><rect x="3.5" y="4" width="7" height="5" rx="1"/><rect x="3.5" y="15" width="7" height="5" rx="1"/><rect x="13.5" y="9.5" width="7" height="5" rx="1"/><path d="M10.5 6.5h1.5v11h-1.5M12 12h1.5"/></svg></button><button class="key ico" id="fit" title="Fit to window (F)"><svg viewBox="0 0 24 24"><path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/></svg></button><button class="key ico" id="flow" title="Show which way the cords go: a light runs along each from its output to its input (W)"><span class="led"></span><svg viewBox="0 0 24 24"><path d="M3 17c3-6 6-6 9 0s6 6 9 0"/><path d="M4 7h14"/><path d="m15 4 3 3-3 3"/></svg></button><button class="key ico" id="hide" title="Hidden devices: shows them again (a device's HIDE key, or H over it, hides an unused one)"><span class="cnt" id="hideCnt"></span><svg viewBox="0 0 24 24"><path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6z"/><circle cx="12" cy="12" r="2.6"/><path d="M4 20 20 4"/></svg></button></div><label>VIEW</label></div>
   <div class="grp"><div class="keys"><button class="key ico" id="cue" title="Listen (cue): hold Alt over any jack to hear it; this key keeps the last one on"><span class="led cue"></span><svg viewBox="0 0 24 24"><path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="4.5" height="7" rx="1.5"/><rect x="16.5" y="14" width="4.5" height="7" rx="1.5"/></svg></button><svg id="cueKnob" width="44" height="30" viewBox="-22 -15 44 30" style="cursor:ns-resize;touch-action:none;overflow:visible" title="Cue level: drag up/down or turn the wheel"></svg></div><label>CUE · LEVEL</label></div>
   <div class="lcd"><div class="half" id="dlcd" title="Default output and input: where new apps play and record"><div id="dout"></div><div id="din"></div></div><div class="sep"></div><div class="half" id="lcd" title="Presets"><div id="lcd1"></div><div id="lcd2"></div></div></div>
   <div id="defaults" class="hide"></div>
+  <div id="hidden" class="hide"></div>
   <div id="presets" class="hide"></div>
 </header>
 <div id="profiles" class="hide"></div>
@@ -200,7 +193,6 @@
       <tr><td>PORT key ▾</td><td>beside PROFILE, on a card whose output or input has several: where it plays (speakers, headphones) or records from (internal or plugged-in microphone), and each one's latency offset</td></tr>
       <tr><td><kbd>Alt</kbd> + move</td><td>listen to the jack under the pointer in the default output, like a test probe (cyan ring)</td></tr>
       <tr><td>CUE key · LEVEL</td><td>CUE mode (LED lit): hover a jack to hear it, click to keep it on (glows; many at once); CUE again or Esc stops them all. LEVEL: how loud the cue is</td></tr>
-      <tr><td><kbd>V</kbd></td><td>an app's streams (Teams, Firefox): 6, each stream a frame of its own (VOLUME, BAL, SPLIT beside MUTE, its meter), at most three frames to a unit, the device growing a unit for more; A, trim, mute and level under each jack; or B, a drawer of channel strips (STREAMS ▾)</td></tr>
       <tr><td><kbd>K</kbd></td><td>group colours on/off (to compare)</td></tr>
       <tr><td>OUT ▸ / IN ▸ screen</td><td>on the top panel: the default output and input, where new apps play and record. Click: pick another; ⌖ finds it on the desk</td></tr>
       <tr><td>PROFILE key</td><td>under a card's screen: its profiles (and codec)</td></tr>
@@ -209,6 +201,9 @@
       <tr><td>Drag a device</td><td>move it; on the desk it lines up with the others (ALIGN)</td></tr>
       <tr><td>Wheel / empty drag</td><td>zoom / pan</td></tr>
       <tr><td><kbd>R</kbd> <kbd>L</kbd> <kbd>G</kbd> <kbd>C</kbd> <kbd>A</kbd> <kbd>F</kbd></td><td>rack/desk · lock · align · cables · arrange · fit</td></tr>
+      <tr><td><kbd>W</kbd></td><td>cord directions (the FLOW key): a light runs inside every plugged-in cord from its output to its input, one at a time (as it reaches the jack the next leaves the plug), at a steady pace whatever plays: it shows how things are connected</td></tr>
+      <tr><td><kbd>A</kbd></td><td>arrange: devices with cords in columns by signal flow, the unused ones under them, sound cards, apps, MIDI and internal streams each together in rows</td></tr>
+      <tr><td>HIDE key (struck-through eye, right of a device's name) or <kbd>H</kbd></td><td>hide an unused device (kept hidden after a restart); the HIDDEN key (eye) lists them to show again, and the SYSTEM nodes Patchcord always leaves out. A hidden device that gets a cord comes back</td></tr>
       <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd></td><td>undo (<kbd>Shift</kbd> redo)</td></tr>
       <tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>O</kbd></td><td>save a new preset / pick one (or click the LCD)</td></tr>
     </table>
@@ -282,7 +277,7 @@ const MONO = (pre) => [P('MONO', pre + '_MONO')];
 const RYZEN_DUPLEX = [{ label: 'PLAYBACK', dir: 'in', stereo: true, mix: true, sink: true, vol: .6, ports: stereo('playback'),
                         routes: [{ name: 'Speakers', short: 'SPEAKERS' }, { name: 'Headphones', short: 'HEADPHONES', unplugged: true }] },
                       { label: 'CAPTURE', dir: 'out', stereo: true, src: true, mix: true, ports: stereo('capture'),
-                        routes: [{ name: 'Internal Microphone', short: 'INTERNAL MIC' }, { name: 'Microphone', short: 'MIC', unplugged: true }] },
+                        routes: [{ name: 'Internal Microphone', short: 'BUILT-IN MIC' }, { name: 'Microphone', short: 'MIC', unplugged: true }] },
                       { label: 'MONITOR', dir: 'out', stereo: true, ports: stereo('monitor') }];
 const DEVICES = [
   { id: 'cpal', title: 'cpal-pulseaudio-1293852', name: 'cpal-pulseaudio-1293852', model: 'APP · PULSEAUDIO CLIENT', finish: 'black', color: '#e8742a', gen: .6, x: 40, y: 40,
@@ -293,12 +288,13 @@ const DEVICES = [
         groups: [{ label: 'PLAYBACK', dir: 'in', stereo: true, mix: true, sink: true, vol: .45, ports: stereo('playback'), routes: [{ name: 'Headphones', short: 'HEADPHONES' }] },
                  { label: 'MONITOR', dir: 'out', stereo: true, ports: stereo('monitor') }] },
       { short: 'HEADSET', name: 'Headset Head Unit (HSP/HFP)', codecs: ['CVSD', 'mSBC'],
-        groups: [{ label: 'PLAYBACK', dir: 'in', mix: true, sink: true, vol: .45, ports: MONO('playback') },
-                 { label: 'MIC', dir: 'out', src: true, mix: true, ports: MONO('capture') },
+        groups: [{ label: 'PLAYBACK', dir: 'in', mix: true, sink: true, vol: .45, ports: MONO('playback'), routes: [{ name: 'Handsfree', short: 'HEADPHONES' }] },
+                 { label: 'MIC', dir: 'out', src: true, mix: true, ports: MONO('capture'), routes: [{ name: 'Handsfree', short: 'MIC' }] },
                  { label: 'MONITOR', dir: 'out', ports: MONO('monitor') }] },
       { short: 'OFF', name: 'Off', groups: [] }] },
-  { id: 'btcap', title: 'Bluetooth internal capture stream', name: 'Bluetooth internal capture stream', model: 'BLUEZ · STREAM', finish: 'cream', color: '#3fae5a', pass: true, x: 540, y: 220,
-    groups: [{ label: 'INPUT', dir: 'in', mix: true, ports: [P('MONO', 'input_MONO')] }, { label: 'MONITOR', dir: 'out', ports: [P('MONO', 'monitor_MONO')] }] },
+  // (a Bluetooth headset's real microphone and WirePlumber's internal capture stream that turns it
+  // into the microphone apps see (MIC on the headset) are plumbing: inside that loopback the
+  // sound goes without a link, so a cord to them would lead nowhere. Listed under SYSTEM)
   { id: 'ryzen', title: 'Ryzen HD Audio Controller', name: 'Ryzen HD Audio Controller', model: 'ALSA · PCI', finish: 'metal', color: '#2bb0a8', gen: .15, pass: true, x: 540, y: 400,
     profile: 0, profiles: [
       { short: 'DUPLEX', name: 'Analog Stereo Duplex', groups: RYZEN_DUPLEX },
@@ -322,13 +318,17 @@ const DEVICES = [
   { id: 'audacity', title: 'Audacity', name: 'Audacity', model: 'APP · RECORD & PLAY', finish: 'black', color: '#d65a8c', gen: .4, x: 1040, y: 400,
     groups: [{ label: 'INPUT', dir: 'in', stereo: true, mix: true, vol: .7, ports: stereo('input') },
              { label: 'OUTPUT', dir: 'out', stereo: true, mix: true, ports: stereo('output') }] },
-  // an app with several streams (Teams: five playing, one recording) is one device: a jack per
-  // stream, numbered, the frame's VOLUME and MUTE for them all, and each stream its own trim,
-  // mute and level: A on the face under its jack, or B in a drawer under the device (V switches)
+  // an app with several streams (Teams in a call: two recording, six playing) is one device with
+  // a numbered frame for each stream (its streams are written as a list here, made frames below)
   { id: 'teams', title: 'Teams for Linux', name: 'Teams for Linux', model: 'APP · RECORD & PLAY', finish: 'black', color: '#6b6ed6', gen: 1, x: 1040, y: 600,
-    groups: [{ label: 'INPUT', dir: 'in', mix: true, ports: [P('MONO', 'input_MONO')] },
+    groups: [{ label: 'INPUT', dir: 'in', mix: true,
+               streams: [1, 2].map((i) => ({ n: String(i), what: 'Record', sg: 0, ports: [P(String(i), `r${i}:input_MONO`)] })) },
              { label: 'OUTPUT', dir: 'out', mix: true,
-               streams: [1, 2, 3, 4, 5].map((i) => ({ n: String(i), what: 'Playback', sg: [.7, .35, 0, 0, .22][i - 1], ports: [P(String(i), `s${i}:output_MONO`)] })) }] },
+               streams: [1, 2, 3, 4, 5, 6].map((i) => ({ n: String(i), what: 'Playback', sg: [.7, .35, 0, 0, .22, .1][i - 1], ports: [P(String(i), `s${i}:output_MONO`)] })) },
+             // each recording stream's monitor: a copy of what it records. Nobody patches from
+             // these: they are left off the face (listed under SYSTEM in the HIDDEN list)
+             { label: 'MONITOR', dir: 'out', ports: [P('MONO', 'r1:monitor_MONO')] },
+             { label: 'MONITOR', dir: 'out', ports: [P('MONO', 'r2:monitor_MONO')] }] },
   // the same with stereo streams (Firefox, three tabs playing): each stream a stereo jack; the
   // frame's SPLIT turns every one into L above R, in its own numbered column
   { id: 'firefox', title: 'Firefox', name: 'Firefox', model: 'APP · PLAYBACK', finish: 'black', color: '#e66b2e', gen: 1, x: 1040, y: 780,
@@ -356,11 +356,36 @@ const FINISH = {
 const RACK_MIN = 1000, RACK_GAP = 3, DEV_H = 128, JP = 48;
 // a device shows at most three frames (inputs, outputs, monitors…) side by side: the fourth starts
 // a second unit under the first, the seventh a third
-const PER_ROW = 3;
+const PER_ROW = 4;
+// as on a 1U device, inputs at the left and outputs at the right: the inputs fill the rows from
+// the top, the outputs the room left in them, then rows of their own. Each row is { ins, outs }.
+// A face's two sides: what makes sound (OUT jacks: an app's OUTPUT, a MIC) at the left, what
+// takes it (IN jacks: SPEAKERS, HEADPHONES with their REC OUT inside, an app's INPUT) at the right
+const sides = (d) => [d.groups.filter((g) => g.dir === 'out' && !g.host), d.groups.filter((g) => g.dir === 'in')];
+// Balanced: as few units as up to PER_ROW frames side by side allow, the frames spread evenly
+// over them (8 frames: 4 + 4; 7: 4 + 3; 5: 3 + 2), so no unit is left half empty.
 const rowsOf = (d) => {
-  const gs = [...d.groups.filter((g) => g.dir === 'in'), ...d.groups.filter((g) => g.dir === 'out')], r = [];
-  for (let i = 0; i < gs.length; i += PER_ROW) r.push(gs.slice(i, i + PER_ROW));
-  return r.length ? r : [[]];
+  // (`ins` here: the left side, what makes sound; `outs`: the right side, what takes it)
+  const [ins, outs] = sides(d), r = [];
+  const n = ins.length + outs.length, units = Math.max(1, Math.ceil(n / PER_ROW)), cap = Math.ceil(n / units);
+  // the first rows take one more when they don't divide evenly (8 → 4 4, 7 → 4 3, 10 → 4 3 3)
+  const size = (u) => cap - (u >= n - (cap - 1) * units ? 1 : 0);
+  let i = 0, o = 0;
+  for (let u = 0; u < units; u++) {
+    const k = Math.max(0, size(u)), a = Math.min(k, ins.length - i);
+    const row = { ins: ins.slice(i, i + a), outs: outs.slice(o, o + (k - a)) };
+    i += a; o += k - a;
+    r.push(row);
+  }
+  return r;
+};
+// a multi-unit face is one grid: a row's inputs in its first columns, its outputs in its last
+// (a short row's gap falls between them), each column as wide as its widest frame
+const gridCols = (rows) => Math.max(...rows.map((r) => r.ins.length + r.outs.length));
+const gridOf = (rows) => {
+  const n = gridCols(rows), at = rows.map((r) => [...r.ins.map((g, c) => [g, c]), ...r.outs.map((g, j) => [g, n - r.outs.length + j])]);
+  const w = Array.from({ length: n }, (_, c) => Math.max(0, ...at.flat().filter(([, k]) => k === c).map(([g]) => groupW(g))));
+  return { n, at, w };
 };
 // the default output and input, where new apps play and record (pavucontrol's green check): "device:group"
 // cue: the jack listened to (in the default output), whether the CUE key holds it, whether Alt is
@@ -368,9 +393,7 @@ const rowsOf = (d) => {
 // cue: the jack heard while the pointer is on it (`hover`), the ones pinned in CUE mode, whether
 // CUE mode is on, whether Alt is held to probe, and the cue's level
 const CUE = { hover: null, pins: new Set(), mode: false, probing: false, level: .7, at: null };
-// streamUI: how an app's streams are controlled one by one: 'units' (6: each stream a frame of its
-// own, the device grows a unit per three frames), 'face' (A) or 'drawer' (B)
-const S = { streamUI: 'units', accent: true, defOut: 'jlab:PLAYBACK', defIn: 'ryzen:CAPTURE', locked: false, align: true, mode: 'desk', rackW: RACK_MIN, cableMode: 0, sound: true, view: { x: 0, y: 0, s: 1 }, vt: null, edited: false };
+const S = { flow: true, accent: true, defOut: 'jlab:PLAYBACK', defIn: 'ryzen:CAPTURE', locked: false, align: true, mode: 'desk', rackW: RACK_MIN, cableMode: 0, sound: false, view: { x: 0, y: 0, s: 1 }, vt: null, edited: false };
 const devs = DEVICES.map((d) => ({ volUntil: 0, mixText: '', ...d, dx: d.x, dy: d.y, tx: d.x, ty: d.y, W: 0, H: DEV_H, lvl: [0, 0], shown: '', running: null }));
 const ports = new Map(), jacks = new Map(), links = new Set();
 // a device's groups: its own, or those of its card's profile (fresh copies: a group keeps its SPLIT
@@ -378,35 +401,38 @@ const ports = new Map(), jacks = new Map(), links = new Set();
 function setGroups(d) {
   for (const g of d.groups || []) for (const p of g.ports || []) ports.delete(p.key);
   for (const g of d.groups || []) for (const j of g.jacks || []) jacks.delete(j.key);
-  const src0 = d.profiles ? d.profiles[d.profile].groups : (d.groups0 = d.groups0 || d.groups);
-  // 6: an app's streams, each a whole frame as any other (its jacks, VOLUME, BAL when stereo, SPLIT
+  const all0 = d.profiles ? d.profiles[d.profile].groups : (d.groups0 = d.groups0 || d.groups);
+  // an app's monitors (a copy of what each recording stream records) stay off its face
+  const appMon = d.model.startsWith('APP') ? all0.filter((g) => g.label === 'MONITOR') : [];
+  d.appMonitors = appMon.length;
+  const src0 = all0.filter((g) => !appMon.includes(g));
+  // an app's streams, each a whole frame as any other (its jacks, VOLUME, BAL when stereo, SPLIT
   // beside its MUTE, its meter), named by its number
-  const src = S.streamUI === 'units' ? src0.flatMap((g) => !g.streams ? [g] : g.streams.map((s) => ({ label: `${g.label} ${s.n}`,
-    dir: g.dir, mix: true, stereo: s.ports.length === 2, sg: s.sg, fromStream: true, ports: s.ports }))) : src0;
-  d.groups = src.map((g) => {
-    // an app's streams: each its own trim, mute and level; their ports, one after another, are the group's
-    const streams = g.streams && g.streams.map((s) => ({ sv: 1, sm: false, lvl: 0, shown: -1, ...s, ports: s.ports.map((p) => ({ ...p })) }));
-    return { vol: 1, bal: 0, mute: false, balOut: false, balHeld: false, route: 0, ...g, streams, ports: streams ? streams.flatMap((s) => s.ports) : g.ports.map((p) => ({ ...p })),
-      routes: g.routes && g.routes.map((r) => ({ lat: 0, ...r })), jacks: null, split: false };
-  });
-  for (const g of d.groups) if (g.streams) for (const s of g.streams) for (const p of s.ports) p.stream = s;
-  d.ownMeters = d.groups.filter((g) => g.mix).length > 1;
-  for (const g of d.groups) { g.ownMeter = d.ownMeters && g.mix; g.lvl = [0, 0]; g.shown = ''; }
+  const src = src0.flatMap((g) => !g.streams ? [g] : g.streams.map((s) => ({ label: `${g.label} ${s.n}`,
+    dir: g.dir, mix: true, stereo: s.ports.length === 2, sg: s.sg, fromStream: true, ports: s.ports })));
+  d.groups = src.map((g) => ({ vol: 1, bal: 0, mute: false, balOut: false, balHeld: false, route: 0, ...g, ports: g.ports.map((p) => ({ ...p })),
+    routes: g.routes && g.routes.map((r) => ({ lat: 0, ...r })), jacks: null, split: false }));
+  // every audio frame has its own meter, inside it (MIDI none): no frames, no meter
+  d.ownMeters = true;
+  for (const g of d.groups) {
+    g.host = g.rec = null;
+    if (g.label !== 'MONITOR') continue;
+    const h = d.groups.find((o) => o.dir === 'in' && o.mix);
+    if (h) { g.host = h; h.rec = g; }
+  }
+  for (const g of d.groups) { g.ownMeter = g.ports[0].t !== 'midi' && !g.host; g.lvl = [0, 0]; g.shown = ''; }
   for (const g of d.groups) for (const p of g.ports) {
     Object.assign(p, { dev: d, group: g, key: d.id + ':' + g.dir + ':' + p.full });
     ports.set(p.key, p);
   }
 }
 for (const d of devs) setGroups(d);
+// devices hidden by hand (see "hidden devices")
+const hiddenDevs = [];
 let rackOrder = [];
 const cables = [];
 let seq = 0, slotSeq = 0;
 
-// the device's groups again (V: a stream's frames come and go), keeping the links
-function regroup(d) {
-  setGroups(d);
-  for (const g of d.groups) buildJacks(d, g);
-}
 // a jack is what you plug into: a stereo jack carries the L and R ports, a mono jack one port
 function buildJacks(d, g) {
   for (const j of g.jacks || []) jacks.delete(j.key);
@@ -417,16 +443,6 @@ function buildJacks(d, g) {
     jacks.set(j.key, j);
     return j;
   };
-  if (g.streams) {
-    // a jack per stream, numbered; a stereo one as one jack, or L and R apart when split
-    g.jacks = [];
-    for (const s of g.streams) {
-      const two = s.ports.length === 2;
-      const js = two && !g.split ? [mk(g.jacks.length, s.n, s.ports, 'stereo')] : s.ports.map((p) => mk(g.jacks.length, two ? p.n : s.n, [p], 'mono'));
-      for (const j of js) { j.stream = s; j.gi = g.jacks.length; g.jacks.push(j); }
-    }
-    return;
-  }
   g.jacks = g.stereo && !g.split ? [mk(0, 'STEREO', g.ports, 'stereo')]
     : g.ports.map((p, i) => mk(i, p.n, [p], p.t === 'midi' ? 'midi' : 'mono'));
 }
@@ -468,19 +484,28 @@ const labelW = (t) => { measure.font = 'bold 8.5px Arial, Helvetica, sans-serif'
 // (lower with the coloured bands, so the L jack clears the band)
 const ROWS_PLAIN = [50, 84], ROWS_BAND = [54, 88], ROW_X = 38;
 const stacked = (g) => g.stereo && g.split;
-// an app's stereo streams: the frame has a SPLIT switch; split, each stream is a column, L above R
-const streamSwitch = (g) => !!g.streams && g.streams.some((s) => s.ports.length === 2);
-const STREAM_COL = 56;
-const streamCols = (g) => g.split && streamSwitch(g);
-const jacksW = (g) => streamCols(g) ? 30 + g.streams.length * STREAM_COL + 46 + Math.max(0, ...g.jacks.map((j) => slots(j) - 1)) * JP
-  : (g.streams && streamSwitch(g)) ? g.jacks.reduce((s, j) => s + slots(j), 0) * JP + 14 + 46 : Math.max(
+// What a frame is called on the face. An app's (and an effect's) say which way the sound goes:
+// INPUT, OUTPUT. Hardware says what it is, from the port in use, so it follows the PORT key:
+// SPEAKERS, HEADPHONES, BUILT-IN MIC, MIC, HDMI; a card that tells nothing, SOUND OUT / SOUND IN.
+// (PipeWire's own words, PLAYBACK, CAPTURE and MONITOR, mean little to someone holding a headset.)
+const nm = (g) => {
+  if ((g.sink || g.src) && g.routes) return g.routes[g.route || 0].short;
+  if (g.label === 'PLAYBACK') return 'SOUND OUT';
+  if (g.label === 'CAPTURE') return 'SOUND IN';
+  if (g.label === 'MONITOR') return 'REC OUT';
+  return g.label;
+};
+// REC OUT (a device's monitor: a copy of what it plays, to record it, as on a mixer or an amp)
+// sits inside the frame of what it copies, a jack of its own after a thin rule
+const RECW = (g) => (g.rec ? g.rec.jacks.reduce((s, j) => s + slots(j), 0) * JP + 18 : 0);
+const jacksW = (g) => Math.max(
   stacked(g) ? ROW_X + (Math.max(...g.jacks.map(slots)) - 1) * JP + 22 + 46 : g.jacks.reduce((s, j) => s + slots(j), 0) * JP + 14,
-  g.stereo ? 100 : 0, Math.ceil(labelW(g.label)) + 8 + 6 + 30 + 4);
+  g.stereo ? 100 : 0, Math.ceil(labelW(nm(g))) + 8 + 6 + 30 + 4) + RECW(g);
 // a stream's VOLUME controls (a knob over a MUTE key, a BAL knob too for stereo), right of its
 // jacks inside its group's frame: what they turn is plain to see, one set per stream
 const VMAX = 1.53; // pavucontrol's slider goes to 153% (+11 dB)
-const SMW = 22; // a frame's own meter: two thin LED columns right of its knobs
-const MIXW = (g) => (g.mix ? (g.stereo ? 96 : 58) + (g.ownMeter ? SMW : 0) : 0);
+const SMW = 22; // a frame's own meter: thin LED columns (two for stereo) at its right, after its knobs
+const MIXW = (g) => (g.mix ? (g.stereo ? 96 : 58) : 0) + (g.ownMeter ? SMW : 0);
 const groupW = (g) => jacksW(g) + MIXW(g);
 const naturalW = (d, rack) => 2 * (rack ? 30 : 0) + 32 + IDW_ + 14 + d.groups.reduce((s, g) => s + groupW(g) + 10, 0) - 10 + 40;
 // ---------------- accents ----------------
@@ -499,41 +524,43 @@ const BAND_INK = '#f3efe6';
 const kindOf = (g) => (g.ports[0].t === 'midi' ? 'midi' : g.label === 'MONITOR' ? 'monitor' : g.sink ? 'playback' : g.src ? 'capture'
   : g.label === 'PLAYBACK' || g.label.startsWith('HDMI') ? 'playback' : g.label === 'CAPTURE' || g.label === 'MIC' ? 'capture' : g.dir === 'out' ? 'output' : 'input');
 const accentOf = (g) => (S.accent ? ACCENT_COLORS[kindOf(g)] : null);
-const faceSig = (d) => (S.accent ? 'A' : '') + S.mode + (S.mode === 'rack' ? S.rackW : '') + d.groups.map((g) => g.jacks.map(slots).join(',')).join('|') + '|' + (d.profiles ? d.profile + d.codec : '');
+const faceSig = (d) => (S.accent ? 'A' : '') + S.mode + (S.mode === 'rack' ? S.rackW : '') + d.groups.map((g) => g.jacks.map(slots).join(',') + (g.route || 0)).join('|') + '|' + (d.profiles ? d.profile + d.codec : '');
 function renderDevice(d) {
   const rack = S.mode === 'rack', f = FINISH[d.finish];
   const rowsG = rowsOf(d), units = rowsG.length;
   const EAR = rack ? 30 : 0, PAD = 16, IDW = IDW_, H = DEV_H * units;
   const x0 = EAR + PAD, inv = d.finish === 'metal' || d.finish === 'cream' ? '#d9dbdd' : '#222';
-  // inputs on the left, outputs on the right; in a rack the outputs sit against the meter with a grille between
-  const ins = d.groups.filter((g) => g.dir === 'in'), outs = d.groups.filter((g) => g.dir === 'out');
+  // what makes sound on the left, what takes it on the right (so sound flows left to right, as
+  // across the desk); in a rack the right side sits against the edge with a grille between
+  const [ins, outs] = sides(d);
   const span = (gs) => gs.reduce((s, g) => s + groupW(g) + 10, 0);
   // the SIG meter at the right edge, unless each frame has its own
-  const natural = x0 + IDW + 14 + (rowsG.length > 1 ? Array.from({ length: PER_ROW }, (_, c) => Math.max(0, ...rowsG.map((r) => (r[c] ? groupW(r[c]) + 10 : 0)))).reduce((a, b) => a + b, 0) : span(d.groups)) - 10 + (d.ownMeters ? 0 : 14 + 26) + PAD + EAR;
+  const natural = x0 + IDW + 14 + (rowsG.length > 1 ? gridOf(rowsG).w.reduce((a, w) => a + w + 10, 0) : span(d.groups.filter((g) => !g.host))) - 10 + (d.ownMeters ? 0 : 14 + 26) + PAD + EAR;
   const W = rack ? Math.max(S.rackW, natural) : natural;
   const mx = W - EAR - PAD - 22;
   let body = '';
   // VOLUME: a knob from silence to 153% with a long tick at 100% and red past it (louder than the
   // app plays it: it can clip), and a MUTE key with a red LED under it; a groove parts it from
   // the jacks, the frame around both says they belong together
+  // a frame's own meter: SIG on its heading, a column of LEDs for each channel
+  function stripMeter(g, lx) {
+    const gi = d.groups.indexOf(g), nc = g.stereo ? 2 : 1;
+    body += `<text x="${lx + 7}" y="31" font-size="6.5" fill="${accentOf(g) ? BAND_INK : f.print}" text-anchor="middle" letter-spacing=".5">SIG</text>`;
+    for (let c = 0; c < nc; c++) for (let i = 0; i < 10; i++)
+      body += `<rect class="sled${gi}" x="${lx + (nc === 1 ? 4 : 0) + c * 8}" y="${96 - i * (accentOf(g) ? 5.9 : 6.6)}" width="6" height="${accentOf(g) ? 4.2 : 4.6}" rx=".8" fill="rgba(0,0,0,.5)"/>`;
+  }
   function mixStrip(g, ox) {
     const MW = MIXW(g) - (g.ownMeter ? SMW : 0), st = g.stereo, sh = st ? (MW - 96) / 2 : 0, cx = ox + (st ? 33 + sh : MW / 2), cy = 60, gi = d.groups.indexOf(g);
-    if (g.ownMeter) {
-      // its own level: what it records (after the gain) or what it plays (after the volume)
-      const lx = ox + MW + 1;
-      body += `<text x="${lx + 7}" y="31" font-size="6.5" fill="${accentOf(g) ? BAND_INK : f.print}" text-anchor="middle" letter-spacing=".5">SIG</text>`;
-      const nc = st ? 2 : 1;
-      for (let c = 0; c < nc; c++) for (let i = 0; i < 10; i++)
-        body += `<rect class="sled${gi}" x="${lx + (nc === 1 ? 4 : 0) + c * 8}" y="${96 - i * (accentOf(g) ? 5.9 : 6.6)}" width="6" height="${accentOf(g) ? 4.2 : 4.6}" rx=".8" fill="rgba(0,0,0,.5)"/>`;
-    }
+    // its own level: what it records (after the gain) or what it plays (after the volume)
+    if (g.ownMeter) stripMeter(g, ox + MW + 1);
     const pt = (x, y, a, r) => [x + r * Math.sin(a), y - r * Math.cos(a)].map((v) => v.toFixed(2)).join(',');
     const rad = (a) => a * Math.PI / 180;
     const knob = (x, y, r, a, cls) => `<circle cx="${x}" cy="${y + 1.5}" r="${r + .5}" fill="#111" opacity=".5"/><circle cx="${x}" cy="${y}" r="${r}" fill="url(#gVol)" stroke="#0c0c0d"/>` +
       `<circle cx="${x}" cy="${y}" r="${r * .75}" fill="none" stroke="rgba(255,255,255,.08)"/>` +
       `<g class="${cls}" transform="translate(${x},${y}) rotate(${a})"><path d="M0,${-r * .29} L0,${-r * .86}" stroke="#ffb02e" stroke-width="${r > 12 ? 2.4 : 2}" stroke-linecap="round"/></g>`;
     g.knob = { x: cx, y: cy, r: 21 };
-    g.muteK = g.fromStream && st ? { x: ox + 49, y: 89, w: MW - 56, h: 14 } : { x: ox + 7, y: 89, w: MW - 14, h: 14 };
-    if (g.fromStream && st) {
+    g.muteK = g.mix && st ? { x: ox + 49, y: 89, w: MW - 56, h: 14 } : { x: ox + 7, y: 89, w: MW - 14, h: 14 };
+    if (g.mix && st) {
       g.btn = { x: ox + 7, y: 89, w: 38, h: 14 };
       body += `<rect x="${ox + 7}" y="89" width="38" height="14" rx="2.5" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/>` +
         `<text x="${ox + 26}" y="98.6" font-size="6.8" fill="#e6e7e8" text-anchor="middle" letter-spacing=".5">${g.split ? 'JOIN' : 'SPLIT'}</text>`;
@@ -576,15 +603,15 @@ function renderDevice(d) {
     const m = g.muteK;
     body += `<rect x="${m.x}" y="${m.y}" width="${m.w}" height="${m.h}" rx="2.5" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/>` +
       `<circle class="mled${gi}" cx="${m.x + 8}" cy="${m.y + m.h / 2}" r="2.6" fill="${g.mute ? '#ff3b2f' : '#3a1411'}" stroke="rgba(0,0,0,.6)" stroke-width=".6"/>` +
-      `<text x="${m.x + m.w / 2 + (st && !g.fromStream ? 0 : 5)}" y="${m.y + 9.6}" font-size="7.4" fill="#e6e7e8" text-anchor="middle" letter-spacing=".7">MUTE</text>`;
+      `<text x="${m.x + m.w / 2 + (st && !g.mix ? 0 : 5)}" y="${m.y + 9.6}" font-size="7.4" fill="#e6e7e8" text-anchor="middle" letter-spacing=".7">MUTE</text>`;
   }
   const group = (g, x, oy = 0) => {
     const b0 = body.length, nx = group1(g, x);
     g.oy = oy;
     if (oy) {
       body = body.slice(0, b0) + `<g transform="translate(0,${oy})">` + body.slice(b0) + '</g>';
-      for (const k of [g.knob, g.balK, g.muteK, g.btn, g.drawerK]) if (k) k.y += oy;
-      for (const j of g.jacks) j.ly += oy;
+      for (const k of [g.knob, g.balK, g.muteK, g.btn]) if (k) k.y += oy;
+      for (const j of [...g.jacks, ...(g.rec ? g.rec.jacks : [])]) j.ly += oy;
     }
     return nx;
   };
@@ -597,23 +624,19 @@ function renderDevice(d) {
     if (acc) body += `<path d="M${x},36 V24 a6,6 0 0 1 6,-6 H${x + gw - 6} a6,6 0 0 1 6,6 V36 Z" fill="${acc}"/>` +
       `<path d="M${x},36.5 H${x + gw}" stroke="rgba(0,0,0,.35)"/>` +
       `<rect x="${x + .6}" y="18.6" width="${gw - 1.2}" height="90.8" rx="5.6" fill="none" stroke="${acc}" stroke-width="1.2" opacity=".9"/>`;
-    body += `<text x="${x + 8}" y="31" font-size="8.5" fill="${ink}" letter-spacing=".8">${g.label}</text>`;
+    body += `<text x="${x + 8}" y="31" font-size="8.5" fill="${ink}" letter-spacing=".8">${nm(g)}</text>`;
 
     body += g.dir === 'in'
       ? `<rect x="${x + jw - 30}" y="22.5" width="23" height="11" rx="2" fill="none" stroke="${ink}" stroke-width=".9"/><text x="${x + jw - 18.5}" y="31" font-size="7.5" fill="${ink}" text-anchor="middle">IN</text>`
       : `<rect x="${x + jw - 30}" y="22.5" width="23" height="11" rx="2" fill="${ink}"/><text x="${x + jw - 18.5}" y="31" font-size="7.5" fill="${acc || inv}" text-anchor="middle">OUT</text>`;
-    // (an app's stereo streams: centred left of their SPLIT switch)
-    let jx = x + ((g.streams && streamSwitch(g) ? jw - 46 : jw) - n * JP) / 2 + JP / 2;
+    // (a frame with REC OUT: centred left of it)
+    const rw = RECW(g);
+    let jx = x + (jw - rw - n * JP) / 2 + JP / 2;
     const rows = stacked(g);
     g.jacks.forEach((j, r) => {
       const k = slots(j);
-      const cols = streamCols(g), faceStreams = g.streams && S.streamUI === 'face' && !cols;
       const R2 = S.accent ? ROWS_BAND : ROWS_PLAIN;
-      if (cols) {
-        // split streams: a column each, L above R (a mono stream on the L row)
-        const si = g.streams.indexOf(j.stream), lr = j.stream.ports.length === 2 && j.n === 'R' ? 1 : 0;
-        j.lx = x + 30 + si * STREAM_COL + 20; j.ly = R2[lr];
-      } else if (rows) { j.lx = x + ROW_X; j.ly = R2[r]; } else { j.lx = jx; j.ly = faceStreams ? 55 : 62; }
+      if (rows) { j.lx = x + ROW_X; j.ly = R2[r]; } else { j.lx = jx; j.ly = 62; }
       // parallel jacks of one port get a printed outline, like a mult on a patch bay (lower in a
       // row of a split stereo group, which has less room)
       const h = rows ? 32 : 42;
@@ -623,45 +646,40 @@ function renderDevice(d) {
       // a stereo jack's ring in its group's colour (gold without colours)
       const ring = pic === 'stereo' ? ` color="${acc || '#c9a24a'}"` : '';
       for (let i = 0; i < k; i++) body += `<use href="#jack-${pic}" x="${j.lx + i * JP}" y="${j.ly}"${ring}/>`;
-      body += cols
-        ? (j.ly === R2[0] ? `<text x="${j.lx + 19}" y="${j.ly - 8}" font-size="8" fill="${f.print}">${j.stream.n}</text>` : '')
-        : rows
+      body += rows
         ? `<text x="${j.lx - 21}" y="${j.ly + 3.2}" font-size="9" fill="${f.print}" text-anchor="end">${j.n}</text>`
-        : `<text x="${j.lx + (k - 1) * JP / 2}" y="${faceStreams ? 80 : 91}" font-size="${j.kind === 'stereo' ? 7.5 : 9}" fill="${f.print}" text-anchor="middle" letter-spacing="${j.kind === 'stereo' ? .6 : 0}">${j.n}</text>`;
-      // A: under each stream's jack its mute (a red LED key) and trim knob, beside it its level
-      if (faceStreams) {
-        const p = j.stream, si = g.streams.indexOf(p), cx = j.lx, gi = d.groups.indexOf(g);
-        p.muteK = { x: cx - 10, y: 95, r: 7 }; p.trimK = { x: cx + 8, y: 95, r: 9 };
-        body += `<circle cx="${cx - 10}" cy="95" r="5.2" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/>` +
-          `<circle class="smled${gi}_${si}" cx="${cx - 10}" cy="95" r="2.4" fill="${p.sm ? '#ff3b2f' : '#3a1411'}"/>` +
-          `<circle cx="${cx + 8}" cy="96" r="6.8" fill="#111" opacity=".5"/><circle cx="${cx + 8}" cy="95" r="6.5" fill="url(#gVol)" stroke="#0c0c0d"/>` +
-          `<g class="strim${gi}_${si}" transform="translate(${cx + 8},95) rotate(${volAngle(p.sv)})"><path d="M0,-2 L0,-5.5" stroke="#ffb02e" stroke-width="1.6" stroke-linecap="round"/></g>`;
-        for (let i = 0; i < 5; i++)
-          body += `<rect class="slv${gi}_${si}" x="${cx + 19}" y="${66 - i * 4.6}" width="4" height="3.2" rx=".6" fill="rgba(0,0,0,.5)"/>`;
-      } else if (g.streams) { j.stream.muteK = j.stream.trimK = null; }
-      if (!rows && !cols) jx += k * JP;
+        : `<text x="${j.lx + (k - 1) * JP / 2}" y="91" font-size="${j.kind === 'stereo' ? 7.5 : 9}" fill="${f.print}" text-anchor="middle" letter-spacing="${j.kind === 'stereo' ? .6 : 0}">${j.n}</text>`;
+      if (!rows) jx += k * JP;
     });
-    // split streams: L and R printed once, left of the rows
-    if (streamCols(g)) {
-      const R2 = S.accent ? ROWS_BAND : ROWS_PLAIN;
-      body += `<text x="${x + 16}" y="${R2[0] + 3.2}" font-size="9" fill="${f.print}" text-anchor="middle">L</text><text x="${x + 16}" y="${R2[1] + 3.2}" font-size="9" fill="${f.print}" text-anchor="middle">R</text>`;
+    // REC OUT: after a thin rule, the copy of what this frame plays
+    if (g.rec) {
+      const rx = x + jw - rw, R2 = S.accent ? ROWS_BAND : ROWS_PLAIN, ry = stacked(g) ? (R2[0] + R2[1]) / 2 : 62;
+      body += `<path d="M${rx + 2},${accentOf(g) ? 44 : 34} V100" stroke="${f.print}" stroke-opacity=".35" stroke-dasharray="2 3"/>`;
+      let mx = rx + 9 + JP / 2;
+      for (const j of g.rec.jacks) {
+        const k = slots(j);
+        j.lx = mx; j.ly = ry;
+        if (k > 1) body += `<rect x="${mx - 21}" y="${ry - 21}" width="${(k - 1) * JP + 42}" height="42" rx="21" fill="rgba(0,0,0,.08)" stroke="${f.print}" stroke-width=".9" opacity=".5"/>`;
+        const pic = j.kind === 'mono' && g.rec.stereo ? 'stereo' : j.kind, ring = pic === 'stereo' ? ` color="${accentOf(g.rec) || '#c9a24a'}"` : '';
+        for (let i = 0; i < k; i++) body += `<use href="#jack-${pic}" x="${mx + i * JP}" y="${ry}"${ring}/>`;
+        body += `<text x="${mx + (k - 1) * JP / 2}" y="${stacked(g) ? 99 : 91}" font-size="7.5" fill="${f.print}" text-anchor="middle" letter-spacing=".6">REC OUT</text>`;
+        mx += k * JP;
+      }
+      g.rec.x = x; g.rec.w = jw; g.rec.btn = null; g.rec.knob = g.rec.balK = g.rec.muteK = null;
     }
-    if ((g.stereo && !g.fromStream) || streamSwitch(g)) {
-      // a little hardware switch: one stereo jack, or L and R apart (for an app's stereo
-      // streams, all of them at once)
+    if (g.stereo && !g.mix) {
+      // a little hardware switch: one stereo jack, or L and R apart
       const bx = x + jw - 42, by = 97;
       g.btn = { x: bx, y: by - 2, w: 36, h: 14 };
       body += `<rect x="${bx}" y="${by}" width="34" height="10" rx="2" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/>` +
         `<text x="${bx + 17}" y="${by + 7.6}" font-size="6.8" fill="#e6e7e8" text-anchor="middle" letter-spacing=".5">${g.split ? 'JOIN' : 'SPLIT'}</text>`;
     } else g.btn = null;
-    // B: the key that slides the streams' drawer out
-    if (g.streams && S.streamUI === 'drawer') {
-      g.drawerK = { x: x + 8, y: 95, w: 70, h: 13 };
-      body += `<rect x="${x + 8}" y="95" width="70" height="13" rx="2.5" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/>` +
-        `<text x="${x + 43}" y="104.4" font-size="7" fill="#e6e7e8" text-anchor="middle" letter-spacing=".6">STREAMS ${d.drawer ? '▴' : '▾'}</text>`;
-    } else g.drawerK = null;
     if (g.mix) mixStrip(g, x + jw);
-    else g.knob = g.balK = g.muteK = null;
+    else {
+      g.knob = g.balK = g.muteK = null;
+      // a frame without knobs: its meter right of its jacks
+      if (g.ownMeter) stripMeter(g, x + jw - 2);
+    }
     g.x = x; g.w = gw;
     return x + gw + 10;
   };
@@ -673,26 +691,53 @@ function renderDevice(d) {
     gx1 = ox - 10;
     for (const g of outs) ox = group(g, ox);
   }
-  const colW = Array.from({ length: PER_ROW }, (_, c) => Math.max(0, ...rowsG.map((r) => (r[c] ? groupW(r[c]) : 0))));
-  const colX = colW.reduce((a, w) => [...a, a[a.length - 1] + w + 10], [x]);
+  // more units: one grid, a row's inputs at its left, its outputs at its right
+  const R = W - EAR - PAD, grid = units > 1 ? gridOf(rowsG) : null;
+  const cx = grid ? grid.w.reduce((a, w) => [...a, a[a.length - 1] + w + 10], [x]) : [];
+  const spans = [];
   if (units > 1) rowsG.forEach((row, u) => {
     // a unit more: a groove across the face parts it from the one above
     if (u) body += `<path d="M${EAR + 8},${u * DEV_H} H${W - EAR - 8}" stroke="rgba(0,0,0,.55)" stroke-width="1.2"/><path d="M${EAR + 8},${u * DEV_H + 1.2} H${W - EAR - 8}" stroke="rgba(255,255,255,.08)"/>`;
-    // in columns: a frame starts where the one above it does
-    row.forEach((g, c) => group(g, colX[c], u * DEV_H));
+    for (const [g, c] of grid.at[u]) {
+      // inputs on their column's left edge, outputs on its right one
+      group(g, g.dir === 'out' ? cx[c] : cx[c] + grid.w[c] - groupW(g), u * DEV_H);
+    }
+    // what is left between them (a short row's empty column)
+    const k = row.ins.length, m = row.outs.length;
+    const a = k ? cx[k - 1] + grid.w[k - 1] + 10 : x, b = m ? cx[grid.n - m] - 10 : R;
+    spans.push([a, b]);
   });
+  // vents: the slots of a rack unit, where a face has nothing to show
   let grille = '';
-  if (rack && units === 1 && gx1 - gx0 > 50) {
+  const vent = (a, b, oy = 0) => {
+    if (b - a <= 50) return;
     for (let y = 30; y <= 98; y += 9.5)
-      grille += `<rect x="${gx0}" y="${y}" width="${gx1 - gx0}" height="4.2" rx="2.1" fill="#0b0c0d"/>` +
-        `<path d="M${gx0 + 2},${y + 5.1} h${gx1 - gx0 - 4}" stroke="rgba(255,255,255,.12)"/>`;
-  }
+      grille += `<rect x="${a}" y="${oy + y}" width="${b - a}" height="4.2" rx="2.1" fill="#0b0c0d"/>` +
+        `<path d="M${a + 2},${oy + y + 5.1} h${b - a - 4}" stroke="rgba(255,255,255,.12)"/>`;
+  };
+  if (rack && units === 1) vent(gx0, gx1);
+  if (units > 1) rowsG.forEach((row, u) => {
+    const oy = u * DEV_H;
+    // between a row's inputs and its outputs; from the second unit down, under the name and
+    // screen too (one grille when the row has no inputs)
+    const [a, b] = spans[u];
+    if (u && !rowsG[u].ins.length) vent(x0, b, oy);
+    else { if (u) vent(x0, x0 + IDW, oy); vent(a, b, oy); }
+  });
   let leds = '';
   if (!d.ownMeters) for (let c = 0; c < 2; c++) for (let i = 0; i < 10; i++)
     leds += `<rect class="led" x="${mx + c * 11}" y="${92 - i * 7.6}" width="8" height="5.4" rx="1" fill="rgba(0,0,0,.5)"/>`;
 
   const r = rack ? 3 : 12;
-  const title = `<text x="${x0}" y="33" font-size="${TITLE}">${esc(fitTitle(d.name, IDW - 4))}</text>`;
+  const title = `<text x="${x0}" y="33" font-size="${TITLE}">${esc(fitTitle(d.name, IDW - 30))}</text>`;
+  // HIDE: a small key right of the name, an eye struck through; it hides an unused device (one
+  // with cords can't be: the key is dimmed and says why)
+  const used = d.groups.some((g) => g.jacks.some((j) => j.count));
+  d.hideK = { x: x0 + IDW - 22, y: 21, w: 22, h: 14 };
+  const hk = d.hideK, ex = hk.x + hk.w / 2, ey = hk.y + hk.h / 2;
+  const hideKey = `<g opacity="${used ? .35 : 1}"><rect x="${hk.x}" y="${hk.y}" width="${hk.w}" height="${hk.h}" rx="2.5" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/>` +
+    `<path d="M${ex - 6},${ey} q6,-6 12,0 q-6,6 -12,0z" fill="none" stroke="#e6e7e8" stroke-width="1.1"/><circle cx="${ex}" cy="${ey}" r="1.7" fill="#e6e7e8"/>` +
+    `<path d="M${ex - 5.5},${ey + 4.5} L${ex + 5.5},${ey - 4.5}" stroke="#1b1c1e" stroke-width="2.6"/><path d="M${ex - 5.5},${ey + 4.5} L${ex + 5.5},${ey - 4.5}" stroke="#e6e7e8" stroke-width="1.1"/></g>`;
   // a card's PROFILE key, under its screen: the list of its profiles drops out of it; beside it
   // the PORT key, when one of its outputs has ports to choose from (speakers, headphones…). One
   // key is centred, two share the width, clear of the corner screws
@@ -740,7 +785,7 @@ function renderDevice(d) {
       <text class="lcd2" x="${x0 + 9}" y="${keyRow ? 80.5 : 86}" font-size="10.5" font-weight="normal">48 kHz  IDLE</text>
       <text class="lcd3" x="${x0 + 9}" y="${keyRow ? 94 : 102}" font-size="10.5" font-weight="normal"></text>
     </g>
-    ${profKey}
+    ${profKey}${hideKey}
     ${body}${grille}${leds}
     ${d.ownMeters ? '' : `<text x="${mx + 9.5}" y="112" font-size="7.5" fill="${f.print}" text-anchor="middle" letter-spacing=".6">SIG</text>`}
   </svg>`;
@@ -755,9 +800,8 @@ function renderDevice(d) {
   d.lcd1 = d.el.querySelector('.lcd1');
   d.lcd3 = d.el.querySelector('.lcd3');
   d.groups.forEach((g, gi) => {
-    if (g.streams) g.streams.forEach((p, si) => { p.leds = d.el.querySelectorAll(`.slv${gi}_${si}`); p.shown = -1; p.trimEl = d.el.querySelector(`.strim${gi}_${si}`); p.muteEl = d.el.querySelector(`.smled${gi}_${si}`); });
-    if (!g.mix) return;
     g.leds = d.el.querySelectorAll('.sled' + gi); g.shown = '';
+    if (!g.mix) return;
     g.knEl = d.el.querySelector('.kn' + gi); g.bkEl = d.el.querySelector('.bk' + gi); g.muteEl = d.el.querySelector('.mled' + gi);
     paintMix(g);
   });
@@ -782,6 +826,7 @@ const linksOf = (A, B) => A.ports.flatMap((p) => B.ports.filter((q) => links.has
 
 // make the cords match the links: keep the ones that fit, pull out the rest, plug in what is missing
 function reconcile(quiet) {
+  if (hiddenDevs.length) unhideLinked();
   const want = new Map();
   for (const k of links) {
     const [o, i] = k.split('>'), A = ports.get(o).jack, B = ports.get(i).jack;
@@ -964,6 +1009,68 @@ function drawShadow(c, alpha) {
   }
   ctx.globalAlpha = 1;
 }
+// ---------------- the signal, flowing ----------------
+// While sound goes through a cord, a light runs inside it from the output to the input: one at a
+// time, a glow in the wire with a fading tail; as it reaches the jack the next leaves the plug.
+// It runs faster and glows brighter the louder the sound; none when silent (muted, paused,
+// nothing playing). MIDI: a quick, short light now and then, as notes. W turns it on and off.
+let flowLast = 0;
+function drawFlow(order, alphaOf, now) {
+  const dt = flowLast ? Math.min((now - flowLast) / 1000, .05) : 0;
+  flowLast = now;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+  for (const c of order) {
+    if (!c.pts || c.pts.length < 2) continue;
+    const a = alphaOf(c), midi = c.a.jack && c.a.jack.t === 'midi';
+    // eased, so the light fades in and out instead of popping
+    // every plugged-in cord, whatever plays: it shows the patch, not the sound
+    const want = live(c) && S.flow ? 1 : 0;
+    c.flowLv = (c.flowLv || 0) + (want - (c.flowLv || 0)) * Math.min(1, dt * 4);
+    const lvl = Math.min(c.flowLv, 1);
+    if (lvl < .02 || a < .05) continue;
+    // the cord's length point by point, from the output end (a)
+    const pts = c.pts, cum = [0];
+    for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y));
+    const L = cum[cum.length - 1];
+    if (L < 20) continue;
+    const at = (s) => {
+      let i = 1;
+      while (i < cum.length - 1 && cum[i] < s) i++;
+      const k = clamp((s - cum[i - 1]) / Math.max(1e-6, cum[i] - cum[i - 1]), 0, 1);
+      return { x: pts[i - 1].x + (pts[i].x - pts[i - 1].x) * k, y: pts[i - 1].y + (pts[i].y - pts[i - 1].y) * k };
+    };
+    // one light: across the cord in 1.6 s when quiet, .7 s when loud (MIDI quicker, with a rest)
+    const trip = 1.4, rest = 0;
+    c.flowPh = ((c.flowPh || 0) + dt / trip) % ((trip + rest) / trip);
+    if (c.flowPh > 1) continue;
+    const head = c.flowPh * L, tail = Math.min(L * .45, 120);
+    const w = cordW(c), core = shade(c.color, .55), halo = shade(c.color, .3);
+    // fading in leaving the plug, out reaching the jack
+    const edge = Math.min(1, head / 30, (L - head) / 30 + .15);
+    const bright = a * Math.max(0, edge) * .38 * lvl;
+    // the tail: short pieces of the wire, dimmer the further back
+    const N = 14;
+    for (let i = 0; i < N; i++) {
+      const s0 = head - tail * (i + 1) / N, s1 = head - tail * i / N;
+      if (s1 <= 0) break;
+      const p0 = at(Math.max(0, s0)), p1 = at(s1), f = (1 - i / N) ** 1.6;
+      ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y);
+      ctx.globalAlpha = bright * f * .25; ctx.strokeStyle = halo; ctx.lineWidth = w * 2.2; ctx.stroke();
+      ctx.globalAlpha = bright * f; ctx.strokeStyle = core; ctx.lineWidth = w * .7; ctx.stroke();
+    }
+    // the head: the brightest, a soft glow round it
+    const p = at(head), r = w * 1.9;
+    const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+    g.addColorStop(0, halo.replace('rgb', 'rgba').replace(')', `,${.7 * bright})`));
+    g.addColorStop(1, halo.replace('rgb', 'rgba').replace(')', ',0)'));
+    ctx.globalAlpha = 1; ctx.fillStyle = g; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, TAU); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
 let focus = new Set();
 function draw(now) {
   const dpr = devicePixelRatio || 1, v = S.view;
@@ -991,6 +1098,7 @@ function draw(now) {
   const order = [...cables].sort((u, v) => (held(u) - held(v)) || (focus.has(u) - focus.has(v)));
   for (const c of order) { const a = alphaOf(c); if (a > .01) drawShadow(c, a); }
   for (const c of order) { const a = alphaOf(c); if (a > .01) drawCord(c, a); }
+  drawFlow(order, alphaOf, now);
   // the jacks heard: a cyan ring and a little pair of headphones; a pinned one also glows (it
   // plays on when the pointer leaves); one that would feed back is red
   for (const j of cueJacks()) {
@@ -1124,18 +1232,22 @@ function updateSignal(now) {
   for (const d of devs) {
     let g = d.gen || 0;
     if (d.needsMidi && !cables.some((c) => live(c) && c.b.jack.dev === d && c.b.jack.t === 'midi')) g = 0;
-    // an app's streams: each at its own level, its trim and mute after the frame's volume
-    const ss = d.groups.find((x) => x.streams);
-    if (ss) for (const s of ss.streams) s.level = g * s.sg * gain(ss) * (s.sm ? 0 : s.sv ** 3);
+    // an app's streams: each frame at its own level, after its volume
     const own = d.groups.filter((x) => x.sg !== undefined);
     for (const x of own) x.level = g * x.sg * gain(x);
-    lv.set(d, { out: ss ? Math.max(0, ...ss.streams.map((s) => s.level)) : own.length ? Math.max(0, ...own.map((x) => x.level)) : g * gain(strip(d, 'out')), in: 0, raw: g });
+    lv.set(d, { out: own.length ? Math.max(0, ...own.map((x) => x.level)) : g * gain(strip(d, 'out')), in: 0, raw: g });
   }
   for (let pass = 0; pass < 3; pass++) for (const c of cables) {
     if (!live(c) || c.a.jack.t !== 'audio') continue;
     const s = lv.get(c.a.jack.dev), t = lv.get(c.b.jack.dev);
     t.in = Math.max(t.in, s.out);
     if (c.b.jack.dev.pass) t.out = Math.max(t.out, t.in * .9);
+  }
+  // what each cord carries: its output's level (MIDI: a note now and then while its device plays)
+  for (const c of cables) {
+    if (!live(c)) { c.sig = 0; continue; }
+    const s = lv.get(c.a.jack.dev);
+    c.sig = c.a.jack.t === 'audio' ? s.out : s.raw > 0 ? .35 : 0;
   }
   for (const d of devs) {
     const l = lv.get(d), base = d.groups.length ? Math.max(l.out, l.in * gain(strip(d, 'in'))) : 0, playing = d.groups.length && Math.max(l.raw, l.in) > .01;
@@ -1155,7 +1267,8 @@ function updateSignal(now) {
     };
     if (d.ownMeters) {
       // one meter per frame: the input's after its gain, the output's after its volume
-      for (const g of d.groups) if (g.ownMeter) meter(g, g.dir === 'in' ? l.in * gain(g) : g.level ?? l.out, g, d.dx + (g.dir === 'in' ? 0 : 3));
+      // (a MONITOR: what its device plays, after its volume)
+      for (const g of d.groups) if (g.ownMeter) meter(g, g.dir === 'in' ? l.in * gain(g) : g.label === 'MONITOR' ? l.in * gain(strip(d, 'in')) : g.level ?? l.out, g, d.dx + (g.dir === 'in' ? 0 : 3));
     } else meter(d, base, strip(d, 'out') || strip(d, 'in'), d.dx);
     // the LCD's top line scrolls a name that is too long for it, pausing at the start
     const nm = d.name, long = nm.length > LCD_CH;
@@ -1185,19 +1298,6 @@ function updateSignal(now) {
       d.stEl.style.filter = playing ? 'drop-shadow(0 0 2.5px #4cff6a)' : '';
     }
   }
-}
-// each stream's little meter (on the face or in the drawer), up at once and down slowly
-function streamMeters(now) {
-  for (const d of devs) for (const g of d.groups) if (g.streams) g.streams.forEach((p, si) => {
-    const wob = p.level ? p.level * (.6 + .3 * Math.sin(now / (120 + 17 * si)) + .15 * Math.random()) : 0;
-    p.lvl += (wob - p.lvl) * (wob > p.lvl ? .6 : .15);
-    const n = Math.round(clamp(p.lvl, 0, 1) * 5);
-    if (n === p.shown) return;
-    p.shown = n;
-    const paint = (els, on, off) => els && els.forEach((r, i) => { const c = i >= 4 ? '#ff3b2f' : i >= 3 ? '#ffb02e' : '#4cff6a'; r.style ? (r.style.background = i < n ? c : off) : 0; r.setAttribute && r.setAttribute('fill', i < n ? c : on); });
-    paint(p.leds, 'rgba(0,0,0,.5)', '');
-    if (p.dleds) p.dleds.forEach((r, i) => { const c = i >= 7 ? '#ff3b2f' : i >= 5 ? '#ffb02e' : '#4cff6a'; r.style.background = i < Math.round(clamp(p.lvl, 0, 1) * 8) ? c : 'rgba(0,0,0,.6)'; });
-  });
 }
 function updateInfo() {
   const n = links.size;
@@ -1246,18 +1346,68 @@ function ranks() {
   }
   return r;
 }
-const byFlow = () => { const r = ranks(); return [...devs].sort((a, b) => r.get(a) - r.get(b) || a.dy - b.dy); };
-function arrange() {
-  if (S.mode === 'rack') { rackOrder = byFlow(); layoutRack(); fit(true); return; }
+const byFlow = () => [...flowColumns().flat(), ...unpatchedByKind()];
+// ARRANGE: the devices with cords in columns by signal flow (sources left, what they feed right),
+// each column ordered after the one before it so cords cross less; the devices without cords
+// under them, kind by kind (sound cards, apps, MIDI, internal streams), each kind a row that
+// wraps at the width the window shows, so the desk fills instead of growing one tall column.
+const KIND_ORDER = ['metal', 'black', 'navy', 'cream'];
+const kindRank = (d) => { const i = KIND_ORDER.indexOf(d.finish); return i < 0 ? 9 : i; };
+const byKind = (a, b) => kindRank(a) - kindRank(b) || a.title.localeCompare(b.title);
+const patched = (d) => cables.some((c) => live(c) && (c.a.jack.dev === d || c.b.jack.dev === d));
+function flowColumns() {
   const r = ranks(), cols = [];
-  for (const d of devs) (cols[r.get(d)] ||= []).push(d);
-  let x = 40;
-  for (const col of cols.filter(Boolean)) {
-    col.sort((a, b) => a.dy - b.dy);
-    let y = 40;
-    for (const d of col) { d.dx = d.tx = x; d.dy = d.ty = y; y += d.H + 46; }
-    x += Math.max(...col.map((d) => d.W)) + 110;
+  for (const d of devs.filter(patched)) (cols[r.get(d)] ||= []).push(d);
+  const out = cols.filter(Boolean);
+  // the first column by kind and name; each next one by where its cords come from
+  out[0] && out[0].sort(byKind);
+  for (let i = 1; i < out.length; i++) {
+    const prev = out.slice(0, i).flat(), at = (d) => {
+      const ys = cables.filter((c) => live(c) && c.b.jack.dev === d && prev.includes(c.a.jack.dev)).map((c) => prev.indexOf(c.a.jack.dev));
+      return ys.length ? ys.reduce((a, b) => a + b, 0) / ys.length : 1e3;
+    };
+    out[i].sort((a, b) => at(a) - at(b) || byKind(a, b));
   }
+  return out;
+}
+const unpatchedByKind = () => devs.filter((d) => !patched(d)).sort(byKind);
+// spacing on one step U: between devices (in a row, between rows) U; between kinds 2U; between
+// flow columns (room for cords) 4U. Between the patched devices and the rest, and round the whole
+// desk when fitted, the same EDGE, 2U. Close enough that the faces fill the window, apart enough to
+// read as separate gear.
+const U = 12, ROW_GAP = U, DEV_GAP = U, KIND_GAP = 2 * U, COL_GAP = 4 * U, EDGE = 2 * U;
+function arrange() {
+  const cols = flowColumns(), rest = unpatchedByKind();
+  if (S.mode === 'rack') { rackOrder = [...cols.flat(), ...rest]; layoutRack(); fit(true); return; }
+  let x = 40, bottom = 40;
+  for (const col of cols) {
+    let y = 40;
+    for (const d of col) { d.dx = d.tx = x; d.dy = d.ty = y; y += d.H + ROW_GAP; }
+    bottom = Math.max(bottom, y - ROW_GAP);
+    x += Math.max(...col.map((d) => d.W)) + COL_GAP;
+  }
+  const flowW = cols.length ? x - COL_GAP - 40 : 0, y0 = cols.length ? bottom + EDGE : 40;
+  // the rest in rows, kind after kind (a wider gap between kinds), wrapping at `wide`
+  const pack = (wide, place) => {
+    let y = y0, rx = 40, rowH = 0, kind = null, w = 0;
+    for (const d of rest) {
+      const k = kindRank(d), gap = kind === null ? 0 : k !== kind ? KIND_GAP : DEV_GAP;
+      if (kind !== null && rx + gap + d.W > 40 + wide) { y += rowH + ROW_GAP; rx = 40; rowH = 0; }
+      else rx += gap;
+      kind = k;
+      if (place) { d.dx = d.tx = rx; d.dy = d.ty = y; }
+      rx += d.W; rowH = Math.max(rowH, d.H); w = Math.max(w, rx - 40);
+    }
+    return { w: Math.max(w, flowW), h: (rest.length ? y + rowH : bottom) - 40 };
+  };
+  // the width whose shape fits the window best: the faces as large as they can be
+  const W = stage.clientWidth || 1400, H = stage.clientHeight || 800;
+  let best = null;
+  for (let wide = Math.max(flowW, ...rest.map((d) => d.W)); wide <= 6000; wide += 40) {
+    const b = pack(wide, false), s = Math.min((W - 2 * EDGE) / b.w, (H - 2 * EDGE) / b.h);
+    if (!best || s > best.s + 1e-6) best = { wide, s };
+  }
+  pack(best ? best.wide : 1400, true);
   fit(true);
 }
 function bounds() {
@@ -1266,9 +1416,10 @@ function bounds() {
   return { x0, y0, x1, y1 };
 }
 function fit(anim) {
-  const b = bounds(), W = stage.clientWidth, H = stage.clientHeight, m = 60;
-  const s = clamp(Math.min((W - 2 * m) / (b.x1 - b.x0), (H - 2 * m) / (b.y1 - b.y0 + 60)), .3, 1.3);
-  const t = { s, x: (W - (b.x1 - b.x0) * s) / 2 - b.x0 * s, y: Math.max(m * .6, (H - (b.y1 - b.y0 + 60) * s) / 2) - b.y0 * s };
+  // fit: as big as the window allows (up to 200%), a slim margin round the devices
+  const b = bounds(), W = stage.clientWidth, H = stage.clientHeight, m = EDGE;
+  const s = clamp(Math.min((W - 2 * m) / (b.x1 - b.x0), (H - 2 * m) / (b.y1 - b.y0)), .3, 2);
+  const t = { s, x: (W - (b.x1 - b.x0) * s) / 2 - b.x0 * s, y: Math.max(m, (H - (b.y1 - b.y0) * s) / 2) - b.y0 * s };
   if (anim) S.vt = t; else S.view = t;
 }
 
@@ -1433,7 +1584,7 @@ const balText = (g) => (Math.abs(g.bal) < .005 ? 'BAL CENTRE' : `BAL ${g.bal < 0
   `${g.bal < 0 ? 'R' : 'L'} ${dB(Math.min(g.vol, g.vol * (1 - Math.abs(g.bal))))}`);
 // on a device with two sets of controls the LCD says which one
 // (by the frame's name: INPUT, OUTPUT, PLAYBACK, CAPTURE…, as a card's jacks point the other way)
-const stripText = (d, g, s) => (d.groups.filter((x) => x.mix).length > 1 ? g.label + ' ' : '') + s;
+const stripText = (d, g, s) => (d.groups.filter((x) => x.mix).length > 1 ? nm(g) + ' ' : '') + s;
 function paintMix(g) {
   if (!g.knob) return;
   const oy = g.oy || 0;
@@ -1462,7 +1613,7 @@ function holdBal(d, g, on) { g.balHeld = on; renderDevice(d); }
 function pressBal(d, g) {
   g.balHeld = false; g.balOut = !g.balOut;
   renderDevice(d); sndPlug('out');
-  $('#st2').textContent = `${d.title} · ${g.label.toLowerCase()} balance ${g.balOut ? 'out: turn it' : 'pushed in'} · ${balText(g)}`;
+  $('#st2').textContent = `${d.title} · ${nm(g).toLowerCase()} balance ${g.balOut ? 'out: turn it' : 'pushed in'} · ${balText(g)}`;
 }
 function setMute(d, g, m) { g.mute = m; paintMix(g); mixNote(d, stripText(d, g, volText(g))); }
 
@@ -1505,7 +1656,7 @@ function openPorts(d, keep) {
   const outs = d.groups.filter((g) => g.routes && g.routes.length > 1);
   ports_.innerHTML = outs.map((g) => {
     const gi = d.groups.indexOf(g), r = g.routes[g.route];
-    return (outs.length > 1 ? `<h2>${g.label}</h2>` : '') + g.routes.map((x, i) =>
+    return (outs.length > 1 ? `<h2>${nm(g)}</h2>` : '') + g.routes.map((x, i) =>
       `<div class="row${i === g.route ? ' cur' : ''}${x.unplugged ? ' off' : ''}" data-g="${gi}" data-i="${i}"><span>${esc(x.name)}</span>${x.unplugged ? '<i>UNPLUGGED</i>' : ''}</div>`).join('') +
       `<div class="lat"><b>LATENCY OFFSET</b><button data-g="${gi}" data-l="-1" title="Shift: 10 ms">−</button><span>${r.lat.toFixed(0)} ms</span><button data-g="${gi}" data-l="1" title="Shift: 10 ms">+</button></div>`;
   }).join('');
@@ -1524,7 +1675,7 @@ ports_.addEventListener('click', (e) => {
     const r = g.routes[g.route];
     renderDevice(d); sndPlug('in');
     mixNote(d, `${r.short}${r.unplugged ? ' · UNPLUGGED' : ''}`);
-    $('#st2').textContent = `${d.title} · ${g.label} ${g.src ? 'records from' : 'plays to'}: ${r.name}${r.unplugged ? ' (nothing plugged in)' : ''}`;
+    $('#st2').textContent = `${d.title} · ${nm(g)} ${g.src ? 'records from' : 'plays to'}: ${r.name}${r.unplugged ? ' (nothing plugged in)' : ''}`;
   } else {
     const r = g.routes[g.route];
     r.lat = clamp(r.lat + +el.dataset.l * (e.shiftKey ? 10 : 1), -500, 2000);
@@ -1533,58 +1684,87 @@ ports_.addEventListener('click', (e) => {
   openPorts(d, true);
 });
 addEventListener('pointerdown', (e) => { if (!ports_.contains(e.target) && !e.target.closest?.('#stage')) closePorts(); });
-// ---------------- an app's streams, one by one ----------------
-const streamName = (d, g, p) => `${d.title} · ${g.label} ${p.n}`;
-function streamNote(d, g, p) {
-  mixNote(d, p.sm ? `STREAM ${p.n} MUTED` : `STREAM ${p.n} VOL ${String(Math.round(p.sv * 100)).padStart(3)}%`);
+// ---------------- defaults ----------------
+// ---------------- hidden devices ----------------
+// An unused device (no cords) can be hidden: its HIDE key, right of its name, or H over it. Hidden ones
+// stay hidden after a restart (the app keeps them in its settings; the mockup in browser storage).
+// The HIDDEN key's list shows them again, and lists the nodes Patchcord always leaves out, dimmed
+// and marked SYSTEM: other programs' level meters and Patchcord's own. A hidden device that gets a
+// cord (a preset, an app connecting) comes back by itself: a cord must never lead nowhere.
+const HIDE_KEY = 'patchcord.hidden';
+const SYSTEM_NODES = [
+  { name: 'JLab GO Work 2', what: 'its real microphone and WirePlumber\'s internal capture stream: the plumbing behind MIC that switches the headset to headset mode when an app records' },
+  { name: 'PulseAudio Volume Control', what: 'its level meters (17 streams)' },
+  { name: 'Plasma volume applet', what: 'its level meters' },
+  { name: 'patchcord-meter-*', what: "Patchcord's own level meters" },
+  { name: 'patchcord-cue', what: "Patchcord's cue (listen)" },
+];
+let hiddenIds = [];
+try { hiddenIds = JSON.parse(localStorage.getItem(HIDE_KEY) || '[]'); } catch {}
+const saveHidden = () => { try { localStorage.setItem(HIDE_KEY, JSON.stringify(hiddenDevs.map((d) => d.id))); } catch {} };
+function hideDevice(d, quiet) {
+  if (patched(d)) { $('#st2').textContent = `${d.title} has cords: pull them out first, only an unused device can be hidden`; return false; }
+  const i = devs.indexOf(d);
+  if (i < 0) return false;
+  devs.splice(i, 1); hiddenDevs.push(d);
+  rackOrder = rackOrder.filter((x) => x !== d);
+  if (d.el) d.el.style.display = 'none';
+  if (S.mode === 'rack') layoutRack();
+  if (!quiet) { saveHidden(); sndPlug('out'); $('#st2').textContent = `${d.title} hidden · the HIDDEN key shows it again`; }
+  updateHidden();
+  return true;
 }
-function paintStream(p) {
-  if (p.trimEl && p.trimK) p.trimEl.setAttribute('transform', `translate(${p.trimK.x},${p.trimK.y}) rotate(${volAngle(p.sv)})`);
-  if (p.muteEl) p.muteEl.setAttribute('fill', p.sm ? '#ff3b2f' : '#3a1411');
-  if (p.dEl) { p.dEl.querySelector('.mute').classList.toggle('on', p.sm); p.dEl.querySelector('g').setAttribute('transform', `rotate(${volAngle(p.sv)})`); }
+function showDevice(d, why) {
+  const i = hiddenDevs.indexOf(d);
+  if (i < 0) return;
+  hiddenDevs.splice(i, 1); devs.push(d);
+  if (d.el) d.el.style.display = '';
+  // back under everything else, where it is free
+  const y = Math.max(40, ...devs.filter((o) => o !== d).map((o) => o.dy + o.H + 46));
+  d.dx = d.tx = d.x = 40; d.dy = d.ty = d.y = y;
+  if (S.mode === 'rack') { rackOrder.push(d); layoutRack(); }
+  saveHidden(); updateHidden(); crowded = true;
+  $('#st2').textContent = `${d.title} shown${why ? ' · ' + why : ''}`;
+  findDevice(d);
 }
-function setStreamVol(d, g, p, v) { p.sv = Math.round(clamp(v, 0, VMAX) * 100) / 100; paintStream(p); streamNote(d, g, p); }
-function toggleStreamMute(d, g, p) { p.sm = !p.sm; paintStream(p); streamNote(d, g, p); sndPlug('in'); }
-const hitStream = (w, d, which) => { for (const g of d.groups) if (g.streams) for (const p of g.streams) { const k = p[which]; if (k && Math.hypot(w.x - d.x - k.x, w.y - d.y - k.y) <= k.r) return { g, p }; } return null; };
-const hitDrawerKey = (w, d) => d.groups.find((g) => g.drawerK && hitRect(w, d, g.drawerK)) || null;
-// B: the drawer, a channel strip per stream, under the device; it moves with it
-function toggleDrawer(d) {
-  d.drawer = !d.drawer;
-  if (d.drawerEl) { d.drawerEl.remove(); d.drawerEl = null; }
-  const g = d.groups.find((x) => x.streams);
-  if (d.drawer && g) {
-    const el = document.createElement('div');
-    el.className = 'drawer';
-    el.innerHTML = g.streams.map((p, i) => `<div class="strip" data-i="${i}"><b>${p.n}</b><span>${esc(p.what)}</span>` +
-      `<div class="row"><div class="lv">${'<i></i>'.repeat(8)}</div><svg width="30" height="30" viewBox="-15 -15 30 30"><circle r="12.5" fill="#111" opacity=".5" cy="1.3"/><circle r="12" fill="url(#gVol)" stroke="#0c0c0d"/>` +
-      `<g transform="rotate(${volAngle(p.sv)})"><path d="M0,-3.5 L0,-10" stroke="#ffb02e" stroke-width="2.2" stroke-linecap="round"/></g></svg></div>` +
-      `<button class="mute${p.sm ? ' on' : ''}"><i></i>MUTE</button><button class="cue"><i></i>CUE</button></div>`).join('');
-    world.appendChild(el);
-    d.drawerEl = el;
-    g.streams.forEach((p, i) => { p.dEl = el.children[i] || null; p.dleds = p.dEl ? p.dEl.querySelectorAll('.lv i') : null; p.shown = -1; });
-    el.addEventListener('pointerdown', (e) => {
-      e.stopPropagation();
-      const s = e.target.closest('.strip'); if (!s) return;
-      const p = g.streams[+s.dataset.i];
-      if (e.target.closest('.mute')) return toggleStreamMute(d, g, p);
-      if (e.target.closest('.cue')) { e.target.closest('.cue').classList.toggle('on'); $('#st2').textContent = `cue: ${streamName(d, g, p)}`; return; }
-      const svg = e.target.closest('svg');
-      if (svg) { svg.setPointerCapture(e.pointerId); const sy = e.clientY, v0 = p.sv; svg.onpointermove = (m) => setStreamVol(d, g, p, v0 + (sy - m.clientY) * VMAX / 160); svg.onpointerup = () => { svg.onpointermove = null; }; }
-    });
-    el.addEventListener('wheel', (e) => { e.preventDefault(); e.stopPropagation(); const s = e.target.closest('.strip'); if (s) { const p = g.streams[+s.dataset.i]; setStreamVol(d, g, p, p.sv - Math.sign(e.deltaY) * .05); } }, { passive: false });
-  } else if (g) g.streams.forEach((p) => { p.dEl = null; p.dleds = null; });
-  renderDevice(d);
+const hlist = $('#hidden');
+function updateHidden() {
+  $('#hideCnt').textContent = hiddenDevs.length || '';
+  if (!hlist.classList.contains('hide')) openHidden(true);
+}
+function openHidden(keep) {
+  if (!keep && !hlist.classList.contains('hide')) { hlist.classList.add('hide'); return; }
+  const mine = hiddenDevs.map((d) => `<div class="row" data-show="${d.id}" title="Show it again"><span>${esc(d.title)}</span><b>${esc(d.model)}</b></div>`).join('')
+    || '<div class="row sys"><span>none</span></div>';
+  const appMons = [...devs, ...hiddenDevs].filter((d) => d.appMonitors).map((d) => ({ name: d.title, what: `the monitors of its recording streams${d.appMonitors > 1 ? ' ×' + d.appMonitors : ''}` }));
+  const sys = [...appMons, ...SYSTEM_NODES].map((s) => `<div class="row sys"><span>${esc(s.name)} <i>· ${esc(s.what)}</i></span><b>SYSTEM</b></div>`).join('');
+  hlist.innerHTML = `<h2>HIDDEN BY YOU</h2>${mine}<h2>SYSTEM</h2>${sys}<div class="tip">The HIDE key (the struck-through eye right of a device's name) hides an unused device; H does too, over it. Click one here to show it again.</div>`;
+  const bar = $('#bar').getBoundingClientRect(), at = $('#hide').getBoundingClientRect().left - bar.left;
+  hlist.style.left = Math.max(8, Math.min(at - 20, bar.width - 380 - 18)) + 'px';
+  hlist.classList.remove('hide');
+}
+hlist.addEventListener('click', (e) => {
+  const row = e.target.closest('[data-show]');
+  if (!row) return;
+  const d = hiddenDevs.find((x) => x.id === row.dataset.show);
+  if (d) showDevice(d);
+});
+$('#hide').addEventListener('click', () => openHidden());
+addEventListener('pointerdown', (e) => { if (!hlist.contains(e.target) && !e.target.closest('#hide')) hlist.classList.add('hide'); });
+// a hidden device that gets a cord comes back
+function unhideLinked() {
+  for (const d of [...hiddenDevs]) if (d.groups.some((g) => g.ports.some((p) => [...links].some((k) => k.split('>').includes(p.key))))) showDevice(d, 'it got a cord');
 }
 
-// ---------------- defaults ----------------
 // Where new apps play and record is one setting of the whole system (PipeWire's default sink and
 // source), so it lives on the top panel, not on a device: its screen always says which they are,
 // and its list picks others and finds them on the desk.
 const dlist = $('#defaults');
-const outputs = () => devs.flatMap((d) => d.groups.filter((g) => g.sink).map((g) => ({ d, g })));
-const inputs = () => devs.flatMap((d) => d.groups.filter((g) => g.src).map((g) => ({ d, g })));
+// (a hidden device is still there in PipeWire: it can still be the default)
+const outputs = () => [...devs, ...hiddenDevs].flatMap((d) => d.groups.filter((g) => g.sink).map((g) => ({ d, g })));
+const inputs = () => [...devs, ...hiddenDevs].flatMap((d) => d.groups.filter((g) => g.src).map((g) => ({ d, g })));
 // a device with several outputs (or inputs) names the one: "Radeon … · HDMI 2"
-const endName = (d, g, all) => d.title + (all.filter((x) => x.d === d).length > 1 ? ` · ${g.label}` : '');
+const endName = (d, g, all) => d.title + (all.filter((x) => x.d === d).length > 1 ? ` · ${nm(g)}` : '');
 const findEnd = (key, all) => all.find(({ d, g }) => `${d.id}:${g.label}` === key);
 function showDefaults() {
   const o = findEnd(S.defOut, outputs()), i = findEnd(S.defIn, inputs());
@@ -1611,7 +1791,7 @@ function findDevice(d) {
 }
 dlist.addEventListener('click', (e) => {
   const f = e.target.closest('[data-find]');
-  if (f) { const d = devs.find((x) => x.id === f.dataset.find); if (d) findDevice(d); return; }
+  if (f) { const d = devs.find((x) => x.id === f.dataset.find), h = hiddenDevs.find((x) => x.id === f.dataset.find); if (d) findDevice(d); else if (h) showDevice(h); return; }
   const row = e.target.closest('[data-k]');
   if (!row) return;
   const [kind, key] = row.dataset.k.split('|');
@@ -1688,6 +1868,7 @@ stage.addEventListener('pointerdown', (e) => {
   if (e.button === 1 || e.button === 2) { drag = { type: 'pan', sx: w.sx, sy: w.sy, v0: { ...S.view } }; S.vt = null; return; }
   // in CUE mode a click on a jack pins it (or unpins it) instead of pulling a cord
   if (CUE.mode) { const j = jackAt(w); if (j) { togglePin(j); return; } }
+  if (e.button === 0 && pd && pd.hideK) { const r = pd.hideK; if (w.x >= pd.x + r.x && w.x <= pd.x + r.x + r.w && w.y >= pd.y + r.y && w.y <= pd.y + r.y + r.h) { hideDevice(pd); return; } }
   const plug = hitPlug(w);
   if (plug) {
     const ends = [{ c: plug.c, s: plug.s, rel: 0 }];
@@ -1721,10 +1902,6 @@ stage.addEventListener('pointerdown', (e) => {
   if (cab) { cab.c.grab = cab.k; drag = { type: 'rope', c: cab.c, hand: w }; return; }
   const d = hitDevice(w);
   if (d) {
-    const st = hitStream(w, d, 'trimK'), sm = hitStream(w, d, 'muteK'), dk = hitDrawerKey(w, d);
-    if (st) { drag = { type: 'strim', d, g: st.g, p: st.p, sy: w.sy, raw: st.p.sv }; return; }
-    if (sm) { toggleStreamMute(d, sm.g, sm.p); return; }
-    if (dk) { toggleDrawer(d); return; }
     const kg = hitKnob(w, d), bg = hitBal(w, d), mg = hitMute(w, d);
     if (kg) { drag = { type: 'knob', d, g: kg, sy: w.sy, raw: kg.vol }; return; }
     if (bg) { drag = { type: 'bal', d, g: bg, sy: w.sy, sy0: w.sy, raw: bg.bal, turned: false }; holdBal(d, bg, true); sndPlug('in'); return; }
@@ -1749,7 +1926,9 @@ function toggleSplit(d, g) {
   sndPlug('in');
 }
 
+let lastPointer = null;
 stage.addEventListener('pointermove', (e) => {
+  lastPointer = { clientX: e.clientX, clientY: e.clientY };
   const w = toWorld(e);
   CUE.at = w;
   if (!drag && (CUE.probing || CUE.mode || e.altKey)) {
@@ -1765,17 +1944,12 @@ stage.addEventListener('pointermove', (e) => {
   if (!drag) { updateHover(w); return; }
   if (drag.type === 'pan') {
     S.view.x = drag.v0.x + w.sx - drag.sx; S.view.y = drag.v0.y + w.sy - drag.sy;
-  } else if (drag.type === 'strim') {
-    drag.raw = clamp(drag.raw + (drag.sy - w.sy) * VMAX / 160 * (e.shiftKey ? .2 : 1), 0, VMAX);
-    drag.sy = w.sy;
-    setStreamVol(drag.d, drag.g, drag.p, Math.abs(drag.raw - 1) < .04 ? 1 : drag.raw);
-    showTip(w, `${esc(streamName(drag.d, drag.g, drag.p))} · <b>${Math.round(drag.p.sv * 100)}%</b>`);
   } else if (drag.type === 'knob') {
     // up is louder: the whole range in 200 px, Shift for fine steps; it rests at 100% for a moment
     drag.raw = clamp(drag.raw + (drag.sy - w.sy) * VMAX / 200 * (e.shiftKey ? .2 : 1), 0, VMAX);
     drag.sy = w.sy;
     setVol(drag.d, drag.g, Math.abs(drag.raw - 1) < .04 ? 1 : drag.raw);
-    showTip(w, `${drag.d.title} · ${drag.g.label} · <b>${volText(drag.g)}</b>`);
+    showTip(w, `${drag.d.title} · ${nm(drag.g)} · <b>${volText(drag.g)}</b>`);
   } else if (drag.type === 'bal') {
     if (!drag.g.balOut) return;
     if (!drag.turned && Math.abs(w.sy - drag.sy0) < 3) return;
@@ -1785,7 +1959,7 @@ stage.addEventListener('pointermove', (e) => {
     drag.raw = clamp(drag.raw + (drag.sy - w.sy) * 2 / 200 * (e.shiftKey ? .2 : 1), -1, 1);
     drag.sy = w.sy;
     setBal(drag.d, drag.g, Math.abs(drag.raw) < .05 ? 0 : drag.raw);
-    showTip(w, `${drag.d.title} · ${drag.g.label} · <b>${balText(drag.g)}</b>`);
+    showTip(w, `${drag.d.title} · ${nm(drag.g)} · <b>${balText(drag.g)}</b>`);
   } else if (drag.type === 'device') {
     const d = drag.d;
     if (S.mode === 'desk') dragDevice(d, w.x - drag.off.x, w.y - drag.off.y);
@@ -1856,8 +2030,8 @@ stage.addEventListener('wheel', (e) => {
   e.preventDefault();
   const kw = toWorld(e), kd = hitDevice(kw);
   const kg = kd && hitKnob(kw, kd), bg = kd && hitBal(kw, kd);
-  if (kg) { setVol(kd, kg, kg.vol - Math.sign(e.deltaY) * (e.shiftKey ? .01 : .05)); showTip(kw, `${kd.title} · ${kg.label} · <b>${volText(kg)}</b>`); return; }
-  if (bg) { if (bg.balOut) { setBal(kd, bg, bg.bal - Math.sign(e.deltaY) * (e.shiftKey ? .02 : .1)); showTip(kw, `${kd.title} · ${bg.label} · <b>${balText(bg)}</b>`); } return; }
+  if (kg) { setVol(kd, kg, kg.vol - Math.sign(e.deltaY) * (e.shiftKey ? .01 : .05)); showTip(kw, `${kd.title} · ${nm(kg)} · <b>${volText(kg)}</b>`); return; }
+  if (bg) { if (bg.balOut) { setBal(kd, bg, bg.bal - Math.sign(e.deltaY) * (e.shiftKey ? .02 : .1)); showTip(kw, `${kd.title} · ${nm(bg)} · <b>${balText(bg)}</b>`); } return; }
   S.vt = null;
   prof.classList.add('hide'); prof.dataset.dev = ''; closePorts();
   const w = toWorld(e), v = S.view, s = clamp(v.s * Math.exp(-e.deltaY * .0015), .25, 2.5);
@@ -1893,7 +2067,7 @@ function updateHover(w) {
   } else if (mk) {
     cur = 'pointer'; text = `${dev.title} · ${mk.label} · ${mk.mute ? '<b>muted</b>' : 'not muted'}`;
   } else if (ok) {
-    cur = 'pointer'; text = `${dev.title} · ` + dev.groups.filter((g) => g.routes && g.routes.length > 1).map((g) => `${g.label} ${g.src ? 'records from' : 'plays to'} <b>${esc(g.routes[g.route].name)}</b>${g.routes[g.route].unplugged ? ' (unplugged)' : ''}`).join(' · ');
+    cur = 'pointer'; text = `${dev.title} · ` + dev.groups.filter((g) => g.routes && g.routes.length > 1).map((g) => `${nm(g)} ${g.src ? 'records from' : 'plays to'} <b>${esc(g.routes[g.route].name)}</b>${g.routes[g.route].unplugged ? ' (unplugged)' : ''}`).join(' · ');
   } else if (pk) {
     const pr = dev.profiles[dev.profile];
     cur = 'pointer'; text = `${dev.title} · profile <b>${esc(pr.name)}</b>${pr.codecs ? ' · codec <b>' + dev.codec + '</b>' : ''}`;
@@ -2112,14 +2286,15 @@ $('#align').addEventListener('click', toggleAlign);
 $('#undo').addEventListener('click', undo);
 $('#redo').addEventListener('click', redo);
 $('#arrange').addEventListener('click', arrange);
+const toggleFlow = () => { S.flow = !S.flow; $('#flow').classList.toggle('on', S.flow); $('#st2').textContent = `cord directions ${S.flow ? 'on' : 'off'} (W)`; };
+$('#flow').addEventListener('click', toggleFlow);
 $('#fit').addEventListener('click', () => fit(true));
-$('#snd').addEventListener('click', () => { S.sound = !S.sound; $('#snd').classList.toggle('on', S.sound); });
 $('#helpBtn').addEventListener('click', () => $('#help').classList.toggle('hide'));
 addEventListener('keydown', (e) => {
   if (e.ctrlKey && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if (e.ctrlKey && e.key.toLowerCase() === 's') { e.preventDefault(); openSave(); return; }
   if (e.ctrlKey && e.key.toLowerCase() === 'o') { e.preventDefault(); openLoad(); return; }
-  if (e.key === 'Escape') { closePop(); prof.classList.add('hide'); prof.dataset.dev = ''; closePorts(); dlist.classList.add('hide'); return; }
+  if (e.key === 'Escape') { closePop(); prof.classList.add('hide'); prof.dataset.dev = ''; closePorts(); dlist.classList.add('hide'); hlist.classList.add('hide'); return; }
   if (e.ctrlKey || e.altKey || e.target.closest?.('input')) return;
   const k = e.key.toLowerCase();
   if (k === 'r') setMode(S.mode === 'rack' ? 'desk' : 'rack');
@@ -2127,18 +2302,9 @@ addEventListener('keydown', (e) => {
   else if (k === 'l') toggleLock();
   else if (k === 'g') toggleAlign();
   else if (k === 'a') arrange();
+  else if (k === 'w') toggleFlow();
+  else if (k === 'h') { const d = lastPointer && hitDevice(toWorld(lastPointer)); if (d) hideDevice(d); else openHidden(); }
   else if (k === 'f' || k === '0') fit(true);
-  else if (k === 'v') {
-    for (const d of devs) if (d.drawer) toggleDrawer(d);
-    const was = S.streamUI;
-    S.streamUI = { units: 'face', face: 'drawer', drawer: 'units' }[was];
-    for (const d of devs) if (d.groups0 && d.groups0.some((g) => g.streams) && (was === 'units') !== (S.streamUI === 'units')) regroup(d);
-    for (const k of [...links]) { const [o, n] = k.split('>'); if (!ports.has(o) || !ports.has(n)) links.delete(k); }
-    reconcile(true);
-    for (const d of devs) renderDevice(d);
-    crowded = true;
-    $('#st2').textContent = { units: 'streams: 6, a frame each, three to a unit (V: A)', face: 'streams: A, on the face under each jack (V: B)', drawer: 'streams: B, in a drawer under the device (V: 6)' }[S.streamUI];
-  }
   else if (k === 'k') { S.accent = !S.accent; for (const d of devs) renderDevice(d); $('#st2').textContent = `group colours ${S.accent ? 'on' : 'off'} (K)`; }
   else if (k === '?') $('#help').classList.toggle('hide');
 });
@@ -2164,7 +2330,6 @@ function frame(now) {
     const k = ease(.18, dt);
     if (!(drag && drag.type === 'device' && drag.d === d)) { d.x += (d.tx - d.x) * k; d.y += (d.ty - d.y) * k; }
     d.el.style.transform = `translate(${d.x}px,${d.y}px)`;
-    if (d.drawerEl) { d.drawerEl.style.transform = `translate(${d.x + 14}px,${d.y + d.H - 2}px)`; }
   }
   if (drag && drag.type === 'plug') {
     // the plug is a weight on a critically damped spring to the hand; near a jack it is pulled in
@@ -2178,7 +2343,6 @@ function frame(now) {
   for (const c of [...cables]) updateCable(c, now, dt);
   draw(now);
   updateSignal(now);
-  streamMeters(now);
   requestAnimationFrame(frame);
 }
 
@@ -2187,11 +2351,14 @@ for (const d of devs) renderDevice(d);
 for (const [a, b] of LINKS) links.add(a + '>' + b);
 reconcile(true);
 buildSlots();
+// the devices hidden last time, unless one has cords now
+for (const id of hiddenIds) { const d = devs.find((x) => x.id === id); if (d && !patched(d)) hideDevice(d, true); }
+saveHidden(); updateHidden();
 setMode('desk');
 fit(false);
 resize();
 setCableMode(0);
-$('#snd').classList.add('on');
+$('#flow').classList.toggle('on', S.flow);
 if (!store.slots.length) saveSlot('HOME STUDIO');
 else if (store.current) loadSlot(store.current);
 undoStack.length = 0; S.edited = false; updateInfo(); // opening the app is not an edit

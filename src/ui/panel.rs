@@ -29,7 +29,10 @@ pub enum Key {
     CablesAt(u8),
     Arrange,
     Fit,
-    Sound,
+    /// the list of hidden devices
+    Hidden,
+    /// the light in the cords, showing which way they go
+    Flow,
     Lcd,
     /// the screen of the default output and input
     Defaults,
@@ -56,7 +59,8 @@ impl Key {
             Key::CablesAt(_) => "Hide the cords",
             Key::Arrange => "Arrange devices by signal flow (A)",
             Key::Fit => "Fit everything in the window (F)",
-            Key::Sound => "Plug sounds",
+            Key::Flow => "Show which way the cords go: a light runs along each from its output to its input (W)",
+            Key::Hidden => "Hidden devices: click to show them again (a device's HIDE key, or H over it, hides an unused one)",
             Key::Lcd => "Presets",
             Key::Defaults => "The default output and input, where new apps play and record: click to choose others or find them",
             Key::Cue => "Listen (cue): CUE mode on/off: hover a jack to hear it, click to keep it on; or hold Alt over the jacks",
@@ -74,8 +78,6 @@ pub struct State {
     pub align: bool,
     /// 0 show, 1 fade, 2 hide
     pub cables: u8,
-    /// 0…100
-    pub sound: bool,
     pub lcd: [String; 2],
     /// the defaults screen's lines: the default output's name and the default input's
     pub defaults: [String; 2],
@@ -83,6 +85,10 @@ pub struct State {
     /// 0…100
     pub cue_led: bool,
     pub cue_level: u8,
+    /// how many devices are hidden by hand, printed on the HIDDEN key
+    pub hidden: usize,
+    /// the light in the cords
+    pub flow: bool,
     pub pressed: Option<Key>,
 }
 
@@ -105,6 +111,8 @@ pub enum Menu {
     Load { names: Vec<String>, current: Option<usize>, confirm: Option<usize> },
     /// the outputs and inputs that can be the default, by name, and which ones are
     Defaults { outs: Vec<String>, ins: Vec<String>, out: Option<usize>, inp: Option<usize> },
+    /// the devices hidden by hand (name, model), and the nodes always left out (who, what)
+    Hidden { mine: Vec<(String, String)>, system: Vec<(String, String)> },
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -115,6 +123,8 @@ pub enum MenuHit {
     /// an output (true) or input to make the default, or to find on the desk
     Default(bool, usize),
     Find(bool, usize),
+    /// a hidden device to show again
+    Show(usize),
     /// somewhere else on the drop-down
     Inside,
 }
@@ -223,14 +233,26 @@ fn section(name: &str, y: f64, w: f64) -> String {
 /// A card's port list, under its PORT key, as amber as the profile list: for each of its outputs
 /// and inputs with several ports, its name (when it has several), the ports (the one in use dark,
 /// the unplugged dimmed and marked), and its latency offset with − and + (10 ms steps with Shift).
-pub fn port_menu(title: &str, sections: &[(usize, String, Vec<PortChoice>, Option<u32>, i64)], dpi: f64) -> (Layer, Vec<(ProfileHit, [f64; 4])>) {
+/// One output's or input's ports in a card's PORT list.
+#[derive(Debug)]
+pub struct PortSection {
+    pub group: usize,
+    /// its frame's name (SPEAKERS, BUILT-IN MIC…)
+    pub name: String,
+    pub ports: Vec<PortChoice>,
+    /// the route index in use
+    pub current: Option<u32>,
+    pub latency_ns: i64,
+}
+
+pub fn port_menu(title: &str, sections: &[PortSection], dpi: f64) -> (Layer, Vec<(ProfileHit, [f64; 4])>) {
     const INK: &str = "#3a2408";
     let w = PROFILE_W;
     let _ = title;
     let mut o = String::new();
     let mut hits = Vec::new();
     let mut y = 8.0;
-    for (si, (gi, label, ports, current, latency)) in sections.iter().enumerate() {
+    for (si, PortSection { group: gi, name: label, ports, current, latency_ns: latency }) in sections.iter().enumerate() {
         // its name under a rule, when the card has several outputs and inputs with ports
         if sections.len() > 1 {
             if si > 0 {
@@ -299,7 +321,8 @@ const ICONS: &[(Key, &str)] = &[
     (Key::Align, r#"<path d="M4 3v18"/><rect x="7.5" y="5" width="12" height="5" rx="1"/><rect x="7.5" y="14" width="7.5" height="5" rx="1"/>"#),
     (Key::Arrange, r#"<rect x="3.5" y="4" width="7" height="5" rx="1"/><rect x="3.5" y="15" width="7" height="5" rx="1"/><rect x="13.5" y="9.5" width="7" height="5" rx="1"/><path d="M10.5 6.5h1.5v11h-1.5M12 12h1.5"/>"#),
     (Key::Fit, r#"<path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/>"#),
-    (Key::Sound, r#"<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7"/><path d="M19 6a8.5 8.5 0 0 1 0 12"/>"#),
+    (Key::Flow, r#"<path d="M3 17c3-6 6-6 9 0s6 6 9 0"/><path d="M4 7h14"/><path d="m15 4 3 3-3 3"/>"#),
+    (Key::Hidden, r#"<path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6z"/><circle cx="12" cy="12" r="2.6"/><path d="M4 20 20 4"/>"#),
     (Key::Cue, r#"<path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="4.5" height="7" rx="1.5"/><rect x="16.5" y="14" width="4.5" height="7" rx="1.5"/>"#),
 ];
 
@@ -373,9 +396,10 @@ impl Panel {
         let sig = std::hash::Hasher::finish(&h);
         if self.menu_layer.as_ref().is_none_or(|(s, _)| *s != sig) {
             // under its screen: the defaults' under theirs, the presets' against the right edge
-            let mw = if matches!(menu, Menu::Defaults { .. }) { DEFAULTS_W } else { MENU_W };
-            let x = match (menu, self.rect(Key::Defaults)) {
-                (Menu::Defaults { .. }, Some([dx, ..])) => dx.min(width - 6.0 - mw).max(6.0),
+            let mw = if matches!(menu, Menu::Defaults { .. } | Menu::Hidden { .. }) { DEFAULTS_W } else { MENU_W };
+            let x = match (menu, self.rect(Key::Defaults), self.rect(Key::Hidden)) {
+                (Menu::Defaults { .. }, Some([dx, ..]), _) => dx.min(width - 6.0 - mw).max(6.0),
+                (Menu::Hidden { .. }, _, Some([hx, ..])) => (hx - 20.0).min(width - 6.0 - mw).max(6.0),
                 _ => width - 18.0 - mw,
             };
             let y = H + 4.0;
@@ -467,7 +491,13 @@ impl Panel {
         rects.push((Key::Cables, [kx - 16.0, ky - 16.0, 32.0, 32.0]));
         x += 88.0 + 22.0;
 
-        group(&mut o, &mut rects, &mut x, &[(Key::Arrange, None, None), (Key::Fit, None, None), (Key::Sound, None, Some(st.sound))], "VIEW");
+        group(&mut o, &mut rects, &mut x, &[(Key::Arrange, None, None), (Key::Fit, None, None), (Key::Flow, None, Some(st.flow)), (Key::Hidden, None, None)], "VIEW");
+        // how many are hidden, small in the HIDDEN key's corner
+        if st.hidden > 0
+            && let Some((_, [hx, hy, hw, _])) = rects.iter().find(|(k, _)| *k == Key::Hidden)
+        {
+            let _ = write!(o, r##"<text x="{}" y="{}" font-size="9" font-family="Noto Sans Mono" fill="#f7bb62" text-anchor="end">{}</text>"##, hx + hw - 7.0, hy + 13.0, st.hidden);
+        }
 
         // CUE: its key (a cyan LED) and, as big as the CABLES knob, the cue's LEVEL
         let x0 = x;
@@ -575,7 +605,7 @@ fn menu_svg(menu: &Menu) -> (String, f64, Vec<(MenuHit, [f64; 4])>) {
     const INK: &str = "#3a2408";
     let mut o = String::new();
     let mut rects = Vec::new();
-    let w = if matches!(menu, Menu::Defaults { .. }) { DEFAULTS_W } else { MENU_W };
+    let w = if matches!(menu, Menu::Defaults { .. } | Menu::Hidden { .. }) { DEFAULTS_W } else { MENU_W };
     let h;
     let title = |o: &mut String, t: &str| {
         let _ = write!(o, r#"<text x="12" y="20" font-size="10" letter-spacing="1.5" fill="{INK}" opacity=".7">{t}</text>"#);
@@ -634,6 +664,50 @@ fn menu_svg(menu: &Menu) -> (String, f64, Vec<(MenuHit, [f64; 4])>) {
                 y += 6.0;
             }
             h = y + 2.0;
+        }
+        Menu::Hidden { mine, system } => {
+            let cut = |s: &str, n: usize| if s.chars().count() > n { format!("{}…", s.chars().take(n - 1).collect::<String>()) } else { s.to_owned() };
+            let mut y = 8.0;
+            o += &section("HIDDEN BY YOU", y, w);
+            y += 22.0;
+            if mine.is_empty() {
+                let _ = write!(o, r#"<text x="12" y="{}" font-size="12" font-weight="normal" fill="{INK}" opacity=".7">none</text>"#, y + 16.0);
+                y += 24.0;
+            }
+            for (i, (name, model)) in mine.iter().enumerate() {
+                let _ = write!(
+                    o,
+                    r#"<text x="12" y="{}" font-size="12" fill="{INK}" xml:space="preserve">{}</text><text x="{}" y="{}" font-size="9.5" fill="{INK}" opacity=".7" text-anchor="end">{}</text>"#,
+                    y + 16.5,
+                    esc(&cut(name, 26)),
+                    w - 12.0,
+                    y + 16.0,
+                    esc(&cut(model, 18))
+                );
+                rects.push((MenuHit::Show(i), [0.0, y, w, 24.0]));
+                y += 24.0;
+            }
+            y += 6.0;
+            // what Patchcord always leaves out: listed for reference, dimmed
+            o += &section("SYSTEM", y, w);
+            y += 22.0;
+            for (who, what) in system {
+                let _ = write!(
+                    o,
+                    r#"<g opacity=".6"><text x="12" y="{}" font-size="12" fill="{INK}" xml:space="preserve">{} <tspan font-weight="normal" font-size="10.5">· {}</tspan></text><text x="{}" y="{}" font-size="9.5" fill="{INK}" text-anchor="end">SYSTEM</text></g>"#,
+                    y + 16.5,
+                    esc(&cut(who, 25)),
+                    esc(&cut(what, 22)),
+                    w - 12.0,
+                    y + 16.0
+                );
+                y += 24.0;
+            }
+            for line in ["A device's HIDE key (the struck-through eye", "by its name) hides it when unused; H too.", "Click one above to show it again."] {
+                let _ = write!(o, r#"<text x="12" y="{}" font-size="10.5" font-weight="normal" fill="{INK}" opacity=".75">{line}</text>"#, y + 16.0);
+                y += 15.0;
+            }
+            h = y + 12.0;
         }
         Menu::Load { names, current, confirm } => {
             let mut y = 8.0;

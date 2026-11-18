@@ -21,7 +21,7 @@ Patchcord shows the live PipeWire graph, audio and MIDI, with signal meters and 
 device. You patch it with the mouse, on a desk or in a 19" rack, and keep your setups as presets.
 It also does what pavucontrol does, built into the panels: the volume (or recording gain),
 balance and mute of each app and each device beside its jacks, a sound card's profile and ports,
-and the default output and input on the top panel. Plug sounds and smaller things come next (see the [issues](https://github.com/bewzaalex/patchcord/issues)). The design is the
+and the default output and input on the top panel. What comes next is in the [issues](https://github.com/bewzaalex/patchcord/issues). The design is the
 interactive mockup in [docs/design/mockup](docs/design/mockup/index.html).
 
 ## Installation
@@ -123,54 +123,97 @@ To uninstall, delete those three files.
 
 ## Using it
 
+### Devices and their frames
+
+Every device is a panel; each of its inputs and outputs is a frame with jacks, a name and, for
+audio, its own SIG meter (what comes in, or what goes out, after its volume or gain).
+
+| | |
+| --- | --- |
+| Frame names | an app's say which way the sound goes: INPUT, OUTPUT. A sound card's say what it is, from the port in use, and follow it: SPEAKERS, HEADPHONES, HDMI, BUILT-IN MIC, MIC (SOUND OUT / SOUND IN when the card doesn't tell). A Bluetooth headset has HEADPHONES and MIC |
+| IN / OUT tags | which way a cord goes at that frame: into it (IN) or out of it (OUT) |
+| REC OUT | inside a sound card output's frame, after a dotted rule: a copy of what it plays, to record it (PipeWire's monitor) |
+| OUTPUT 1, OUTPUT 2… | an app with several streams of a kind (Teams in a call records on two and plays on six) is one device with a numbered frame for each, each with its own controls and meter |
+| Units | up to four frames side by side; more make the device two or three units high, the frames spread evenly (eight: two units of four), inputs first and outputs last, vents where a unit has nothing to show |
+| Colours (K) | coloured bands behind the frames' names by kind (outputs, inputs, apps' outputs and inputs, MIDI), or plain frames; the jacks keep their coloured rings either way |
+| HIDE key | the struck-through eye right of a device's name (or H over it) hides a device without cords; with cords it is dimmed. Hidden devices stay hidden after a restart and come back by themselves when something connects to them |
+| HIDDEN key | the eye on the top panel (or H over the desk), with how many are hidden: click one to show it again. It also lists, dimmed and marked SYSTEM, what Patchcord always leaves out: other programs' level meters and its own, apps' monitors, and the plumbing behind a Bluetooth headset's MIC |
+
+### Patching
+
 | | |
 | --- | --- |
 | Drag from a jack's free slot | pull out a cord; drop its end on a jack to link (the jacks it fits glow, the others fade; a jack already patched to it takes no second cord) |
 | Drag a cord's end | move it to another jack, or drop it in empty space to unlink |
 | Double-click a cord or its end | pull it out (unlink) |
-| SPLIT / JOIN | one stereo jack, or separate L and R jacks, L above R; the stereo jacks its cords lead to follow, and theirs in turn, and so does a new stream that starts playing into a split pair |
-| VOLUME / GAIN knob beside the jacks | each app stream and each device's output and input has its controls in the same frame as its jacks: VOLUME on what plays (an app's OUTPUT, a device's PLAYBACK), GAIN on what comes in (an app's INPUT, a microphone's CAPTURE). A sound card's are its own hardware volume, as pavucontrol sets it. From silence to 153% as in pavucontrol (red past 100%: it can clip): drag up or down (Shift: fine), or the wheel (5%, Shift: 1%); it rests at 100% for a moment, and a double-click sets 100%. The screen shows the value in % and dB while it changes |
-| BAL knob on a stereo stream | the balance between L and R. A push-push knob, as on an old car stereo: click to pop it out, then turn it like VOLUME; click again to push it back in, where it can't be turned by accident |
-| MUTE key | silences the stream; its LED lights red |
-| OUTPUT 1, OUTPUT 2… | an app with several streams of a kind (Teams plays on five) is one device with a frame for each stream, numbered, each with its own controls and meter; a stereo stream's SPLIT sits beside its MUTE. A device shows at most three frames side by side: the fourth starts a second unit under them, the seventh a third |
-| A device with two sets of controls | an app that records and plays (as Audacity) is one device with INPUT and OUTPUT; a sound card has PLAYBACK and CAPTURE. Each frame then has its own meter, after its volume or gain |
-| PORT ▾ beside PROFILE | on a sound card whose output or input has several ports: where it plays (speakers, headphones) or records from (internal or plugged-in microphone), unplugged ones marked, and each port's latency offset (− and +, 10 ms with Shift) |
-| OUT ▸ / IN ▸ on the top panel's screen | the default output and input, where new apps play and record (the screen's left half; its right half is the preset and the clock). Click it for the list of outputs and inputs: click one to make it the default, or ⌖ to glide to it on the desk |
-| Hold Alt over the jacks | listen (cue): the jack under the pointer plays in the default output, like a test probe, while Alt is held. A cyan ring with headphones marks it; the pointer stays your own, with a small headphones badge beside it |
-| CUE key · LEVEL on the top panel | CUE mode (LED lit): hover a jack to hear it, click it to keep it playing (it glows; as many as you like, mixed); CUE again or Esc stops them all. LEVEL sets how loud the cue is, without touching any app's or device's volume. The output you listen on, and its monitor, can't be heard (they would feed back). Listening only hears what already flows: it never makes an app play, so one with no cords stays silent |
-| PROFILE ▾ under a card's screen | pick the sound card's profile: which inputs and outputs it has (analog or HDMI, Bluetooth hi-fi or headset) and, for Bluetooth, its codec; profiles with nothing plugged in are marked. The list stays open to try another; a click elsewhere, Escape or the wheel closes it. A card that is off shows too, so it can be switched on |
-| Ctrl+Z / Ctrl+Shift+Z | undo / redo |
-| Drag a device | move it; on the desk it stops at other devices and slides along them, and its edges and centre stick lightly to those of the others, with a guide line, to line devices up (also right beside, above or below one); in RACK, drag it up or down to change the order |
-| R, or DESK / RACK | devices on a desk, or in a 19" rack (each keeps its desk place) |
-| Hover a jack, cord or device | its cords stand out (even with CABLES on fade or hide) and the others fade; after a moment a tooltip gives the full names |
 | Drag a cord | grab it and swing it |
-| Drag empty space, or right/middle drag | pan |
-| Wheel | zoom |
-| Top panel | undo, redo, save and load presets, lock devices (L), line devices up on the desk or place them freely (G), the CABLES switch show · fade · hide (drag, wheel, click, or C), arrange (A), fit (F) |
-| Ctrl+S / Ctrl+O, or the LCD | save a new preset / pick one from the list |
+| SPLIT / JOIN | one stereo jack, or separate L and R jacks, L above R; the stereo jacks its cords lead to follow, and theirs in turn, and so does a new stream that starts playing into a split pair. On a frame with controls it sits beside MUTE |
+| FLOW key (W) | which way each cord goes: a light runs inside every plugged-in cord from its output to its input, one at a time; on by default |
+| Hover a jack, cord or device | its cords stand out (even with CABLES on fade or hide) and the others fade; after a moment a tooltip gives the full names |
+| Ctrl+Z / Ctrl+Shift+Z | undo / redo |
+
+### Volume, balance, mute
+
+| | |
+| --- | --- |
+| VOLUME / GAIN knob | in each frame with controls: VOLUME on what plays (an app's OUTPUT, a card's SPEAKERS), GAIN on what comes in (an app's INPUT, a MIC). A sound card's are its own hardware volume, as pavucontrol sets it. From silence to 153% (red past 100%: it can clip): drag up or down (Shift: fine), or the wheel (5%, Shift: 1%); it rests at 100% for a moment, and a double-click sets 100%. The screen shows the value in % and dB while it changes |
+| BAL knob | on stereo: the balance between L and R. A push-push knob, as on an old car stereo: click to pop it out, then turn it like VOLUME; click again to push it back in, where it can't be turned by accident |
+| MUTE key | silences it; its LED lights red |
+
+### Sound cards
+
+| | |
+| --- | --- |
+| PROFILE ▾ | which inputs and outputs the card has (analog or HDMI, Bluetooth hi-fi or headset) and, for Bluetooth, its codec; profiles with nothing plugged in are marked. The list stays open to try another; a click elsewhere, Esc or the wheel closes it. A card that is off shows too, so it can be switched on |
+| PORT ▾ | where an output plays (speakers, headphones) or an input records from (built-in or plugged-in microphone), unplugged ones marked, and each port's latency offset (− and +, 10 ms with Shift) |
+| OUT ▸ / IN ▸ | on the top panel's screen: the default output and input, where new apps play and record. Click for the list: click one to make it the default, or ⌖ to glide to it |
+
+### Listening (cue)
+
+| | |
+| --- | --- |
+| Hold Alt over the jacks | the jack under the pointer plays in the default output, like a test probe, while Alt is held; a cyan ring with headphones marks it |
+| CUE key · LEVEL | CUE mode (LED lit): hover a jack to hear it, click it to keep it playing (it glows; as many as you like, mixed); CUE again or Esc stops them all. LEVEL sets how loud, without touching any app's or device's volume. The output you listen on, and its REC OUT, can't be heard (they would feed back); listening only hears what already flows |
+
+### The desk and the rack
+
+| | |
+| --- | --- |
+| Drag a device | on the desk it stops at other devices and slides along them, and sticks lightly to their edges and centres, with a guide line (G: place freely); in RACK, drag it up or down to change the order |
+| R, or DESK / RACK | devices on a desk, or in a 19" rack (each keeps its desk place) |
+| A, or ARRANGE | devices with cords in columns by signal flow (sources left), ordered so cords cross less; the unused ones after them, kind by kind (sound cards, apps, MIDI), in rows shaped to the window so the faces come out as big as they can |
 | F | fit everything in the window |
-| Esc | close a list; leave CUE mode |
-| K | coloured bands behind the group names (PLAYBACK, CAPTURE, MONITOR, an app's OUTPUT and INPUT, MIDI), or plain frames; the jacks keep their coloured rings either way |
-| A | arrange devices by signal flow |
-| Ctrl+Q | quit |
+| L | lock devices in place |
+| C, or CABLES | cords shown, faded or hidden |
+| Drag empty space, or right/middle drag · wheel | pan · zoom |
+| Ctrl+S / Ctrl+O, or the LCD | save a new preset / pick one from the list |
+| Esc · Ctrl+Q | close a list, leave CUE mode · quit |
 
-Settings and presets are plain text files in `~/.config/patchcord`: `settings.txt` (cords,
-lock, lining up, group colours, desk or rack, window size, where devices sit, the rack's order) and `presets.txt` (each preset's links, split jacks,
-layout, volumes, the cards' profiles and ports, and the default output and input, by PipeWire's names). Loading a preset takes away the links between
-devices it knows that it doesn't have; devices started later keep theirs. The Flatpak keeps them
-in `~/.var/app/io.github.bewzaalex.patchcord/config/patchcord` instead.
+Settings and presets are plain text files in `~/.config/patchcord`: `settings.txt` (cords, lock,
+lining up, colours, the cord lights, desk or rack, window size, where devices sit, the rack's
+order, hidden devices) and `presets.txt` (each preset's links, split jacks, layout, volumes, the
+cards' profiles and ports, and the default output and input, by PipeWire's names). Loading a
+preset takes away the links between devices it knows that it doesn't have; devices started later
+keep theirs. The Flatpak keeps them in `~/.var/app/io.github.bewzaalex.patchcord/config/patchcord`
+instead.
 
-`patchcord --render out.png [rack] [demo] [split] [hover | held] [save | presets] [profile[=NAME]] [only=NAME,…] [size=WxH]` draws the current graph to a PNG without
-opening a window, with its live signal levels, optionally in the rack, with a few cords added to the picture only (`demo`, for screenshots), with every stereo jack split, with the pointer on a jack, with a cord's end in the hand, with a preset drop-down or a card's profile list open, with only some devices or at a given size (`PATCHCORD_SCALE` sets the scale, 1.5 by default).
-`patchcord --record DIR` plays a short scripted session on the current graph (cords patched, a device dragged into line, the rack and back) and saves it as frames for the README's animation; neither changes anything in PipeWire. `PATCHCORD_DEBUG=1` prints which GPU it uses.
+`patchcord --render out.png [rack] [demo] [split] [hover | held] [save | presets | defaults | hidden] [profile[=NAME]] [port[=NAME]] [only=NAME,…] [size=WxH]`
+draws the current graph to a PNG without opening a window, with its live signal levels: in the
+rack, with a few cords added to the picture only (`demo`, for screenshots), every stereo jack
+split, the pointer on a jack, a cord's end in the hand, a drop-down or a card's list open, only
+some devices, or at a given size (`PATCHCORD_SCALE` sets the scale, 1.5 by default).
+`patchcord --record DIR` plays a short scripted session on the current graph and saves it as
+frames for the README's animation; neither changes anything in PipeWire. `PATCHCORD_DEBUG=1`
+prints which GPU it uses and PipeWire's errors that are otherwise expected noise.
 
 ### Bluetooth headsets: when the microphone switches on
 
 A Bluetooth headset can't play in high quality and use its microphone at the same time: its
 hi-fi profile (A2DP) has no microphone, and its headset profile (HSP/HFP) has one but sounds
-like a phone call. Its CAPTURE jack is there in every profile, and PipeWire's session manager,
+like a phone call. Its MIC is there in every profile, and PipeWire's session manager,
 WirePlumber, switches the profile by itself: to the headset profile when an app's input gets
-connected to CAPTURE, and back to hi-fi when that cord goes. Patchcord leaves this to
+connected to MIC, and back to hi-fi when that cord goes. (Behind MIC is WirePlumber's own
+plumbing, the real microphone and a capture stream, listed under SYSTEM in the HIDDEN list.) Patchcord leaves this to
 WirePlumber, and shows each switch on the card's screen and in its PROFILE list.
 
 WirePlumber looks again only when a cord to a recording app comes or goes, not when the app

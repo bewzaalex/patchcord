@@ -2,7 +2,7 @@
 //!
 //! Everything is given in world units and drawn through `ts`, the world → pixels transform.
 
-use resvg::tiny_skia::{Color, FillRule, GradientStop, LineCap, LineJoin, Paint, RadialGradient, Path, PathBuilder, Pixmap, Point, SpreadMode, Stroke, Transform};
+use resvg::tiny_skia::{BlendMode, Color, FillRule, GradientStop, LineCap, LineJoin, Paint, RadialGradient, Path, PathBuilder, Pixmap, Point, SpreadMode, Stroke, Transform};
 
 use super::cord::Cord;
 
@@ -153,6 +153,68 @@ pub fn cords(pm: &mut Pixmap, cords: &[Cord], alpha_of: impl Fn(&Cord) -> f32, t
         let a = alpha_of(c);
         if a > 0.01 {
             body(pm, c, a, ts);
+        }
+    }
+}
+
+/// Which way each cord goes: a light runs inside it from the output to the input, one at a time, a
+/// glow in the wire with a fading tail; as it reaches the jack the next leaves the plug. (`flow`
+/// fades it in and out, `flow_at` is where it is: see Cord.)
+pub fn flow(pm: &mut Pixmap, cords: &[Cord], alpha_of: impl Fn(&Cord) -> f32, ts: Transform) {
+    for c in cords {
+        let a = alpha_of(c);
+        let lvl = c.flow.min(1.0);
+        if lvl < 0.02 || a < 0.05 || c.pts.len() < 2 {
+            continue;
+        }
+        // the cord's length point by point, from the output end
+        let mut cum = vec![0.0f32];
+        for w in c.pts.windows(2) {
+            cum.push(cum.last().copied().unwrap_or(0.0) + (w[1].x - w[0].x).hypot(w[1].y - w[0].y));
+        }
+        let len = *cum.last().unwrap_or(&0.0);
+        if len < 20.0 {
+            continue;
+        }
+        let at = |s: f32| {
+            let i = cum.iter().position(|v| *v >= s).unwrap_or(cum.len() - 1).max(1);
+            let k = ((s - cum[i - 1]) / (cum[i] - cum[i - 1]).max(1e-6)).clamp(0.0, 1.0);
+            (c.pts[i - 1].x + (c.pts[i].x - c.pts[i - 1].x) * k, c.pts[i - 1].y + (c.pts[i].y - c.pts[i - 1].y) * k)
+        };
+        let head = c.flow_at * len;
+        let tail = (len * 0.45).min(120.0);
+        let w = cord_w(c);
+        let (core, halo) = (shade(c.color, 0.55), shade(c.color, 0.3));
+        // fading in leaving the plug, out reaching the jack
+        let edge = (head / 30.0).min((len - head) / 30.0 + 0.15).clamp(0.0, 1.0);
+        let bright = a * edge * 0.38 * lvl;
+        // the tail: short pieces of the wire, dimmer the further back
+        const N: usize = 14;
+        for i in 0..N {
+            let (s0, s1) = (head - tail * (i + 1) as f32 / N as f32, head - tail * i as f32 / N as f32);
+            if s1 <= 0.0 {
+                break;
+            }
+            let (p0, p1) = (at(s0.max(0.0)), at(s1));
+            let f = (1.0 - i as f32 / N as f32).powf(1.6);
+            let mut pb = PathBuilder::new();
+            pb.move_to(p0.0, p0.1);
+            pb.line_to(p1.0, p1.1);
+            let Some(path) = pb.finish() else { continue };
+            for (col, width, al) in [(halo, w * 2.2, bright * f * 0.25), (core, w * 0.7, bright * f)] {
+                let mut p = solid(col, al);
+                p.blend_mode = BlendMode::Plus;
+                pm.stroke_path(&path, &p, &stroke(width), ts, None);
+            }
+        }
+        // the head: a soft glow round it
+        let (hx, hy) = at(head);
+        let r = w * 1.9;
+        if let Some(sh) = RadialGradient::new(Point::from_xy(hx, hy), Point::from_xy(hx, hy), r, vec![GradientStop::new(0.0, rgba(halo, 0.7 * bright)), GradientStop::new(1.0, rgba(halo, 0.0))], SpreadMode::Pad, Transform::identity())
+            && let Some(circle) = PathBuilder::from_circle(hx, hy, r)
+        {
+            let p = Paint { shader: sh, anti_alias: true, blend_mode: BlendMode::Plus, ..Default::default() };
+            pm.fill_path(&circle, &p, FillRule::Winding, ts, None);
         }
     }
 }

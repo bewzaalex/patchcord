@@ -46,7 +46,8 @@ pub struct Group {
     pub ports: Vec<Port>,
     /// exactly a left and a right audio channel: shown as one stereo jack unless split
     pub stereo: bool,
-    /// its signal is measured for the device's meter (what a sink plays, what an app sends)
+    /// it has a meter in its frame: every audio group, but Bluetooth's internal capture stream's
+    /// (WirePlumber watches what links to it, to switch a headset's profile)
     pub meter: bool,
     /// an app stream's volume (its output) or gain (its input), or a device's (its output or
     /// input), set beside its jacks
@@ -64,6 +65,8 @@ pub struct Group {
 pub struct PortChoice {
     /// the card's route index
     pub index: u32,
+    /// PipeWire's name for it, the same in every language (`analog-output-speaker`)
+    pub name: String,
     pub description: String,
     /// nothing is plugged into it
     pub unplugged: bool,
@@ -363,6 +366,39 @@ impl Graph {
         seen
     }
 
+    /// The nodes Patchcord always leaves out, by who they belong to: other programs' level
+    /// meters (`stream.monitor`) and Patchcord's own meters and cue. (who, what, how many)
+    pub fn system(&self) -> Vec<(String, &'static str, usize)> {
+        let mut m: std::collections::BTreeMap<(String, &'static str), usize> = std::collections::BTreeMap::new();
+        for (_, p) in self.of(Kind::Node) {
+            let name = p.get("node.name").map_or("", |s| s.as_str());
+            let who_what = if name.starts_with(METER_PREFIX) {
+                ("Patchcord".to_owned(), "level meters")
+            } else if name.starts_with(CUE_NODE) {
+                ("Patchcord".to_owned(), "cue (listen)")
+            } else if p.get("stream.monitor").is_some_and(|v| v == "true") {
+                (some(p.get("application.name")).or(some(p.get("node.name"))).cloned().unwrap_or_else(|| "?".into()), "level meters")
+            } else if p.get("media.class").is_some_and(|c| c.ends_with("/Internal")) {
+                // by its headset's name
+                let dev = p.get("device.id").and_then(|d| d.parse::<u32>().ok()).and_then(|d| self.props(d)).and_then(|d| some(d.get("device.description")).cloned());
+                let desc = some(p.get("node.description")).map(|d| d.trim_start_matches("Bluetooth internal capture stream for ").to_owned());
+                (dev.or(desc).unwrap_or_else(|| name.to_owned()), "the plumbing behind MIC")
+            } else {
+                continue;
+            };
+            *m.entry(who_what).or_default() += 1;
+        }
+        // an app's recording streams' monitors (a copy of what each records): left off its face
+        let monitored: HashSet<u32> = self.of(Kind::Port).filter(|(_, pp)| pp.get("port.monitor").is_some_and(|v| v == "true")).filter_map(|(_, pp)| pp.get("node.id")?.parse().ok()).collect();
+        for (id, np) in self.of(Kind::Node) {
+            if monitored.contains(&id) && np.get("media.class").is_some_and(|c| c == "Stream/Input/Audio") && !self.hidden(id, np) {
+                let who = some(np.get("application.name")).or(some(np.get("node.name"))).cloned().unwrap_or_else(|| "?".into());
+                *m.entry((who, "monitors of its recording streams")).or_default() += 1;
+            }
+        }
+        m.into_iter().map(|((who, what), n)| (who, what, n)).collect()
+    }
+
     /// A node's `node.name`, as PipeWire's defaults name it.
     pub fn node_name(&self, node: u32) -> Option<&str> {
         self.props(node)?.get("node.name").map(|s| s.as_str())
@@ -525,6 +561,12 @@ impl Graph {
                     .unwrap_or("suspended");
                 let class = first.get("media.class").map_or("", |s| s.as_str());
                 let mut groups: Vec<Group> = nodes.iter().flat_map(|n| self.groups(*n, ports.get(n).map_or(&[][..], |v| v))).collect();
+                // an app's monitors (a copy of what each of its recording streams records) stay off
+                // its face: nobody patches from them (the HIDDEN list names them under SYSTEM)
+                let app = key.starts_with("app:") || class.starts_with("Stream/");
+                if app {
+                    groups.retain(|g| g.label != "MONITOR");
+                }
                 // an app's several streams of one kind: numbered, in the order they came
                 if key.starts_with("app:") {
                     number_streams(&mut groups);
@@ -596,6 +638,10 @@ impl Graph {
         let class = p.get("media.class").map_or("", |s| s.as_str());
         p.get("stream.monitor").is_some_and(|m| m == "true")
             || p.get("node.name").is_some_and(|n| n.starts_with(METER_PREFIX) || n.starts_with(CUE_NODE))
+            // a Bluetooth headset's real microphone and WirePlumber's internal capture stream:
+            // inside its loopback the sound reaches the microphone apps see (MIC) without a link,
+            // so a cord to them would lead nowhere
+            || class.ends_with("/Internal")
             || (class.starts_with("Stream/") && (!self.info.contains(&node) || self.born.get(&node).is_some_and(|t| t.elapsed() < YOUNG)))
     }
 
@@ -615,7 +661,18 @@ impl Graph {
         let Some((all, _)) = self.routes.get(&r.card) else { return Vec::new() };
         all.iter()
             .filter(|x| x.output == (dir == Dir::In) && x.devices.contains(&r.device) && profile.is_none_or(|p| x.profiles.contains(&p)))
-            .map(|x| PortChoice { index: x.index, description: x.description.clone(), unplugged: x.available == Avail::No })
+            .map(|x| PortChoice { index: x.index, name: x.name.clone(), description: x.description.clone(), unplugged: x.available == Avail::No })
+            .collect()
+    }
+
+    /// A card's ports for its output or input `np` when none is in use: of its direction, for its
+    /// device.
+    fn ports_of(&self, np: &Props, dir: Dir) -> Vec<PortChoice> {
+        let (Some(card), Some(device)) = (np.get("device.id").and_then(|v| v.parse::<u32>().ok()), np.get("card.profile.device").and_then(|v| v.parse::<i32>().ok())) else { return Vec::new() };
+        let Some((all, _)) = self.routes.get(&card) else { return Vec::new() };
+        all.iter()
+            .filter(|x| x.output == (dir == Dir::In) && x.devices.contains(&device))
+            .map(|x| PortChoice { index: x.index, name: x.name.clone(), description: x.description.clone(), unplugged: x.available == Avail::No })
             .collect()
     }
 
@@ -655,9 +712,9 @@ impl Graph {
                 }
             };
             let stereo = ps.len() == 2 && ps[0].media == Media::Audio && ps[0].channel == "FL" && ps[1].channel == "FR";
-            // what a sink plays (its monitor) and what an app sends; never a microphone, which
-            // recording would switch on (and a Bluetooth headset into its low-quality mode)
-            let meter = ps[0].media == Media::Audio && ((mon && class.ends_with("Sink")) || (dir == Dir::Out && class.starts_with("Stream/Output/Audio")));
+            // not Bluetooth's internal capture stream, either way: a meter on what it records links
+            // to the headset's microphone, which keeps it open
+            let meter = ps[0].media == Media::Audio && !class.ends_with("/Internal");
             // a volume goes with its own ports: what an app plays or records, what a device's output
             // plays (its PLAYBACK) or its input takes in (its CAPTURE)
             let audio = ps[0].media == Media::Audio && !mon;
@@ -673,7 +730,12 @@ impl Graph {
             } else {
                 self.mix.get(&node).map(|(volumes, mute)| Mix { node, volumes: volumes.clone(), mute: *mute, gain, route: None })
             };
-            let ports_to = route.map(|(r, _)| self.ports_to(r, dir)).unwrap_or_default();
+            // a card's ports for it; with none in use (HDMI with nothing plugged in), all it has
+            let ports_to = match &route {
+                Some((r, _)) => self.ports_to(*r, dir),
+                None if audio && device => self.ports_of(np, dir),
+                None => Vec::new(),
+            };
             groups.push(Group { label: label.into(), dir, ports: ps, stereo, meter, mix, ports_to, stream: 0 });
         }
         groups
@@ -798,16 +860,16 @@ mod tests {
         // Teams: five playback streams and one recording stream, all named alike, one process
         let mut g = Graph::default();
         let props = |kv: &[(&str, &str)]| -> Props { kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect() };
-        let mut port_id = 100;
-        for (id, class, dir) in [(10, "Stream/Input/Audio", "in"), (11, "Stream/Output/Audio", "out"), (12, "Stream/Output/Audio", "out"), (13, "Stream/Output/Audio", "out"), (14, "Stream/Output/Audio", "out"), (15, "Stream/Output/Audio", "out")] {
+        for (port_id, (id, class, dir)) in (101..).zip([(10, "Stream/Input/Audio", "in"), (11, "Stream/Output/Audio", "out"), (12, "Stream/Output/Audio", "out"), (13, "Stream/Output/Audio", "out"), (14, "Stream/Output/Audio", "out"), (15, "Stream/Output/Audio", "out")]) {
             let p = props(&[("media.class", class), ("node.name", "Teams for Linux"), ("application.name", "Teams for Linux"), ("application.process.id", "3013308")]);
             g.apply(&Event::Added { id, kind: Kind::Node, props: p.clone() });
             g.apply(&Event::Info { id, props: p, state: Some("running") });
-            port_id += 1;
             let name = if dir == "in" { "input_MONO" } else { "output_MONO" };
             g.apply(&Event::Added { id: port_id, kind: Kind::Port, props: props(&[("node.id", &id.to_string()), ("port.direction", dir), ("port.name", name), ("format.dsp", "32 bit float mono audio"), ("audio.channel", "MONO")]) });
             g.apply(&Event::Mix { id, volumes: vec![1.0], mute: false });
         }
+        // the recording stream's monitor: a copy of what it records
+        g.apply(&Event::Added { id: 199, kind: Kind::Port, props: props(&[("node.id", "10"), ("port.direction", "out"), ("port.name", "monitor_MONO"), ("port.monitor", "true"), ("format.dsp", "32 bit float mono audio"), ("audio.channel", "MONO")]) });
         let devs = g.devices();
         assert_eq!(devs.len(), 1, "{:?}", devs.iter().map(|d| &d.key).collect::<Vec<_>>());
         let d = &devs[0];
@@ -815,16 +877,47 @@ mod tests {
         // each stream a frame of its own, numbered, with its own volume
         let outs: Vec<(&str, usize, bool)> = d.groups.iter().filter(|g| g.dir == Dir::Out).map(|g| (g.label.as_str(), g.stream, g.mix.is_some())).collect();
         assert_eq!(outs, [("OUTPUT 1", 1, true), ("OUTPUT 2", 2, true), ("OUTPUT 3", 3, true), ("OUTPUT 4", 4, true), ("OUTPUT 5", 5, true)]);
+        assert!(d.groups.iter().all(|g| !g.label.starts_with("MONITOR")), "an app's monitors stay off its face");
+        assert_eq!(g.system().iter().find(|s| s.1 == "monitors of its recording streams").map(|s| (s.0.as_str(), s.2)), Some(("Teams for Linux", 1)), "and are listed as system");
         let input = d.groups.iter().find(|g| g.dir == Dir::In).expect("an INPUT");
         assert_eq!((input.label.as_str(), input.stream), ("INPUT", 0));
         let jd = crate::ui::face_jacks(d);
         let labels: Vec<&str> = jd.iter().filter(|j| j.0 == Dir::Out).map(|j| j.1.as_str()).collect();
         assert_eq!(labels, ["1", "2", "3", "4", "5"]);
-        // at most three frames side by side: the six take two units, in columns
+        // balanced: the six take two units of three, in columns; what makes sound first (the
+        // outputs, from the top-left), what takes it (the INPUT) at the right end
         let ((_, h), at) = crate::ui::face_layout(d);
         assert_eq!(h, 256.0);
-        assert_eq!(at.iter().map(|a| a.1).collect::<Vec<_>>(), [0.0, 0.0, 0.0, 128.0, 128.0, 128.0]);
-        assert_eq!((at[0].0, at[1].0, at[2].0), (at[3].0, at[4].0, at[5].0));
+        assert_eq!(at.iter().map(|a| a.1).collect::<Vec<_>>(), [128.0, 0.0, 0.0, 0.0, 128.0, 128.0]);
+        assert_eq!((at[1].0, at[2].0), (at[4].0, at[5].0));
+        // (the INPUT in OUTPUT 3's column, against its right edge: it is a little narrower)
+        assert!(at[0].0 >= at[3].0 && at[0].0 < at[3].0 + 40.0);
+    }
+
+    /// Teams in a call records on two streams and plays on six: eight frames, two units of four,
+    /// the outputs first (they make sound), the inputs at the right, nothing left over.
+    #[test]
+    fn eight_frames_make_two_full_units() {
+        let mut g = Graph::default();
+        let props = |kv: &[(&str, &str)]| -> Props { kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect() };
+        for id in 10..18u32 {
+            let (class, dir) = if id < 12 { ("Stream/Input/Audio", "in") } else { ("Stream/Output/Audio", "out") };
+            let p = props(&[("media.class", class), ("node.name", "Teams for Linux"), ("application.name", "Teams for Linux"), ("application.process.id", "7")]);
+            g.apply(&Event::Added { id, kind: Kind::Node, props: p.clone() });
+            g.apply(&Event::Info { id, props: p, state: Some("running") });
+            let name = if dir == "in" { "input_MONO" } else { "output_MONO" };
+            g.apply(&Event::Added { id: 100 + id, kind: Kind::Port, props: props(&[("node.id", &id.to_string()), ("port.direction", dir), ("port.name", name), ("format.dsp", "32 bit float mono audio"), ("audio.channel", "MONO")]) });
+            g.apply(&Event::Mix { id, volumes: vec![1.0], mute: false });
+        }
+        let d = &g.devices()[0];
+        let ((_, h), at) = crate::ui::face_layout(d);
+        assert_eq!(h, 256.0);
+        let row = |u: f64| d.groups.iter().zip(&at).filter(|(_, a)| a.1 == u).map(|(g, _)| g.label.as_str()).collect::<Vec<_>>();
+        assert_eq!(row(0.0), ["OUTPUT 1", "OUTPUT 2", "OUTPUT 3", "OUTPUT 4"]);
+        assert_eq!(row(128.0), ["INPUT 1", "INPUT 2", "OUTPUT 5", "OUTPUT 6"]);
+        // sound flows left to right: the outputs first, the inputs at the right
+        let x = |l: &str| d.groups.iter().zip(&at).find(|(g, _)| g.label == l).map(|(_, a)| a.0).unwrap();
+        assert!(x("OUTPUT 6") < x("INPUT 1") && x("INPUT 1") < x("INPUT 2"));
     }
 
     #[test]

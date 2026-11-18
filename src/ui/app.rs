@@ -67,6 +67,13 @@ pub fn defaults_menu(scene: &Scene) -> Menu {
     Menu::Defaults { out: at(&outs, &dout), inp: at(&ins, &din), outs: outs.into_iter().map(|e| e.3).collect(), ins: ins.into_iter().map(|e| e.3).collect() }
 }
 
+/// The list of devices hidden by hand, and of the nodes always left out.
+pub fn hidden_menu(scene: &Scene) -> Menu {
+    let mine = scene.hidden_devs.iter().map(|d| (d.name.clone(), d.model.clone())).collect();
+    let system = scene.graph.system().into_iter().map(|(who, what, n)| (who, if n > 1 { format!("{what} ×{n}") } else { what.to_owned() })).collect();
+    Menu::Hidden { mine, system }
+}
+
 /// Listening (cue): jacks heard in the default output through a little node of Patchcord's.
 /// Holding Alt probes the jack under the pointer; CUE mode (the CUE key) hears the hovered jack,
 /// and a click pins one to keep playing, as many as wanted.
@@ -79,7 +86,7 @@ struct Cue {
     /// 0…1, as the knob shows it (the volume is its cube)
     level: f64,
     /// what PipeWire was last told
-    sent: Option<(Vec<(u32, u32, Option<usize>)>, u32, bool)>,
+    sent: Option<(Vec<crate::pw::CueSource>, u32, bool)>,
     badge: Option<(u64, Layer)>,
 }
 
@@ -162,7 +169,9 @@ impl App {
         scene.rack = settings.rack;
         scene.align = settings.align;
         scene.accents = settings.accents;
+        scene.flow = settings.flow;
         scene.rack_order = settings.rack_order.clone();
+        scene.hidden = settings.hidden.clone();
         App {
             conn,
             scene,
@@ -187,7 +196,7 @@ impl App {
             animating: true,
             next_frame: now,
             last_press: (now, (0.0, 0.0)),
-            panel: Panel::new(panel::State { rack: false, locked: settings.lock, align: settings.align, cables: settings.cables, sound: false, lcd: [String::new(), String::new()], defaults: [String::new(), String::new()], cue_led: false, cue_level: 70, pressed: None }),
+            panel: Panel::new(panel::State { rack: false, locked: settings.lock, align: settings.align, cables: settings.cables, lcd: [String::new(), String::new()], defaults: [String::new(), String::new()], cue_led: false, cue_level: 70, hidden: 0, flow: true, pressed: None }),
             hint: String::new(),
             status: None,
             notice: None,
@@ -210,8 +219,10 @@ impl App {
         s.lock = self.panel.state.locked;
         s.align = self.scene.align;
         s.accents = self.scene.accents;
+        s.flow = self.scene.flow;
         s.rack = self.scene.rack;
         s.rack_order = self.scene.rack_order.clone();
+        s.hidden = self.scene.hidden.clone();
         s.preset = self.current.map(|i| self.presets[i].name.clone());
         if let Some(sf) = &self.win {
             let size = sf.window.inner_size().to_logical::<f64>(sf.window.scale_factor());
@@ -347,6 +358,27 @@ impl App {
         defaults_menu(&self.scene)
     }
 
+    /// Opens the list of hidden devices (`toggle`: or closes it), or draws it again.
+    fn open_hidden(&mut self, toggle: bool) {
+        if toggle && matches!(self.panel.menu, Some(Menu::Hidden { .. })) {
+            self.panel.menu = None;
+            return self.redraw();
+        }
+        self.panel.menu = Some(hidden_menu(&self.scene));
+        self.redraw();
+    }
+
+    /// Hides device `di` by hand, or says why it can't be.
+    fn hide_device(&mut self, di: usize) {
+        let name = self.scene.devs[di].dev.name.clone();
+        if self.scene.hide(di) {
+            self.say(&format!("{name} hidden · the HIDDEN key shows it again"));
+            self.save_settings();
+        } else {
+            self.say(&format!("{name} has cords: pull them out first"));
+        }
+    }
+
     /// The jacks heard: the pinned ones and the hovered one.
     fn cue_heard(&self) -> Vec<String> {
         let mut v = self.cue.pins.clone();
@@ -459,8 +491,17 @@ impl App {
                 self.save_settings();
             }
             Key::Arrange => {
+                // rows of unused devices shaped to the window
+                let (top, bottom) = self.field();
+                (self.scene.view_w, self.scene.view_h) = (self.size.0 as f64 / self.dpi(), (bottom - top) / self.dpi());
                 self.scene.arrange();
                 self.fit(true);
+            }
+            Key::Hidden => self.open_hidden(true),
+            Key::Flow => {
+                self.scene.flow = !self.scene.flow;
+                self.say(if self.scene.flow { "Cord directions: on" } else { "Cord directions: off" });
+                self.save_settings();
             }
             Key::Fit => self.fit(true),
             Key::Desk | Key::Rack => {
@@ -473,7 +514,6 @@ impl App {
             Key::Defaults => self.open_defaults(true),
             Key::Cue => self.set_cue_mode(!self.cue.mode),
             Key::CueLevel => {}
-            Key::Sound => self.say("Plug sounds are not implemented yet"),
         }
         self.redraw();
     }
@@ -508,7 +548,7 @@ impl App {
     fn fit(&mut self, glide: bool) {
         let dpi = self.dpi();
         let (top, bottom) = self.field();
-        let v = self.scene.fit(self.size.0 as f64, bottom - top, top, 1.3 * dpi);
+        let v = self.scene.fit(self.size.0 as f64, bottom - top, top, 2.0 * dpi, super::scene::EDGE * dpi);
         if glide {
             self.view_to = Some(v);
         } else {
@@ -600,8 +640,22 @@ impl App {
         self.panel.state.defaults = [true, false].map(|output| self.scene.default_shown(output));
         // the CUE LED: lit in CUE mode, blinking while only probing with Alt
         let heard = self.cue_heard().iter().any(|k| !self.scene.cue_blocked(k));
-        self.panel.state.cue_led = self.cue.mode || (heard && (now - self.start).as_millis() / 250 % 2 == 0);
+        self.panel.state.cue_led = self.cue.mode || (heard && ((now - self.start).as_millis() / 250).is_multiple_of(2));
         self.panel.state.cue_level = (self.cue.level * 100.0).round() as u8;
+        self.panel.state.hidden = self.scene.hidden_devs.len();
+        self.panel.state.flow = self.scene.flow;
+        // hidden devices that got a cord came back by themselves
+        if !self.scene.shown_again.is_empty() {
+            let names = std::mem::take(&mut self.scene.shown_again).join(", ");
+            self.say(&format!("{names} shown again: it got a cord"));
+            self.save_settings();
+        }
+        if let Some(Menu::Hidden { .. }) = &self.panel.menu {
+            let m = hidden_menu(&self.scene);
+            if self.panel.menu.as_ref() != Some(&m) {
+                self.panel.menu = Some(m);
+            }
+        }
         self.cue_sync();
         // the open defaults list follows what is the default
         if let Some(Menu::Defaults { .. }) = &self.panel.menu {
@@ -754,7 +808,7 @@ impl App {
     fn update_glow(&mut self) {
         let w = self.world(self.cursor);
         let key = match &self.scene.hover {
-            Hover::Device(k) if self.drag.is_none() && self.scene.switch_at(w.0, w.1).is_none() && self.scene.profile_key_at(w.0, w.1).is_none() && self.scene.port_key_at(w.0, w.1).is_none() && !self.scene.mix_control_at(w.0, w.1) => k.clone(),
+            Hover::Device(k) if self.drag.is_none() && self.scene.switch_at(w.0, w.1).is_none() && self.scene.hide_key_at(w.0, w.1).is_none() && self.scene.profile_key_at(w.0, w.1).is_none() && self.scene.port_key_at(w.0, w.1).is_none() && !self.scene.mix_control_at(w.0, w.1) => k.clone(),
             _ => {
                 self.glow = None;
                 return;
@@ -839,7 +893,7 @@ impl App {
                 Some(ProfileHit::Latency(gi, step)) => {
                     // 1 ms a click, 10 with Shift
                     if let Some(di) = self.scene.devs.iter().position(|d| d.dev.key == pl.key) {
-                        let now = self.scene.port_sections(di).into_iter().find(|s| s.0 == gi).map_or(0, |s| s.4);
+                        let now = self.scene.port_sections(di).into_iter().find(|s| s.group == gi).map_or(0, |s| s.latency_ns);
                         let ms = if self.mods.shift_key() { 10 } else { 1 };
                         self.scene.set_latency(di, gi, now + step * ms * 1_000_000);
                     }
@@ -881,14 +935,30 @@ impl App {
                 }
                 Some(MenuHit::Find(output, i)) => {
                     if let Some(e) = self.scene.ends(output).get(i).cloned() {
-                        self.find_device(e.0);
+                        // a hidden one is shown again first
+                        let n = self.scene.devs.len();
+                        let di = if e.0 < n { Some(e.0) } else { self.scene.hidden_devs.get(e.0 - n).map(|d| d.key.clone()).and_then(|k| self.scene.show(&k)) };
+                        if e.0 >= n {
+                            self.save_settings();
+                        }
+                        if let Some(di) = di {
+                            self.find_device(di);
+                        }
+                    }
+                }
+                Some(MenuHit::Show(i)) => {
+                    if let Some(key) = self.scene.hidden_devs.get(i).map(|d| d.key.clone())
+                        && let Some(di) = self.scene.show(&key)
+                    {
+                        self.save_settings();
+                        self.find_device(di);
                     }
                 }
                 Some(MenuHit::Inside) => {}
                 None => {
                     // the keys that open it toggle it themselves
                     let key = self.panel.hit(self.cursor.0 / dpi, self.cursor.1 / dpi);
-                    if !matches!(key, Some(Key::Save | Key::Load | Key::Lcd | Key::Defaults)) {
+                    if !matches!(key, Some(Key::Save | Key::Load | Key::Lcd | Key::Defaults | Key::Hidden)) {
                         self.panel.menu = None;
                         self.redraw();
                         return;
@@ -972,6 +1042,10 @@ impl App {
         if let Some(at) = self.scene.mute_at(w.0, w.1) {
             self.scene.toggle_mute(at);
             return self.after_patch();
+        }
+        // a device's HIDE key
+        if let Some(di) = self.scene.hide_key_at(w.0, w.1) {
+            return self.hide_device(di);
         }
         // a card's PROFILE and PORT keys open their lists under them
         if let Some((di, port)) = self.scene.port_key_at(w.0, w.1).map(|di| (di, true)).or(self.scene.profile_key_at(w.0, w.1).map(|di| (di, false))) {
@@ -1207,7 +1281,7 @@ impl App {
             CursorIcon::Crosshair
         } else if self.scene.knob_at(w.0, w.1).is_some() || self.scene.bal_at(w.0, w.1).is_some_and(|(di, gi)| self.scene.devs[di].bal(gi) == BalKnob::Out) {
             CursorIcon::NsResize
-        } else if self.scene.switch_at(w.0, w.1).is_some() || self.scene.profile_key_at(w.0, w.1).is_some() || self.scene.port_key_at(w.0, w.1).is_some() || self.scene.mix_control_at(w.0, w.1) {
+        } else if self.scene.switch_at(w.0, w.1).is_some() || self.scene.hide_key_at(w.0, w.1).is_some() || self.scene.profile_key_at(w.0, w.1).is_some() || self.scene.port_key_at(w.0, w.1).is_some() || self.scene.mix_control_at(w.0, w.1) {
             CursorIcon::Pointer
         } else if self.scene.device_at(w.0, w.1).is_some() && !self.panel.state.locked {
             CursorIcon::Move
@@ -1243,6 +1317,16 @@ impl App {
             _ if self.mods.control_key() || self.mods.alt_key() => {}
             KeyCode::KeyF | KeyCode::Digit0 => self.panel_key(Key::Fit),
             KeyCode::KeyA => self.panel_key(Key::Arrange),
+            // the light running in the cords that carry sound, on and off
+            KeyCode::KeyW => self.panel_key(Key::Flow),
+            // H: hide the device under the pointer, or (over nothing) the list of hidden ones
+            KeyCode::KeyH => {
+                let w = self.world(self.cursor);
+                match self.scene.device_at(w.0, w.1) {
+                    Some(di) => self.hide_device(di),
+                    None => self.open_hidden(true),
+                }
+            }
             KeyCode::KeyL => self.panel_key(Key::Lock),
             KeyCode::KeyG => self.panel_key(Key::Align),
             // the groups' colours, on and off

@@ -139,7 +139,7 @@ fn compose(scene: &Scene, view: View, size: (u32, u32), dpi: f64, held: Option<(
 }
 
 fn new_panel(scene: &Scene) -> Panel {
-    Panel::new(panel::State { rack: scene.rack, locked: false, align: scene.align, cables: 0, sound: false, defaults: [scene.default_shown(true), scene.default_shown(false)], cue_led: false, cue_level: 70, lcd: ["NO PRESET".into(), "48 kHz · 1024 · 21.3 ms".into()], pressed: None })
+    Panel::new(panel::State { rack: scene.rack, locked: false, align: scene.align, cables: 0, defaults: [scene.default_shown(true), scene.default_shown(false)], cue_led: false, cue_level: 70, lcd: ["NO PRESET".into(), "48 kHz · 1024 · 21.3 ms".into()], hidden: scene.hidden_devs.len(), flow: scene.flow, pressed: None })
 }
 
 fn status(scene: &Scene, width: f64, dpi: f64) -> Layer {
@@ -151,12 +151,12 @@ fn status(scene: &Scene, width: f64, dpi: f64) -> Layer {
 /// letting the cords settle (PATCHCORD_SCALE sets the scale, 1.5 by default). "rack" puts the
 /// devices in the rack; "split" shows every stereo jack as L and R; "demo" adds a few cords to the
 /// picture (not to PipeWire); "hover" rests the pointer on the jack the first cord comes from;
-/// "held" pulls a cord out of the first output and holds its end in the air; "save" or "presets"
-/// opens that drop-down; "profile" opens a card's profile list (the named one's, else a
+/// "held" pulls a cord out of the first output and holds its end in the air; "save", "presets",
+/// "defaults" or "hidden" opens that drop-down; "profile" opens a card's profile list (the named one's, else a
 /// Bluetooth card's). "only" shows just the devices whose names start with those, arranged by
 /// signal flow; "size" makes the picture W×H pixels, with the devices fitted into it.
 pub fn render(path: &str, opts: &[String]) -> Result<(), String> {
-    let menu = opts.iter().map(String::as_str).find(|o| matches!(*o, "save" | "presets" | "defaults"));
+    let menu = opts.iter().map(String::as_str).find(|o| matches!(*o, "save" | "presets" | "defaults" | "hidden"));
     let opt = |name: &str| opts.iter().find_map(|o| o.strip_prefix(name)?.strip_prefix('='));
     let (mut scene, conn, synced) = live_scene()?;
     start_meters(&mut scene, &conn);
@@ -235,7 +235,7 @@ pub fn render(path: &str, opts: &[String]) -> Result<(), String> {
     let size = opt("size").and_then(|v| v.split_once('x')).and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)));
     let ((w, h), view) = match size {
         // the devices fitted between the panel and the status bar
-        Some((w, h)) => ((w, h), scene.fit(w as f64, h as f64 - top - panel::STATUS_H * s, top, 2.0 * s)),
+        Some((w, h)) => ((w, h), scene.fit(w as f64, h as f64 - top - panel::STATUS_H * s, top, 2.0 * s, crate::ui::scene::EDGE * s)),
         None => (
             (((x1 - x0 + 2.0 * m) * s).max(1200.0 * s) as u32, ((y1 - y0 + 2.0 * m + 80.0 + panel::H + panel::STATUS_H) * s) as u32),
             View { s, x: -(x0 - m) * s, y: top - (y0 - m) * s },
@@ -249,6 +249,7 @@ pub fn render(path: &str, opts: &[String]) -> Result<(), String> {
         Some("save") => Some(panel::Menu::Save { text: "LATE NIGHT".into(), placeholder: String::new() }),
         Some("presets") => Some(panel::Menu::Load { names: presets.iter().map(|p| p.name.clone()).collect(), current: (!presets.is_empty()).then_some(0), confirm: None }),
         Some("defaults") => Some(crate::ui::app::defaults_menu(&scene)),
+        Some("hidden") => Some(crate::ui::app::hidden_menu(&scene)),
         _ => None,
     };
     let status = status(&scene, w as f64 / s, s);
@@ -339,7 +340,7 @@ impl Rec {
     /// The view that shows every device, between the panel and the status bar.
     fn fit(&self) -> View {
         let top = panel::H * DPI;
-        self.scene.fit(SIZE.0 as f64, SIZE.1 as f64 - top - panel::STATUS_H * DPI, top, 1.2 * DPI)
+        self.scene.fit(SIZE.0 as f64, SIZE.1 as f64 - top - panel::STATUS_H * DPI, top, 1.2 * DPI, 60.0 * DPI)
     }
 
     /// One frame: everything moves on by 1/FPS second, and the picture is saved.

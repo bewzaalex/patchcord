@@ -9,4 +9,4 @@
 - 5: two units high
 - 6: **chosen**. Each stream is a frame of its own, with its own SPLIT beside its MUTE. A device shows at most three frames in a row, and more go on to further units.
 
-The interactive mockup (`../mockup/index.html`) has 6, A (on the face) and B (a drawer), switched with V.
+The interactive mockup (`../mockup/index.html`) and the app use 6; the other variants stay here on the sheet only.

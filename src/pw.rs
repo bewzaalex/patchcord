@@ -74,6 +74,9 @@ pub struct Route {
     pub latency_ns: i64,
 }
 
+/// An output port listened to: its node, the port, and its channel (0 left, 1 right, None both).
+pub type CueSource = (u32, u32, Option<usize>);
+
 /// From PipeWire to the app.
 pub enum Event {
     Added { id: u32, kind: Kind, props: Props },
@@ -117,7 +120,7 @@ pub enum Cmd {
     /// Listen: these output ports (node, port, channel: 0 left, 1 right, None both) in the
     /// default output, at `level` (linear). No sources: nothing is heard, and the cue goes unless
     /// `keep` (CUE mode is on: it stays for the next jack).
-    Cue { sources: Vec<(u32, u32, Option<usize>)>, level: f32, keep: bool },
+    Cue { sources: Vec<CueSource>, level: f32, keep: bool },
     Quit,
 }
 
@@ -323,7 +326,7 @@ struct Cue {
     out: Option<u32>,
     links: HashMap<(u32, u32), pw::link::Link>,
     /// what is wanted: sources and level
-    want: (Vec<(u32, u32, Option<usize>)>, f32),
+    want: (Vec<CueSource>, f32),
 }
 
 impl Drop for Cue {

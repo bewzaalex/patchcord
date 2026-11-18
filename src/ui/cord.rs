@@ -83,6 +83,9 @@ pub struct Cord {
     pub pending: f32,
     /// how far apart its ends were last frame
     span: f32,
+    /// the signal it carries (0…1, eased) and where its light is on the way across (0…1)
+    pub flow: f32,
+    pub flow_at: f32,
 }
 
 /// The hand holding a cord's end: where, and the kind of jack it is about to go into (a cord
@@ -140,6 +143,8 @@ impl Cord {
             strain: 1.0,
             pending: 0.0,
             span: 0.0,
+            flow: 0.0,
+            flow_at: 0.0,
         }
     }
 
