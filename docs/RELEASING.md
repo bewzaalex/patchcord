@@ -53,13 +53,14 @@ newer C library and PipeWire. Their contents are set in `Cargo.toml` under
    The repository's social preview (**Settings** → **General** → **Social preview**, uploaded by
    hand: GitHub has no API for it) is `docs/screenshots/social-preview.png`, 1280×640: the icon,
    the name, what it is and a few features on the left, kept 40 px from the edges, and the window
-   with three devices and their cords on the right. With some music playing, so the meters show
-   (pick devices that are there, an app playing first):
+   with three devices in the rack and their cords on the right (the rack stacks them, so they
+   come out big). With some music playing, so the meters show (pick devices that are there, an
+   app playing first):
 
    ```sh
    cfg=$(mktemp -d) t=$(mktemp -d) f=assets/fonts
-   XDG_CONFIG_HOME=$cfg PATCHCORD_SCALE=1.15 cargo run --release -- --render $t/win.png demo \
-     "only=fooyin,JLab GO Work 2,Bluetooth internal" size=1520x1120
+   XDG_CONFIG_HOME=$cfg PATCHCORD_SCALE=1.15 cargo run --release -- --render $t/win.png demo rack \
+     "only=fooyin,JLab GO Work 2,Ryzen" size=1520x1120
    magick $t/win.png -resize 700x \( +clone -alpha extract -fill black -colorize 100 -fill white -draw "roundrectangle 0,0,699,515,14,14" \) \
      -alpha off -compose CopyOpacity -composite -fill none -stroke '#45484d' -strokewidth 2 -draw "roundrectangle 1,1,698,514,14,14" \
      \( +clone -background black -shadow 75x22+0+14 \) +swap -background none -compose over -layers merge +repage $t/window.png
@@ -68,7 +69,7 @@ newer C library and PipeWire. Their contents are set in `Cargo.toml` under
      -font $f/NotoSans-Black.ttf -fill '#f3f3f3' -pointsize 64 -annotate +54+250 'Patchcord' \
      -font $f/NotoSans-Bold.ttf -fill '#c9ccd1' -pointsize 25 -annotate +56+300 'A PipeWire patchbay that looks' -annotate +56+332 'like a rack of real gear' \
      -font $f/NotoSans-Bold.ttf -fill '#9a9da2' -pointsize 19 -annotate +76+392 'Patch cords that hang and swing' \
-     -annotate +76+424 'Live signal meters' -annotate +76+456 'Desk or 19" rack, presets, undo' \
+     -annotate +76+424 'Live meters, volume, cue' -annotate +76+456 'Desk or 19" rack, presets, undo' \
      -fill '#f0a64a' -draw "circle 61,386 65,386" -draw "circle 61,418 65,418" -draw "circle 61,450 65,450" \
      -font $f/NotoSansMono-Bold.ttf -fill '#f0a64a' -pointsize 16 -annotate +56+540 'LINUX · PIPEWIRE · OPEN SOURCE' \
      -font $f/NotoSansMono-Regular.ttf -fill '#7d8085' -pointsize 15 -annotate +56+568 'github.com/bewzaalex/patchcord' \
