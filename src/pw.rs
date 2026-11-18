@@ -21,6 +21,10 @@ pub type Props = BTreeMap<String, String>;
 
 /// The prefix of the meter streams' node names: Patchcord hides its own nodes.
 pub const METER_PREFIX: &str = "patchcord-meter-";
+/// The cue's loopback: what is listened to goes into its recording side (`patchcord-cue`) and
+/// comes out of its playing side (`patchcord-cue-out`) in the default output. Both are hidden.
+pub const CUE_NODE: &str = "patchcord-cue";
+const CUE_OUT: &str = "patchcord-cue-out";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
@@ -110,6 +114,10 @@ pub enum Cmd {
     SetRoute { device: u32, index: u32, route_device: i32, volumes: Option<Vec<f32>>, mute: Option<bool>, latency_ns: Option<i64> },
     /// Make a node the default output or input (`default.configured.audio.sink` / `.source`).
     SetDefault { key: String, node_name: String },
+    /// Listen: these output ports (node, port, channel: 0 left, 1 right, None both) in the
+    /// default output, at `level` (linear). No sources: nothing is heard, and the cue goes unless
+    /// `keep` (CUE mode is on: it stays for the next jack).
+    Cue { sources: Vec<(u32, u32, Option<usize>)>, level: f32, keep: bool },
     Quit,
 }
 
@@ -301,6 +309,94 @@ fn mix_param(volumes: Vec<f32>, mute: bool) -> Option<Vec<u8>> {
     Some(spa::pod::serialize::PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &Value::Object(obj)).ok()?.0.into_inner())
 }
 
+/// The cue: a loopback of Patchcord's (PipeWire's loopback module, as `pw-loopback`), made while
+/// something is listened to. Its recording side takes in what is heard, on passive links, on the
+/// clock of what it hears; its playing side plays into the default output, on that output's
+/// clock; a little buffer between them bridges the two. So listening never joins the two clocks
+/// (which switched an app's driver, and made some apps stop), and never makes anything play.
+#[derive(Default)]
+struct Cue {
+    module: Option<std::ptr::NonNull<pw::sys::pw_impl_module>>,
+    /// its recording side (and its input ports, by channel) and its playing side
+    node: Option<u32>,
+    inputs: BTreeMap<u32, u32>,
+    out: Option<u32>,
+    links: HashMap<(u32, u32), pw::link::Link>,
+    /// what is wanted: sources and level
+    want: (Vec<(u32, u32, Option<usize>)>, f32),
+}
+
+impl Drop for Cue {
+    fn drop(&mut self) {
+        self.links.clear();
+        if let Some(m) = self.module.take() {
+            // SAFETY: the module was loaded by `start` on this thread and is destroyed once
+            unsafe { pw::sys::pw_impl_module_destroy(m.as_ptr()) };
+        }
+    }
+}
+
+impl Cue {
+    /// Loads the loopback.
+    fn start(&mut self, context: &pw::context::ContextRc) -> Result<(), String> {
+        let args = format!(
+            r#"{{ node.description = "Patchcord cue" audio.position = [ FL FR ]
+  capture.props = {{ node.name = "{CUE_NODE}" media.class = "Stream/Input/Audio" node.autoconnect = false node.passive = true }}
+  playback.props = {{ node.name = "{CUE_OUT}" node.description = "Patchcord cue" media.class = "Stream/Output/Audio" }} }}"#
+        );
+        let name = std::ffi::CString::new("libpipewire-module-loopback").expect("name");
+        let args = std::ffi::CString::new(args).map_err(|e| e.to_string())?;
+        // SAFETY: the context is alive, the strings outlive the call, and no properties are passed
+        let m = unsafe { pw::sys::pw_context_load_module(context.as_raw_ptr(), name.as_ptr(), args.as_ptr(), std::ptr::null_mut()) };
+        self.module = Some(std::ptr::NonNull::new(m).ok_or("the loopback module did not load")?);
+        Ok(())
+    }
+
+    /// Links what is wanted into its recording side, once its ports exist, and unlinks the rest.
+    fn reconcile(&mut self, core: &pw::core::CoreRc) {
+        let want: Vec<(u32, u32, u32, u32)> = match self.node {
+            Some(me) if self.inputs.len() >= 2 => {
+                let ins: Vec<u32> = self.inputs.values().copied().collect();
+                let mut v = Vec::new();
+                for &(node, port, ch) in &self.want.0 {
+                    for c in ch.map_or(vec![0, 1], |c| vec![c.min(1)]) {
+                        v.push((node, port, me, ins[c]));
+                    }
+                }
+                v
+            }
+            _ => Vec::new(),
+        };
+        self.links.retain(|(o, i), _| want.iter().any(|w| w.1 == *o && w.3 == *i));
+        for (on, op, inn, ip) in want {
+            if self.links.contains_key(&(op, ip)) {
+                continue;
+            }
+            // passive: listening never makes anything play
+            let props = pw::properties::properties! {
+                "link.output.node" => on.to_string(),
+                "link.output.port" => op.to_string(),
+                "link.input.node" => inn.to_string(),
+                "link.input.port" => ip.to_string(),
+                "link.passive" => "true",
+            };
+            if let Ok(l) = core.create_object::<pw::link::Link>("link-factory", &props) {
+                self.links.insert((op, ip), l);
+            }
+        }
+    }
+
+    /// Its playing side's volume: the cue's level.
+    fn set_level(&self, bound: &HashMap<u32, Bound>) {
+        if let Some(n) = self.out.and_then(|id| bound.get(&id)).and_then(|(n, _)| n.downcast_ref::<pw::node::Node>())
+            && let Some(bytes) = mix_param(vec![self.want.1; 2], false)
+            && let Some(pod) = spa::pod::Pod::from_bytes(&bytes)
+        {
+            n.set_param(spa::param::ParamType::Props, 0, pod);
+        }
+    }
+}
+
 /// A signal meter: a capture stream, its ports once they exist, and the passive links to them.
 /// A node or device bound to keep its info coming: its proxy and listener.
 type Bound = (Box<dyn Any>, Box<dyn Any>);
@@ -338,6 +434,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
     let meters: Rc<RefCell<HashMap<u32, Meter>>> = Default::default();
     // the "default" metadata, to set the default output and input
     let default_md: Rc<std::cell::Cell<Option<u32>>> = Default::default();
+    let cue: Rc<RefCell<Cue>> = Default::default();
 
     let _registry_listener = registry
         .add_listener_local()
@@ -349,6 +446,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
             let stale = stale.clone();
             let core = core.clone();
             let default_md = default_md.clone();
+            let cue = cue.clone();
             move |g| {
                 // the "settings" metadata (the clock rate and quantum) and the "default" one (the
                 // default output and input)
@@ -385,6 +483,9 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                 let id = g.id;
                 match kind {
                     Kind::Node => {
+                        if props.get("node.name").is_some_and(|n| n == CUE_NODE) {
+                            cue.borrow_mut().node = Some(id);
+                        }
                         if let Some(n) = props.get("node.name").and_then(|n| n.strip_prefix(METER_PREFIX)).and_then(|n| n.parse::<u32>().ok())
                             && let Some(m) = meters.borrow_mut().get_mut(&n)
                         {
@@ -427,6 +528,11 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                                 node.subscribe_params(&[spa::param::ParamType::Props]);
                             }
                             bound.borrow_mut().insert(id, (Box::new(node), Box::new(l)));
+                            if props.get("node.name").is_some_and(|n| n == CUE_OUT) {
+                                let mut c = cue.borrow_mut();
+                                c.out = Some(id);
+                                c.set_level(&bound.borrow());
+                            }
                         }
                     }
                     Kind::Device => {
@@ -496,6 +602,14 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                         let node: Option<u32> = props.get("node.id").and_then(|n| n.parse().ok());
                         let index: u32 = props.get("port.id").and_then(|n| n.parse().ok()).unwrap_or(0);
                         let input = props.get("port.direction").is_some_and(|d| d == "in");
+                        // the cue's ports: once it has them, it is linked
+                        {
+                            let mut c = cue.borrow_mut();
+                            if c.node.is_some() && c.node == node && input {
+                                c.inputs.insert(index, id);
+                                c.reconcile(&core);
+                            }
+                        }
                         for m in meters.borrow_mut().values_mut() {
                             if let Some(me) = m.node
                                 && m.node == node
@@ -532,8 +646,19 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
             let events = events.clone();
             let bound = bound.clone();
             let meters = meters.clone();
+            let cue = cue.clone();
             move |id| {
                 bound.borrow_mut().remove(&id);
+                {
+                    let mut c = cue.borrow_mut();
+                    c.inputs.retain(|_, p| *p != id);
+                    if c.node == Some(id) {
+                        c.node = None;
+                    }
+                    if c.out == Some(id) {
+                        c.out = None;
+                    }
+                }
                 // a meter's port gone: it is linked again when a new one comes
                 for m in meters.borrow_mut().values_mut() {
                     m.ports.retain(|_, p| *p != id);
@@ -568,7 +693,17 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
         })
         .error({
             let events = events.clone();
-            move |id, _seq, res, message| events.send(Event::Error(format!("object {id}: {message} ({res})")))
+            move |id, _seq, res, message| {
+                // the meters' links are made again while PipeWire sets up their ports: a link
+                // made a moment too early fails to agree a format, one already gone is destroyed
+                // twice, and a meter of a stream not playing can't set its format until it plays.
+                // Harmless (they are made again, and set up once there is sound); shown only when
+                // debugging
+                let noise = (res == -2 && message.starts_with("unknown resource")) || (res == -22 && (message.contains("format") || message.contains("negotiation")));
+                if !noise || std::env::var_os("PATCHCORD_DEBUG").is_some() {
+                    events.send(Event::Error(format!("object {id}: {message} ({res})")));
+                }
+            }
         })
         .info({
             let events = events.clone();
@@ -623,6 +758,8 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
         let events = events.clone();
         let bound = bound.clone();
         let default_md = default_md.clone();
+        let cue = cue.clone();
+        let context = context.clone();
         move |cmd| match cmd {
             Cmd::Link { out_node, out_port, in_node, in_port } => {
                 let props = pw::properties::properties! {
@@ -694,6 +831,24 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                     }
                     _ => events.send(Event::Error(format!("cannot set the volume of node {node}"))),
                 }
+            }
+            Cmd::Cue { sources, level, keep } => {
+                let mut c = cue.borrow_mut();
+                if sources.is_empty() && !keep {
+                    // nothing to hear, and no CUE mode: its links and the loopback go
+                    *c = Cue::default();
+                    return;
+                }
+                let level_changed = c.want.1 != level;
+                c.want = (sources, level);
+                if c.module.is_none() {
+                    if let Err(e) = c.start(&context) {
+                        events.send(Event::Error(format!("cannot start the cue: {e}")));
+                    }
+                } else if level_changed {
+                    c.set_level(&bound.borrow());
+                }
+                c.reconcile(&core);
             }
             Cmd::Quit => mainloop.quit(),
         }

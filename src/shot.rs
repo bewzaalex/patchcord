@@ -122,7 +122,7 @@ fn compose(scene: &Scene, view: View, size: (u32, u32), dpi: f64, held: Option<(
         (Some((_, magnet)), Some(t)) => t.iter().filter_map(|k| scene.spare(k).map(|p| (p, Some(k.as_str()) == magnet))).collect(),
         _ => Vec::new(),
     };
-    if let Some((pm, x, y)) = scene.cord_layer(view, (w, h), &rings, 1.0) {
+    if let Some((pm, x, y)) = scene.cord_layer(view, (w, h), &rings, &[], 1.0) {
         out.draw_pixmap(x, y, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
     }
     panel.layer(w as f64 / dpi, dpi);
@@ -139,7 +139,7 @@ fn compose(scene: &Scene, view: View, size: (u32, u32), dpi: f64, held: Option<(
 }
 
 fn new_panel(scene: &Scene) -> Panel {
-    Panel::new(panel::State { rack: scene.rack, locked: false, align: scene.align, cables: 0, sound: false, defaults: [scene.default_shown(true), scene.default_shown(false)], lcd: ["NO PRESET".into(), "48 kHz · 1024 · 21.3 ms".into()], pressed: None })
+    Panel::new(panel::State { rack: scene.rack, locked: false, align: scene.align, cables: 0, sound: false, defaults: [scene.default_shown(true), scene.default_shown(false)], cue_led: false, cue_level: 70, lcd: ["NO PRESET".into(), "48 kHz · 1024 · 21.3 ms".into()], pressed: None })
 }
 
 fn status(scene: &Scene, width: f64, dpi: f64) -> Layer {

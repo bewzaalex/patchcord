@@ -33,6 +33,9 @@ pub enum Key {
     Lcd,
     /// the screen of the default output and input
     Defaults,
+    /// CUE mode on and off, and the cue's level
+    Cue,
+    CueLevel,
 }
 
 impl Key {
@@ -56,6 +59,8 @@ impl Key {
             Key::Sound => "Plug sounds",
             Key::Lcd => "Presets",
             Key::Defaults => "The default output and input, where new apps play and record: click to choose others or find them",
+            Key::Cue => "Listen (cue): CUE mode on/off: hover a jack to hear it, click to keep it on; or hold Alt over the jacks",
+            Key::CueLevel => "How loud the cue is: drag up/down or turn the wheel",
         }
     }
 }
@@ -74,6 +79,10 @@ pub struct State {
     pub lcd: [String; 2],
     /// the defaults screen's lines: the default output's name and the default input's
     pub defaults: [String; 2],
+    /// the CUE key's LED (lit in CUE mode, blinking while probing with Alt) and the cue's level,
+    /// 0…100
+    pub cue_led: bool,
+    pub cue_level: u8,
     pub pressed: Option<Key>,
 }
 
@@ -113,8 +122,6 @@ pub enum MenuHit {
 const MENU_W: f64 = 300.0;
 /// the defaults' drop-down is wider: device names are long
 const DEFAULTS_W: f64 = 360.0;
-/// the defaults' screen on the panel
-const DEFAULTS_LCD_W: f64 = 250.0;
 /// width of a card's profile list
 pub const PROFILE_W: f64 = 360.0;
 
@@ -137,18 +144,17 @@ pub enum ProfileHit {
 pub fn profile_menu(title: &str, card: &Card, dpi: f64) -> (Layer, Vec<(ProfileHit, [f64; 4])>) {
     const INK: &str = "#3a2408";
     let w = PROFILE_W;
-    // the title, its name shortened so " · PROFILE" stays in
-    let name = title.to_uppercase();
-    let name = if name.chars().count() > 34 { format!("{}…", name.chars().take(33).collect::<String>().trim_end()) } else { name };
-    let mut o = format!(r#"<text x="12" y="20" font-size="10" letter-spacing="1.5" fill="{INK}" opacity=".7">{} · PROFILE</text>"#, esc(&name));
+    // no title: it drops out of the PROFILE key that names it
+    let _ = title;
+    let mut o = String::new();
     let mut hits = Vec::new();
-    let mut y = 30.0;
+    let mut y = 8.0;
     let current = card.profile().map(|p| Card::split(&p.description).0);
     for (fi, f) in card.families().iter().enumerate() {
         let cur = current.as_deref() == Some(f.name.as_str());
         let ink = if cur { "#f7bb62" } else { INK };
         if cur {
-            let _ = write!(o, r#"<rect x="3" y="{y}" width="{}" height="24" fill="{INK}"/>"#, w - 6.0);
+            let _ = write!(o, r#"<rect x="7" y="{}" width="{}" height="22" rx="3" fill="{INK}"/>"#, y + 1.0, w - 14.0);
         }
         let room = if f.unplugged { 37 } else { 47 };
         let name: String = if f.name.chars().count() > room { format!("{}…", f.name.chars().take(room - 1).collect::<String>()) } else { f.name.clone() };
@@ -200,27 +206,44 @@ pub fn profile_menu(title: &str, card: &Card, dpi: f64) -> (Layer, Vec<(ProfileH
     (Layer { id: next_id(), pm: rasterize(&text::svg_options(), &svg, dpi), x: 0.0, y: 0.0, w, h }, hits)
 }
 
+/// A section's heading in an amber list: its name, and a rule running to the right edge.
+fn section(name: &str, y: f64, w: f64) -> String {
+    const INK: &str = "#3a2408";
+    let tw = text::width(text::MONO_BOLD, name, 10.0, 1.5);
+    format!(
+        r#"<text x="12" y="{}" font-size="10" letter-spacing="1.5" fill="{INK}" opacity=".8">{}</text><path d="M{},{} H{}" stroke="{INK}" stroke-opacity=".4" stroke-width="1.5"/>"#,
+        y + 13.0,
+        esc(name),
+        12.0 + tw + 8.0,
+        y + 9.5,
+        w - 12.0
+    )
+}
+
 /// A card's port list, under its PORT key, as amber as the profile list: for each of its outputs
 /// and inputs with several ports, its name (when it has several), the ports (the one in use dark,
 /// the unplugged dimmed and marked), and its latency offset with − and + (10 ms steps with Shift).
 pub fn port_menu(title: &str, sections: &[(usize, String, Vec<PortChoice>, Option<u32>, i64)], dpi: f64) -> (Layer, Vec<(ProfileHit, [f64; 4])>) {
     const INK: &str = "#3a2408";
     let w = PROFILE_W;
-    let name = title.to_uppercase();
-    let name = if name.chars().count() > 37 { format!("{}…", name.chars().take(36).collect::<String>().trim_end()) } else { name };
-    let mut o = format!(r#"<text x="12" y="20" font-size="10" letter-spacing="1.5" fill="{INK}" opacity=".7">{} · PORT</text>"#, esc(&name));
+    let _ = title;
+    let mut o = String::new();
     let mut hits = Vec::new();
-    let mut y = 30.0;
-    for (gi, label, ports, current, latency) in sections {
+    let mut y = 8.0;
+    for (si, (gi, label, ports, current, latency)) in sections.iter().enumerate() {
+        // its name under a rule, when the card has several outputs and inputs with ports
         if sections.len() > 1 {
-            let _ = write!(o, r#"<text x="12" y="{}" font-size="10" letter-spacing="1.5" fill="{INK}" opacity=".7">{}</text>"#, y + 12.0, esc(label));
-            y += 18.0;
+            if si > 0 {
+                y += 8.0;
+            }
+            o += &section(label, y, w);
+            y += 22.0;
         }
         for p in ports {
             let cur = *current == Some(p.index);
             let ink = if cur { "#f7bb62" } else { INK };
             if cur {
-                let _ = write!(o, r#"<rect x="3" y="{y}" width="{}" height="24" fill="{INK}"/>"#, w - 6.0);
+                let _ = write!(o, r#"<rect x="7" y="{}" width="{}" height="22" rx="3" fill="{INK}"/>"#, y + 1.0, w - 14.0);
             }
             let room = if p.unplugged { 37 } else { 47 };
             let shown: String = if p.description.chars().count() > room { format!("{}…", p.description.chars().take(room - 1).collect::<String>()) } else { p.description.clone() };
@@ -241,7 +264,8 @@ pub fn port_menu(title: &str, sections: &[(usize, String, Vec<PortChoice>, Optio
         }
         // its latency offset: − value +
         y += 4.0;
-        let _ = write!(o, r#"<path d="M12,{y} H{}" stroke="{INK}" stroke-opacity=".35"/>"#, w - 12.0);
+        // a dotted line: the latency is the section's footer
+        let _ = write!(o, r#"<path d="M14,{y} H{}" stroke="{INK}" stroke-opacity=".45" stroke-width="1.5" stroke-dasharray="1.5 3" stroke-linecap="round"/>"#, w - 14.0);
         let ly = y + 6.0;
         let _ = write!(o, r#"<text x="12" y="{}" font-size="10" letter-spacing=".8" fill="{INK}" opacity=".75">LATENCY OFFSET</text>"#, ly + 13.0);
         let ms = *latency as f64 / 1e6;
@@ -276,6 +300,7 @@ const ICONS: &[(Key, &str)] = &[
     (Key::Arrange, r#"<rect x="3.5" y="4" width="7" height="5" rx="1"/><rect x="3.5" y="15" width="7" height="5" rx="1"/><rect x="13.5" y="9.5" width="7" height="5" rx="1"/><path d="M10.5 6.5h1.5v11h-1.5M12 12h1.5"/>"#),
     (Key::Fit, r#"<path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/>"#),
     (Key::Sound, r#"<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7"/><path d="M19 6a8.5 8.5 0 0 1 0 12"/>"#),
+    (Key::Cue, r#"<path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="4.5" height="7" rx="1.5"/><rect x="16.5" y="14" width="4.5" height="7" rx="1.5"/>"#),
 ];
 
 const KEY_Y: f64 = 10.0;
@@ -444,59 +469,77 @@ impl Panel {
 
         group(&mut o, &mut rects, &mut x, &[(Key::Arrange, None, None), (Key::Fit, None, None), (Key::Sound, None, Some(st.sound))], "VIEW");
 
-        // the LCD, against the right edge, as wide as there is room for; left of it, when there is
-        // room for both, the screen of the default output and input
-        let screen = |o: &mut String, lx: f64, lw: f64, lines: [&str; 2], bold2: bool| {
-            let chars = ((lw - 24.0) / 6.95) as usize;
-            let line = |t: &str| esc(&t.chars().take(chars).collect::<String>());
-            let _ = write!(
-                o,
-                r##"<rect x="{}" y="{}" width="{}" height="50" rx="6" fill="#fff" opacity=".2"/><rect x="{}" y="{}" width="{}" height="48" rx="5" fill="#121214"/>
-<rect x="{lx}" y="9" width="{lw}" height="42" rx="4" fill="url(#gPanelLcd)"/><rect x="{lx}" y="9" width="{lw}" height="42" rx="4" fill="none" stroke="#783200" stroke-opacity=".35" stroke-width="3"/>
-<g font-family="Noto Sans Mono" font-size="11.5" fill="#3a2408" xml:space="preserve"><text x="{}" y="26">{}</text><text x="{}" y="43" font-weight="{}">{}</text></g>"##,
-                lx - 4.0,
-                5.0,
-                lw + 8.0,
-                lx - 3.0,
-                6.0,
-                lw + 6.0,
-                lx + 12.0,
-                line(lines[0]),
-                lx + 12.0,
-                if bold2 { "bold" } else { "normal" },
-                line(lines[1])
-            );
-        };
-        let room = w - 18.0 - x;
-        if room >= 150.0 + 14.0 + DEFAULTS_LCD_W {
-            let lw = (room - 14.0 - DEFAULTS_LCD_W).min(340.0);
-            let dx = w - 18.0 - lw - 14.0 - DEFAULTS_LCD_W;
-            screen(&mut o, dx, DEFAULTS_LCD_W, [&format!("OUT ▸ {}", st.defaults[0]), &format!("IN  ▸ {}", st.defaults[1])], true);
-            rects.push((Key::Defaults, [dx, 9.0, DEFAULTS_LCD_W, 42.0]));
+        // CUE: its key (a cyan LED) and, as big as the CABLES knob, the cue's LEVEL
+        let x0 = x;
+        let kw = 38.0;
+        o.push_str(&key_svg(x, kw, st.pressed == Some(Key::Cue)));
+        let icon = ICONS.iter().find(|(k, _)| *k == Key::Cue).map_or("", |(_, s)| s);
+        let _ = write!(
+            o,
+            r##"<g transform="translate({},{}) scale(.7083)" fill="none" stroke="#e6e7e8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{icon}</g>"##,
+            x + kw / 2.0 - 8.5 + 2.0,
+            KEY_Y + KEY_H / 2.0 - 8.5
+        );
+        o.push_str(&led_svg(x + 8.0, KEY_Y + 7.0, st.cue_led, "#5fd4ff"));
+        rects.push((Key::Cue, [x - 3.0, KEY_Y - 3.0, kw + 6.0, KEY_H + 6.0]));
+        x += kw + 13.0 + 18.0;
+        let (lx, ly) = (x, KEY_Y + KEY_H / 2.0);
+        let deg = -135.0 + 270.0 * st.cue_level.min(100) as f64 / 100.0;
+        let mut scale = String::new();
+        for i in 0..=8 {
+            let b = (-135.0 + 270.0 * i as f64 / 8.0_f64).to_radians();
+            let _ = write!(scale, r#"<path d="M{},{} L{},{}" stroke="{LABEL}" stroke-width="1.2"/>"#, lx + 15.5 * b.sin(), ly - 15.5 * b.cos(), lx + 17.5 * b.sin(), ly - 17.5 * b.cos());
         }
-        let lw = (w - 18.0 - x).min(340.0);
-        let lw = if rects.iter().any(|(k, _)| *k == Key::Defaults) { (room - 14.0 - DEFAULTS_LCD_W).min(340.0) } else { lw };
-        if lw >= 150.0 {
-            let lx = w - 18.0 - lw;
-            let chars = ((lw - 24.0) / 6.95) as usize;
-            let line = |t: &str| esc(&t.chars().take(chars).collect::<String>());
+        o.push_str(&knob_svg(lx, ly, deg, &scale).replace("#ffb02e", "#5fd4ff"));
+        rects.push((Key::CueLevel, [lx - 18.0, ly - 18.0, 36.0, 36.0]));
+        x += 18.0;
+        o.push_str(&SECTION.text((x0 + x) / 2.0, 54.0, LABEL, "middle", "CUE · LEVEL"));
+        x += 22.0;
+
+        // the screen, against the right edge, as wide as there is room for: in two halves when
+        // there is room, the default output and input on the left, the preset and the clock on the
+        // right, a thin line between them; each half opens its own list
+        let room = w - 18.0 - x;
+        let both = room >= 2.0 * 130.0;
+        let sw = room.min(if both { 600.0 } else { 340.0 });
+        if sw >= 150.0 {
+            let sx = w - 18.0 - sw;
             let _ = write!(
                 o,
-                r##"<rect x="{}" y="{}" width="{}" height="50" rx="6" fill="#fff" opacity=".2"/><rect x="{}" y="{}" width="{}" height="48" rx="5" fill="#121214"/>
-<rect x="{lx}" y="9" width="{lw}" height="42" rx="4" fill="url(#gPanelLcd)"/><rect x="{lx}" y="9" width="{lw}" height="42" rx="4" fill="none" stroke="#783200" stroke-opacity=".35" stroke-width="3"/>
-<g font-family="Noto Sans Mono" font-size="11.5" fill="#3a2408" xml:space="preserve"><text x="{}" y="26">{}</text><text x="{}" y="43" font-weight="normal">{}</text></g>"##,
-                lx - 4.0,
-                5.0,
-                lw + 8.0,
-                lx - 3.0,
-                6.0,
-                lw + 6.0,
-                lx + 12.0,
-                line(&st.lcd[0]),
-                lx + 12.0,
-                line(&st.lcd[1])
+                r##"<rect x="{}" y="5" width="{}" height="50" rx="6" fill="#fff" opacity=".2"/><rect x="{}" y="6" width="{}" height="48" rx="5" fill="#121214"/>
+<rect x="{sx}" y="9" width="{sw}" height="42" rx="4" fill="url(#gPanelLcd)"/><rect x="{sx}" y="9" width="{sw}" height="42" rx="4" fill="none" stroke="#783200" stroke-opacity=".35" stroke-width="3"/>"##,
+                sx - 4.0,
+                sw + 8.0,
+                sx - 3.0,
+                sw + 6.0
             );
-            rects.push((Key::Lcd, [lx, 9.0, lw, 42.0]));
+            let half = |o: &mut String, hx: f64, hw: f64, lines: [&str; 2], bold2: bool| {
+                let chars = ((hw - 24.0) / 6.95) as usize;
+                let line = |t: &str| {
+                    let n = t.chars().count();
+                    esc(&if n > chars { format!("{}…", t.chars().take(chars.saturating_sub(1)).collect::<String>()) } else { t.to_owned() })
+                };
+                let _ = write!(
+                    o,
+                    r##"<g font-family="Noto Sans Mono" font-size="11.5" fill="#3a2408" xml:space="preserve"><text x="{}" y="26">{}</text><text x="{}" y="43" font-weight="{}">{}</text></g>"##,
+                    hx + 12.0,
+                    line(lines[0]),
+                    hx + 12.0,
+                    if bold2 { "bold" } else { "normal" },
+                    line(lines[1])
+                );
+            };
+            if both {
+                let hw = sw / 2.0;
+                half(&mut o, sx, hw, [&format!("OUT ▸ {}", st.defaults[0]), &format!("IN  ▸ {}", st.defaults[1])], true);
+                let _ = write!(o, r##"<path d="M{},16 V44" stroke="#3a2408" stroke-opacity=".35" stroke-width="1.5"/>"##, sx + hw);
+                half(&mut o, sx + hw, hw, [&st.lcd[0], &st.lcd[1]], false);
+                rects.push((Key::Defaults, [sx, 9.0, hw, 42.0]));
+                rects.push((Key::Lcd, [sx + hw, 9.0, hw, 42.0]));
+            } else {
+                half(&mut o, sx, sw, [&st.lcd[0], &st.lcd[1]], false);
+                rects.push((Key::Lcd, [sx, 9.0, sw, 42.0]));
+            }
         }
 
         let svg = format!(
@@ -559,8 +602,8 @@ fn menu_svg(menu: &Menu) -> (String, f64, Vec<(MenuHit, [f64; 4])>) {
         }
         Menu::Defaults { outs, ins, out, inp } => {
             let mut y = 8.0;
-            for (output, names, cur, head) in [(true, outs, out, "DEFAULT OUTPUT · NEW APPS PLAY HERE"), (false, ins, inp, "DEFAULT INPUT · NEW APPS RECORD HERE")] {
-                let _ = write!(o, r#"<text x="12" y="{}" font-size="10" letter-spacing="1.5" fill="{INK}" opacity=".7">{head}</text>"#, y + 12.0);
+            for (output, names, cur, head) in [(true, outs, out, "DEFAULT OUTPUT"), (false, ins, inp, "DEFAULT INPUT")] {
+                o += &section(head, y, w);
                 y += 22.0;
                 if names.is_empty() {
                     let _ = write!(o, r#"<text x="12" y="{}" font-size="12" font-weight="normal" fill="{INK}" opacity=".7">none</text>"#, y + 16.0);
@@ -570,7 +613,7 @@ fn menu_svg(menu: &Menu) -> (String, f64, Vec<(MenuHit, [f64; 4])>) {
                     let on = *cur == Some(i);
                     let ink = if on { "#f7bb62" } else { INK };
                     if on {
-                        let _ = write!(o, r#"<rect x="3" y="{y}" width="{}" height="24" fill="{INK}"/>"#, w - 6.0);
+                        let _ = write!(o, r#"<rect x="7" y="{}" width="{}" height="22" rx="3" fill="{INK}"/>"#, y + 1.0, w - 14.0);
                     }
                     let shown: String = if name.chars().count() > 42 { format!("{}…", name.chars().take(41).collect::<String>()) } else { name.clone() };
                     let _ = write!(o, r#"<text x="12" y="{}" font-size="12" fill="{ink}" xml:space="preserve">{}</text>"#, y + 16.5, esc(&shown));
@@ -593,8 +636,7 @@ fn menu_svg(menu: &Menu) -> (String, f64, Vec<(MenuHit, [f64; 4])>) {
             h = y + 2.0;
         }
         Menu::Load { names, current, confirm } => {
-            title(&mut o, "PRESETS");
-            let mut y = 30.0;
+            let mut y = 8.0;
             if names.is_empty() {
                 let _ = write!(o, r#"<text x="12" y="{}" font-size="12" font-weight="normal" fill="{INK}" opacity=".7">No presets yet. Save one first.</text>"#, y + 16.0);
                 y += 24.0;
@@ -603,7 +645,7 @@ fn menu_svg(menu: &Menu) -> (String, f64, Vec<(MenuHit, [f64; 4])>) {
                 let cur = *current == Some(i);
                 let ink = if cur { "#f7bb62" } else { INK };
                 if cur {
-                    let _ = write!(o, r#"<rect x="3" y="{y}" width="{}" height="24" fill="{INK}"/>"#, w - 6.0);
+                    let _ = write!(o, r#"<rect x="7" y="{}" width="{}" height="22" rx="3" fill="{INK}"/>"#, y + 1.0, w - 14.0);
                 }
                 // long names end in "…" before the delete button
                 let shown: String = if name.chars().count() > 26 { format!("{}…", name.chars().take(25).collect::<String>()) } else { name.clone() };
@@ -689,6 +731,17 @@ fn knob_svg(cx: f64, cy: f64, deg: f64, scale: &str) -> String {
         cy - 12.0 * a.cos()
     );
     o
+}
+
+/// The badge that rides beside the pointer while listening (the pointer stays the desktop's own):
+/// a dark round chip with a pair of cyan headphones, `CUE_BADGE` across.
+pub const CUE_BADGE: f64 = 20.0;
+pub fn cue_badge(dpi: f64) -> Layer {
+    let s = CUE_BADGE;
+    let svg = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{s}" height="{s}" viewBox="0 0 {s} {s}"><circle cx="10" cy="10" r="9" fill="#121315" stroke="#5fd4ff" stroke-width="1.5"/><g transform="translate(3,2.75) scale(.5833)" fill="none" stroke="#5fd4ff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="4.5" height="7" rx="1.5" fill="#5fd4ff"/><rect x="16.5" y="14" width="4.5" height="7" rx="1.5" fill="#5fd4ff"/></g></svg>"##
+    );
+    Layer { id: next_id(), pm: rasterize(&text::svg_options(), &svg, dpi), x: 0.0, y: 0.0, w: s, h: s }
 }
 
 /// The status bar: what PipeWire has on the left, a hint for what is under the pointer on the right.

@@ -31,29 +31,36 @@
   .key:active { transform: translateY(1px); background: linear-gradient(#36373a, #1d1e20); }
   .key .led { position: absolute; left: 6px; top: 5px; width: 5px; height: 5px; border-radius: 50%; background: #3a1512; }
   .key.on .led { background: #ff4a32; box-shadow: 0 0 6px 1px rgba(255,80,50,.85); }
+  /* CUE: a cyan LED, lit while a jack is listened to */
+  .key .led.cue { background: #0e2a33; }
+  .key.on .led.cue { background: #5fd4ff; box-shadow: 0 0 6px 1px rgba(95,212,255,.85); }
+  .key.on.blink .led.cue { animation: cueblink .5s steps(2) infinite; }
+  @keyframes cueblink { 50% { background: #0e2a33; box-shadow: none; } }
   .key .tri { display: inline-flex; gap: 3px; margin-left: 7px; vertical-align: 1px; }
   .key .tri i { width: 5px; height: 5px; border-radius: 50%; background: #3a1512; }
   .key .tri i.on { background: #ffb02e; box-shadow: 0 0 5px 1px rgba(255,170,40,.8); }
   .knob { width: 34px; height: 34px; cursor: pointer; touch-action: none; }
   .key.ico { min-width: 0; width: 38px; padding: 0; }
   .key.ico svg { width: 17px; height: 17px; display: block; margin: auto; fill: none; stroke: #e6e7e8; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-  .lcd { margin-left: auto; min-width: 0; max-width: 340px; overflow: hidden; cursor: pointer; padding: 6px 12px; border-radius: 4px; color: #3a2408; white-space: nowrap;
+  .lcd { margin-left: auto; flex: 0 1 600px; min-width: 260px; overflow: hidden; display: flex; padding: 0; border-radius: 4px; color: #3a2408; white-space: nowrap;
     font: bold 11.5px ui-monospace, "DejaVu Sans Mono", monospace; line-height: 1.35;
     background: linear-gradient(#f7bb62, #e58f2c); box-shadow: 0 0 0 3px #121214, 0 0 0 4px rgba(255,255,255,.2), inset 0 0 12px rgba(120,50,0,.35); }
-  .lcd div { overflow: hidden; text-overflow: ellipsis; }
-  /* the defaults: where new apps play and record, a setting of the whole system */
-  #dlcd { width: 250px; }
-  #dlcd + .lcd { margin-left: 14px; }
-  #dlcd div:last-child { font-weight: bold; }
+  /* one screen in two halves, each opening its own list: the defaults (where new apps play and
+     record, a setting of the whole system) and the preset with the clock */
+  .lcd .half { min-width: 0; overflow: hidden; cursor: pointer; padding: 6px 12px; }
+  .lcd .half:hover { background: rgba(255,255,255,.08); }
+  .lcd .half div { overflow: hidden; text-overflow: ellipsis; }
+  .lcd .sep { flex: none; width: 1.5px; margin: 7px 0; background: rgba(58,36,8,.35); }
+  #dlcd { flex: 1 1 0; }
   #dlcd i { font-style: normal; opacity: .65; }
-  #defaults { right: auto; top: calc(100% + 6px); width: 330px; }
-  #defaults h2 { margin-top: 6px; }
+  #lcd { flex: 1 1 0; }
+  #defaults { right: auto; top: calc(100% + 6px); width: 360px; }
   #defaults .row button { border: 0; background: none; color: inherit; font: inherit; font-size: 14px; line-height: 1; cursor: pointer; opacity: .6; padding: 0 2px; }
   #defaults .row button:hover { opacity: 1; }
   #defaults .row b { font-size: 10px; letter-spacing: .8px; opacity: .75; }
   .dev.find { animation: find 1.6s ease-out; }
   @keyframes find { 0%, 40% { box-shadow: 0 0 0 3px rgba(255,190,90,.95), 0 0 34px rgba(255,170,60,.6); } 100% { box-shadow: 0 0 0 0 rgba(255,190,90,0), 0 0 0 rgba(255,170,60,0); } }
-  .lcd div:last-child { font-weight: normal; }
+  #lcd div:last-child { font-weight: normal; }
   /* the preset list drops out of the LCD and looks like more of it */
   #presets, #profiles, #ports, #defaults { position: absolute; right: 18px; top: calc(100% + 6px); width: 300px; padding: 8px 0; border-radius: 4px; z-index: 5;
     color: #3a2408; font: bold 12px ui-monospace, "DejaVu Sans Mono", monospace; white-space: nowrap;
@@ -64,13 +71,19 @@
   #presets .row:hover, #profiles .row:hover, #ports .row:hover, #defaults .row:hover { background: rgba(58,36,8,.15); }
   #presets .row.cur, #profiles .row.cur, #ports .row.cur, #defaults .row.cur { background: #3a2408; color: #f7bb62; }
   #presets .row span, #profiles .row span, #ports .row span, #defaults .row span { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  /* every amber list alike: no title (it drops out of the key that names it); sections under a
+     heading with a rule running to the edge; rows inset, so a dark one never touches a heading */
+  #ports > h2, #defaults > h2 { display: flex; align-items: center; gap: 8px; margin: 12px 12px 5px; opacity: .8; }
+  #ports > h2:first-child, #defaults > h2:first-child { margin-top: 4px; }
+  #ports > h2::after, #defaults > h2::after { content: ""; flex: 1; height: 1.5px; background: rgba(58,36,8,.4); }
+  #presets .row, #profiles .row, #ports .row, #defaults .row { margin: 1px 6px; padding: 4px 8px; border-radius: 3px; }
   /* the profile list drops out of a card's PROFILE key: same amber as the LCDs */
   #profiles { right: auto; top: auto; width: 330px; z-index: 6; }
   /* a device output's ports, out of its PORT key: the same amber list, and the latency offset */
   #ports { right: auto; top: auto; width: 300px; z-index: 6; }
   #ports .row.off span { opacity: .5; }
   #ports .row i { font-style: normal; font-size: 9px; letter-spacing: .8px; padding: 0 4px; border-radius: 2px; outline: 1px solid currentColor; opacity: .7; }
-  #ports .lat { display: flex; align-items: center; gap: 6px; margin: 6px 12px 2px; padding-top: 7px; border-top: 1px solid rgba(58,36,8,.35); }
+  #ports .lat { display: flex; align-items: center; gap: 6px; margin: 4px 14px 4px; padding-top: 6px; border-top: 1.5px dotted rgba(58,36,8,.45); }
   #ports .lat b { flex: 1; font-size: 10px; letter-spacing: .8px; opacity: .75; }
   #ports .lat button { font: inherit; font-weight: bold; width: 22px; height: 18px; padding: 0; border: 0; border-radius: 3px; background: #3a2408; color: #f7bb62; cursor: pointer; }
   #ports .lat span { min-width: 56px; text-align: center; }
@@ -110,6 +123,28 @@
     background: rgba(18,19,21,.94); color: #e6e7e8; padding: 5px 9px; border-radius: 6px; font-size: 12px; white-space: nowrap;
     box-shadow: 0 6px 16px rgba(0,0,0,.5); }
   #tip.show { opacity: 1; }
+  /* B: an app's streams in a drawer that slides out under its device: a little channel strip each */
+  .drawer { position: absolute; left: 0; top: 0; pointer-events: auto; display: flex; gap: 6px; padding: 10px 12px 12px;
+    border-radius: 0 0 8px 8px; background: linear-gradient(#1d1e21, #141517); box-shadow: inset 0 6px 8px -4px rgba(0,0,0,.8), 0 10px 18px rgba(0,0,0,.5);
+    border: 1px solid #000; border-top: 0; font: bold 9px Arial, Helvetica, sans-serif; color: #d5d7d9; letter-spacing: .6px; }
+  .drawer .strip { width: 62px; display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 6px 4px 7px; border-radius: 5px;
+    background: rgba(255,255,255,.04); box-shadow: inset 0 0 0 1px rgba(0,0,0,.6); }
+  .drawer .strip b { font-size: 11px; color: #f3efe6; background: #b45a2e; border-radius: 3px; padding: 0 7px; }
+  .drawer .strip span { font-weight: normal; opacity: .7; font-size: 8.5px; }
+  .drawer .row { display: flex; align-items: flex-end; gap: 6px; }
+  .drawer .lv { display: flex; flex-direction: column-reverse; gap: 2px; }
+  .drawer .lv i { width: 6px; height: 3.4px; border-radius: 1px; background: rgba(0,0,0,.6); }
+  .drawer svg { cursor: ns-resize; touch-action: none; }
+  .drawer button { font: inherit; font-size: 7.5px; color: #e6e7e8; background: #1b1c1e; border: 1px solid rgba(255,255,255,.18); border-radius: 3px; padding: 2px 5px; cursor: pointer;
+    display: flex; align-items: center; gap: 4px; }
+  .drawer button i { width: 5px; height: 5px; border-radius: 50%; background: #3a1411; }
+  .drawer button.on i { background: #ff3b2f; box-shadow: 0 0 4px #ff3b2f; }
+  .drawer button.cue.on i { background: #5fd4ff; box-shadow: 0 0 4px #5fd4ff; }
+  /* while listening, the pointer stays the desktop's own; a small headphones badge rides beside it */
+  #cueBadge { position: absolute; z-index: 4; pointer-events: none; display: none; width: 20px; height: 20px; border-radius: 50%;
+    background: #121315; box-shadow: 0 0 0 1.5px #5fd4ff, 0 3px 8px rgba(0,0,0,.5); }
+  #cueBadge.show { display: flex; align-items: center; justify-content: center; }
+  #cueBadge svg { display: block; width: 14px; height: 14px; fill: none; stroke: #5fd4ff; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
   #tip b { color: #ffb44e; font-weight: 600; }
   #helpBtn { position: absolute; right: 16px; bottom: 14px; z-index: 3; width: 30px; height: 30px; border-radius: 50%; border: 0;
     background: rgba(20,21,23,.9); color: var(--fg); font: bold 14px system-ui, sans-serif; cursor: pointer; box-shadow: 0 6px 16px rgba(0,0,0,.5); }
@@ -137,9 +172,9 @@
     <button class="key ico on" id="align" title="Line devices up while dragging them on the desk; off: place them freely (G)"><span class="led"></span><svg viewBox="0 0 24 24"><path d="M4 3v18"/><rect x="7.5" y="5" width="12" height="5" rx="1"/><rect x="7.5" y="14" width="7.5" height="5" rx="1"/></svg></button></div><label>LAYOUT</label></div>
   <div class="grp"><svg id="cablesKnob" width="96" height="60" viewBox="-48 -26.5 96 60" style="cursor:pointer;touch-action:none"></svg></div>
   <div class="grp"><div class="keys"><button class="key ico" id="arrange" title="Arrange by signal flow"><svg viewBox="0 0 24 24"><rect x="3.5" y="4" width="7" height="5" rx="1"/><rect x="3.5" y="15" width="7" height="5" rx="1"/><rect x="13.5" y="9.5" width="7" height="5" rx="1"/><path d="M10.5 6.5h1.5v11h-1.5M12 12h1.5"/></svg></button><button class="key ico" id="fit" title="Fit to window (F)"><svg viewBox="0 0 24 24"><path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/></svg></button><button class="key ico" id="snd" title="Plug sounds"><span class="led"></span><svg viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7"/><path d="M19 6a8.5 8.5 0 0 1 0 12"/></svg></button></div><label>VIEW</label></div>
-  <div class="lcd" id="dlcd" title="Default output and input: where new apps play and record"><div id="dout"></div><div id="din"></div></div>
+  <div class="grp"><div class="keys"><button class="key ico" id="cue" title="Listen (cue): hold Alt over any jack to hear it; this key keeps the last one on"><span class="led cue"></span><svg viewBox="0 0 24 24"><path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="4.5" height="7" rx="1.5"/><rect x="16.5" y="14" width="4.5" height="7" rx="1.5"/></svg></button><svg id="cueKnob" width="44" height="30" viewBox="-22 -15 44 30" style="cursor:ns-resize;touch-action:none;overflow:visible" title="Cue level: drag up/down or turn the wheel"></svg></div><label>CUE · LEVEL</label></div>
+  <div class="lcd"><div class="half" id="dlcd" title="Default output and input: where new apps play and record"><div id="dout"></div><div id="din"></div></div><div class="sep"></div><div class="half" id="lcd" title="Presets"><div id="lcd1"></div><div id="lcd2"></div></div></div>
   <div id="defaults" class="hide"></div>
-  <div class="lcd" id="lcd" title="Presets"><div id="lcd1"></div><div id="lcd2"></div></div>
   <div id="presets" class="hide"></div>
 </header>
 <div id="profiles" class="hide"></div>
@@ -149,6 +184,7 @@
   <div id="world"><div id="rack"></div></div>
   <canvas id="cables"></canvas>
   <div id="tip"></div>
+  <div id="cueBadge"><svg viewBox="0 .5 24 24"><path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="4.5" height="7" rx="1.5" fill="#5fd4ff"/><rect x="16.5" y="14" width="4.5" height="7" rx="1.5" fill="#5fd4ff"/></svg></div>
   <button id="helpBtn" title="Help (?)">?</button>
   <div id="help" class="hide">
     <h1>Patchcord — interactive mockup</h1>
@@ -162,6 +198,9 @@
       <tr><td>SIG in a frame</td><td>on an app that records and plays, each frame has its own meter: what it records, what it plays</td></tr>
       <tr><td>MUTE key</td><td>silences the app; its LED lights red</td></tr>
       <tr><td>PORT key ▾</td><td>beside PROFILE, on a card whose output or input has several: where it plays (speakers, headphones) or records from (internal or plugged-in microphone), and each one's latency offset</td></tr>
+      <tr><td><kbd>Alt</kbd> + move</td><td>listen to the jack under the pointer in the default output, like a test probe (cyan ring)</td></tr>
+      <tr><td>CUE key · LEVEL</td><td>CUE mode (LED lit): hover a jack to hear it, click to keep it on (glows; many at once); CUE again or Esc stops them all. LEVEL: how loud the cue is</td></tr>
+      <tr><td><kbd>V</kbd></td><td>an app's streams (Teams, Firefox): 6, each stream a frame of its own (VOLUME, BAL, SPLIT beside MUTE, its meter), at most three frames to a unit, the device growing a unit for more; A, trim, mute and level under each jack; or B, a drawer of channel strips (STREAMS ▾)</td></tr>
       <tr><td><kbd>K</kbd></td><td>group colours on/off (to compare)</td></tr>
       <tr><td>OUT ▸ / IN ▸ screen</td><td>on the top panel: the default output and input, where new apps play and record. Click: pick another; ⌖ finds it on the desk</td></tr>
       <tr><td>PROFILE key</td><td>under a card's screen: its profiles (and codec)</td></tr>
@@ -204,7 +243,7 @@
     </g>
     <g id="jack-stereo">
       <use href="#jack-mono"/>
-      <circle r="10.1" fill="none" stroke="#c9a24a" stroke-width="1.3"/>
+      <circle r="10.1" fill="none" stroke="currentColor" stroke-width="1.3"/>
     </g>
     <g id="jack-midi">
       <circle r="16.5" cx="1.2" cy="2.4" fill="#000" opacity=".35"/>
@@ -283,6 +322,18 @@ const DEVICES = [
   { id: 'audacity', title: 'Audacity', name: 'Audacity', model: 'APP · RECORD & PLAY', finish: 'black', color: '#d65a8c', gen: .4, x: 1040, y: 400,
     groups: [{ label: 'INPUT', dir: 'in', stereo: true, mix: true, vol: .7, ports: stereo('input') },
              { label: 'OUTPUT', dir: 'out', stereo: true, mix: true, ports: stereo('output') }] },
+  // an app with several streams (Teams: five playing, one recording) is one device: a jack per
+  // stream, numbered, the frame's VOLUME and MUTE for them all, and each stream its own trim,
+  // mute and level: A on the face under its jack, or B in a drawer under the device (V switches)
+  { id: 'teams', title: 'Teams for Linux', name: 'Teams for Linux', model: 'APP · RECORD & PLAY', finish: 'black', color: '#6b6ed6', gen: 1, x: 1040, y: 600,
+    groups: [{ label: 'INPUT', dir: 'in', mix: true, ports: [P('MONO', 'input_MONO')] },
+             { label: 'OUTPUT', dir: 'out', mix: true,
+               streams: [1, 2, 3, 4, 5].map((i) => ({ n: String(i), what: 'Playback', sg: [.7, .35, 0, 0, .22][i - 1], ports: [P(String(i), `s${i}:output_MONO`)] })) }] },
+  // the same with stereo streams (Firefox, three tabs playing): each stream a stereo jack; the
+  // frame's SPLIT turns every one into L above R, in its own numbered column
+  { id: 'firefox', title: 'Firefox', name: 'Firefox', model: 'APP · PLAYBACK', finish: 'black', color: '#e66b2e', gen: 1, x: 1040, y: 780,
+    groups: [{ label: 'OUTPUT', dir: 'out', mix: true,
+               streams: [1, 2, 3].map((i) => ({ n: String(i), what: 'AudioStream', sg: [.55, 0, .3][i - 1], ports: [P('L', `t${i}:output_FL`), P('R', `t${i}:output_FR`)] })) }] },
   { id: 'ble', title: 'BLE MIDI 1', name: 'BLE MIDI 1', model: 'BLUETOOTH MIDI', finish: 'navy', color: '#e9c53a', x: 40, y: 580,
     groups: [{ label: 'MIDI', dir: 'in', ports: [P('IN', 'in', 'midi')] }, { label: 'MIDI', dir: 'out', ports: [P('OUT', 'out', 'midi')] }] },
 ];
@@ -303,18 +354,42 @@ const FINISH = {
 
 // ---------------- state ----------------
 const RACK_MIN = 1000, RACK_GAP = 3, DEV_H = 128, JP = 48;
+// a device shows at most three frames (inputs, outputs, monitors…) side by side: the fourth starts
+// a second unit under the first, the seventh a third
+const PER_ROW = 3;
+const rowsOf = (d) => {
+  const gs = [...d.groups.filter((g) => g.dir === 'in'), ...d.groups.filter((g) => g.dir === 'out')], r = [];
+  for (let i = 0; i < gs.length; i += PER_ROW) r.push(gs.slice(i, i + PER_ROW));
+  return r.length ? r : [[]];
+};
 // the default output and input, where new apps play and record (pavucontrol's green check): "device:group"
-const S = { accent: true, defOut: 'jlab:PLAYBACK', defIn: 'ryzen:CAPTURE', locked: false, align: true, mode: 'desk', rackW: RACK_MIN, cableMode: 0, sound: true, view: { x: 0, y: 0, s: 1 }, vt: null, edited: false };
+// cue: the jack listened to (in the default output), whether the CUE key holds it, whether Alt is
+// held to probe, and the cue's level
+// cue: the jack heard while the pointer is on it (`hover`), the ones pinned in CUE mode, whether
+// CUE mode is on, whether Alt is held to probe, and the cue's level
+const CUE = { hover: null, pins: new Set(), mode: false, probing: false, level: .7, at: null };
+// streamUI: how an app's streams are controlled one by one: 'units' (6: each stream a frame of its
+// own, the device grows a unit per three frames), 'face' (A) or 'drawer' (B)
+const S = { streamUI: 'units', accent: true, defOut: 'jlab:PLAYBACK', defIn: 'ryzen:CAPTURE', locked: false, align: true, mode: 'desk', rackW: RACK_MIN, cableMode: 0, sound: true, view: { x: 0, y: 0, s: 1 }, vt: null, edited: false };
 const devs = DEVICES.map((d) => ({ volUntil: 0, mixText: '', ...d, dx: d.x, dy: d.y, tx: d.x, ty: d.y, W: 0, H: DEV_H, lvl: [0, 0], shown: '', running: null }));
 const ports = new Map(), jacks = new Map(), links = new Set();
 // a device's groups: its own, or those of its card's profile (fresh copies: a group keeps its SPLIT
 // switch and jacks). Ports keep their keys across profiles, so links to them come back.
 function setGroups(d) {
-  for (const g of d.groups || []) for (const p of g.ports) ports.delete(p.key);
+  for (const g of d.groups || []) for (const p of g.ports || []) ports.delete(p.key);
   for (const g of d.groups || []) for (const j of g.jacks || []) jacks.delete(j.key);
-  const src = d.profiles ? d.profiles[d.profile].groups : d.groups;
-  d.groups = src.map((g) => ({ vol: 1, bal: 0, mute: false, balOut: false, balHeld: false, route: 0, ...g, ports: g.ports.map((p) => ({ ...p })),
-    routes: g.routes && g.routes.map((r) => ({ lat: 0, ...r })), jacks: null, split: false }));
+  const src0 = d.profiles ? d.profiles[d.profile].groups : (d.groups0 = d.groups0 || d.groups);
+  // 6: an app's streams, each a whole frame as any other (its jacks, VOLUME, BAL when stereo, SPLIT
+  // beside its MUTE, its meter), named by its number
+  const src = S.streamUI === 'units' ? src0.flatMap((g) => !g.streams ? [g] : g.streams.map((s) => ({ label: `${g.label} ${s.n}`,
+    dir: g.dir, mix: true, stereo: s.ports.length === 2, sg: s.sg, fromStream: true, ports: s.ports }))) : src0;
+  d.groups = src.map((g) => {
+    // an app's streams: each its own trim, mute and level; their ports, one after another, are the group's
+    const streams = g.streams && g.streams.map((s) => ({ sv: 1, sm: false, lvl: 0, shown: -1, ...s, ports: s.ports.map((p) => ({ ...p })) }));
+    return { vol: 1, bal: 0, mute: false, balOut: false, balHeld: false, route: 0, ...g, streams, ports: streams ? streams.flatMap((s) => s.ports) : g.ports.map((p) => ({ ...p })),
+      routes: g.routes && g.routes.map((r) => ({ lat: 0, ...r })), jacks: null, split: false };
+  });
+  for (const g of d.groups) if (g.streams) for (const s of g.streams) for (const p of s.ports) p.stream = s;
   d.ownMeters = d.groups.filter((g) => g.mix).length > 1;
   for (const g of d.groups) { g.ownMeter = d.ownMeters && g.mix; g.lvl = [0, 0]; g.shown = ''; }
   for (const g of d.groups) for (const p of g.ports) {
@@ -327,6 +402,11 @@ let rackOrder = [];
 const cables = [];
 let seq = 0, slotSeq = 0;
 
+// the device's groups again (V: a stream's frames come and go), keeping the links
+function regroup(d) {
+  setGroups(d);
+  for (const g of d.groups) buildJacks(d, g);
+}
 // a jack is what you plug into: a stereo jack carries the L and R ports, a mono jack one port
 function buildJacks(d, g) {
   for (const j of g.jacks || []) jacks.delete(j.key);
@@ -337,6 +417,16 @@ function buildJacks(d, g) {
     jacks.set(j.key, j);
     return j;
   };
+  if (g.streams) {
+    // a jack per stream, numbered; a stereo one as one jack, or L and R apart when split
+    g.jacks = [];
+    for (const s of g.streams) {
+      const two = s.ports.length === 2;
+      const js = two && !g.split ? [mk(g.jacks.length, s.n, s.ports, 'stereo')] : s.ports.map((p) => mk(g.jacks.length, two ? p.n : s.n, [p], 'mono'));
+      for (const j of js) { j.stream = s; j.gi = g.jacks.length; g.jacks.push(j); }
+    }
+    return;
+  }
   g.jacks = g.stereo && !g.split ? [mk(0, 'STEREO', g.ports, 'stereo')]
     : g.ports.map((p, i) => mk(i, p.n, [p], p.t === 'midi' ? 'midi' : 'mono'));
 }
@@ -375,9 +465,15 @@ const IDW_ = 190; // width of the name and LCD block
 const slots = (j) => (j.count || 0) + 1;
 const labelW = (t) => { measure.font = 'bold 8.5px Arial, Helvetica, sans-serif'; return measure.measureText(t).width + t.length * .8; };
 // a split stereo group: L above R, each mult running to the right of its L / R label
-const ROWS = [50, 84], ROW_X = 38;
+// (lower with the coloured bands, so the L jack clears the band)
+const ROWS_PLAIN = [50, 84], ROWS_BAND = [54, 88], ROW_X = 38;
 const stacked = (g) => g.stereo && g.split;
-const jacksW = (g) => Math.max(
+// an app's stereo streams: the frame has a SPLIT switch; split, each stream is a column, L above R
+const streamSwitch = (g) => !!g.streams && g.streams.some((s) => s.ports.length === 2);
+const STREAM_COL = 56;
+const streamCols = (g) => g.split && streamSwitch(g);
+const jacksW = (g) => streamCols(g) ? 30 + g.streams.length * STREAM_COL + 46 + Math.max(0, ...g.jacks.map((j) => slots(j) - 1)) * JP
+  : (g.streams && streamSwitch(g)) ? g.jacks.reduce((s, j) => s + slots(j), 0) * JP + 14 + 46 : Math.max(
   stacked(g) ? ROW_X + (Math.max(...g.jacks.map(slots)) - 1) * JP + 22 + 46 : g.jacks.reduce((s, j) => s + slots(j), 0) * JP + 14,
   g.stereo ? 100 : 0, Math.ceil(labelW(g.label)) + 8 + 6 + 30 + 4);
 // a stream's VOLUME controls (a knob over a MUTE key, a BAL knob too for stereo), right of its
@@ -406,13 +502,14 @@ const accentOf = (g) => (S.accent ? ACCENT_COLORS[kindOf(g)] : null);
 const faceSig = (d) => (S.accent ? 'A' : '') + S.mode + (S.mode === 'rack' ? S.rackW : '') + d.groups.map((g) => g.jacks.map(slots).join(',')).join('|') + '|' + (d.profiles ? d.profile + d.codec : '');
 function renderDevice(d) {
   const rack = S.mode === 'rack', f = FINISH[d.finish];
-  const EAR = rack ? 30 : 0, PAD = 16, IDW = IDW_, H = DEV_H;
+  const rowsG = rowsOf(d), units = rowsG.length;
+  const EAR = rack ? 30 : 0, PAD = 16, IDW = IDW_, H = DEV_H * units;
   const x0 = EAR + PAD, inv = d.finish === 'metal' || d.finish === 'cream' ? '#d9dbdd' : '#222';
   // inputs on the left, outputs on the right; in a rack the outputs sit against the meter with a grille between
   const ins = d.groups.filter((g) => g.dir === 'in'), outs = d.groups.filter((g) => g.dir === 'out');
   const span = (gs) => gs.reduce((s, g) => s + groupW(g) + 10, 0);
   // the SIG meter at the right edge, unless each frame has its own
-  const natural = x0 + IDW + 14 + span(d.groups) - 10 + (d.ownMeters ? 0 : 14 + 26) + PAD + EAR;
+  const natural = x0 + IDW + 14 + (rowsG.length > 1 ? Array.from({ length: PER_ROW }, (_, c) => Math.max(0, ...rowsG.map((r) => (r[c] ? groupW(r[c]) + 10 : 0)))).reduce((a, b) => a + b, 0) : span(d.groups)) - 10 + (d.ownMeters ? 0 : 14 + 26) + PAD + EAR;
   const W = rack ? Math.max(S.rackW, natural) : natural;
   const mx = W - EAR - PAD - 22;
   let body = '';
@@ -425,8 +522,9 @@ function renderDevice(d) {
       // its own level: what it records (after the gain) or what it plays (after the volume)
       const lx = ox + MW + 1;
       body += `<text x="${lx + 7}" y="31" font-size="6.5" fill="${accentOf(g) ? BAND_INK : f.print}" text-anchor="middle" letter-spacing=".5">SIG</text>`;
-      for (let c = 0; c < 2; c++) for (let i = 0; i < 10; i++)
-        body += `<rect class="sled${gi}" x="${lx + c * 8}" y="${96 - i * 6.6}" width="6" height="4.6" rx=".8" fill="rgba(0,0,0,.5)"/>`;
+      const nc = st ? 2 : 1;
+      for (let c = 0; c < nc; c++) for (let i = 0; i < 10; i++)
+        body += `<rect class="sled${gi}" x="${lx + (nc === 1 ? 4 : 0) + c * 8}" y="${96 - i * (accentOf(g) ? 5.9 : 6.6)}" width="6" height="${accentOf(g) ? 4.2 : 4.6}" rx=".8" fill="rgba(0,0,0,.5)"/>`;
     }
     const pt = (x, y, a, r) => [x + r * Math.sin(a), y - r * Math.cos(a)].map((v) => v.toFixed(2)).join(',');
     const rad = (a) => a * Math.PI / 180;
@@ -434,7 +532,12 @@ function renderDevice(d) {
       `<circle cx="${x}" cy="${y}" r="${r * .75}" fill="none" stroke="rgba(255,255,255,.08)"/>` +
       `<g class="${cls}" transform="translate(${x},${y}) rotate(${a})"><path d="M0,${-r * .29} L0,${-r * .86}" stroke="#ffb02e" stroke-width="${r > 12 ? 2.4 : 2}" stroke-linecap="round"/></g>`;
     g.knob = { x: cx, y: cy, r: 21 };
-    g.muteK = { x: ox + 7, y: 89, w: MW - 14, h: 14 };
+    g.muteK = g.fromStream && st ? { x: ox + 49, y: 89, w: MW - 56, h: 14 } : { x: ox + 7, y: 89, w: MW - 14, h: 14 };
+    if (g.fromStream && st) {
+      g.btn = { x: ox + 7, y: 89, w: 38, h: 14 };
+      body += `<rect x="${ox + 7}" y="89" width="38" height="14" rx="2.5" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/>` +
+        `<text x="${ox + 26}" y="98.6" font-size="6.8" fill="#e6e7e8" text-anchor="middle" letter-spacing=".5">${g.split ? 'JOIN' : 'SPLIT'}</text>`;
+    }
     const gy = accentOf(g) ? 40 : 26;
     body += `<path d="M${ox},${gy} V102" stroke="rgba(0,0,0,.45)"/><path d="M${ox + 1},${gy} V102" stroke="rgba(255,255,255,.1)"/>` +
       `<text x="${ox + MW / 2}" y="31" font-size="8.5" fill="${accentOf(g) ? BAND_INK : f.print}" letter-spacing=".8" text-anchor="middle">${knobName(g)}${st ? ' · BAL' : ''}</text>`;
@@ -473,9 +576,19 @@ function renderDevice(d) {
     const m = g.muteK;
     body += `<rect x="${m.x}" y="${m.y}" width="${m.w}" height="${m.h}" rx="2.5" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/>` +
       `<circle class="mled${gi}" cx="${m.x + 8}" cy="${m.y + m.h / 2}" r="2.6" fill="${g.mute ? '#ff3b2f' : '#3a1411'}" stroke="rgba(0,0,0,.6)" stroke-width=".6"/>` +
-      `<text x="${m.x + m.w / 2 + (st ? 0 : 5)}" y="${m.y + 9.6}" font-size="7.4" fill="#e6e7e8" text-anchor="middle" letter-spacing=".7">MUTE</text>`;
+      `<text x="${m.x + m.w / 2 + (st && !g.fromStream ? 0 : 5)}" y="${m.y + 9.6}" font-size="7.4" fill="#e6e7e8" text-anchor="middle" letter-spacing=".7">MUTE</text>`;
   }
-  const group = (g, x) => {
+  const group = (g, x, oy = 0) => {
+    const b0 = body.length, nx = group1(g, x);
+    g.oy = oy;
+    if (oy) {
+      body = body.slice(0, b0) + `<g transform="translate(0,${oy})">` + body.slice(b0) + '</g>';
+      for (const k of [g.knob, g.balK, g.muteK, g.btn, g.drawerK]) if (k) k.y += oy;
+      for (const j of g.jacks) j.ly += oy;
+    }
+    return nx;
+  };
+  const group1 = (g, x) => {
     const n = g.jacks.reduce((s, j) => s + slots(j), 0), gw = groupW(g), jw = jacksW(g);
     const acc = accentOf(g), ink = acc ? BAND_INK : f.print;
     body += `<rect x="${x}" y="18" width="${gw}" height="92" rx="6" fill="rgba(0,0,0,.15)" stroke="rgba(0,0,0,.3)"/>` +
@@ -489,43 +602,87 @@ function renderDevice(d) {
     body += g.dir === 'in'
       ? `<rect x="${x + jw - 30}" y="22.5" width="23" height="11" rx="2" fill="none" stroke="${ink}" stroke-width=".9"/><text x="${x + jw - 18.5}" y="31" font-size="7.5" fill="${ink}" text-anchor="middle">IN</text>`
       : `<rect x="${x + jw - 30}" y="22.5" width="23" height="11" rx="2" fill="${ink}"/><text x="${x + jw - 18.5}" y="31" font-size="7.5" fill="${acc || inv}" text-anchor="middle">OUT</text>`;
-    let jx = x + (jw - n * JP) / 2 + JP / 2;
+    // (an app's stereo streams: centred left of their SPLIT switch)
+    let jx = x + ((g.streams && streamSwitch(g) ? jw - 46 : jw) - n * JP) / 2 + JP / 2;
     const rows = stacked(g);
     g.jacks.forEach((j, r) => {
       const k = slots(j);
-      if (rows) { j.lx = x + ROW_X; j.ly = ROWS[r]; } else { j.lx = jx; j.ly = 62; }
+      const cols = streamCols(g), faceStreams = g.streams && S.streamUI === 'face' && !cols;
+      const R2 = S.accent ? ROWS_BAND : ROWS_PLAIN;
+      if (cols) {
+        // split streams: a column each, L above R (a mono stream on the L row)
+        const si = g.streams.indexOf(j.stream), lr = j.stream.ports.length === 2 && j.n === 'R' ? 1 : 0;
+        j.lx = x + 30 + si * STREAM_COL + 20; j.ly = R2[lr];
+      } else if (rows) { j.lx = x + ROW_X; j.ly = R2[r]; } else { j.lx = jx; j.ly = faceStreams ? 55 : 62; }
       // parallel jacks of one port get a printed outline, like a mult on a patch bay (lower in a
       // row of a split stereo group, which has less room)
       const h = rows ? 32 : 42;
       if (k > 1) body += `<rect x="${j.lx - h / 2}" y="${j.ly - h / 2}" width="${(k - 1) * JP + h}" height="${h}" rx="${h / 2}" fill="rgba(0,0,0,.08)" stroke="${f.print}" stroke-width=".9" opacity=".5"/>`;
       // the L and R of a split stereo jack keep its gold ring: still the same pair
-      const pic = g.stereo && j.kind === 'mono' ? 'stereo' : j.kind;
-      for (let i = 0; i < k; i++) body += `<use href="#jack-${pic}" x="${j.lx + i * JP}" y="${j.ly}"/>`;
-      body += rows
+      const pic = (g.stereo || (j.stream && j.stream.ports.length === 2)) && j.kind === 'mono' ? 'stereo' : j.kind;
+      // a stereo jack's ring in its group's colour (gold without colours)
+      const ring = pic === 'stereo' ? ` color="${acc || '#c9a24a'}"` : '';
+      for (let i = 0; i < k; i++) body += `<use href="#jack-${pic}" x="${j.lx + i * JP}" y="${j.ly}"${ring}/>`;
+      body += cols
+        ? (j.ly === R2[0] ? `<text x="${j.lx + 19}" y="${j.ly - 8}" font-size="8" fill="${f.print}">${j.stream.n}</text>` : '')
+        : rows
         ? `<text x="${j.lx - 21}" y="${j.ly + 3.2}" font-size="9" fill="${f.print}" text-anchor="end">${j.n}</text>`
-        : `<text x="${j.lx + (k - 1) * JP / 2}" y="91" font-size="${j.kind === 'stereo' ? 7.5 : 9}" fill="${f.print}" text-anchor="middle" letter-spacing="${j.kind === 'stereo' ? .6 : 0}">${j.n}</text>`;
-      if (!rows) jx += k * JP;
+        : `<text x="${j.lx + (k - 1) * JP / 2}" y="${faceStreams ? 80 : 91}" font-size="${j.kind === 'stereo' ? 7.5 : 9}" fill="${f.print}" text-anchor="middle" letter-spacing="${j.kind === 'stereo' ? .6 : 0}">${j.n}</text>`;
+      // A: under each stream's jack its mute (a red LED key) and trim knob, beside it its level
+      if (faceStreams) {
+        const p = j.stream, si = g.streams.indexOf(p), cx = j.lx, gi = d.groups.indexOf(g);
+        p.muteK = { x: cx - 10, y: 95, r: 7 }; p.trimK = { x: cx + 8, y: 95, r: 9 };
+        body += `<circle cx="${cx - 10}" cy="95" r="5.2" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/>` +
+          `<circle class="smled${gi}_${si}" cx="${cx - 10}" cy="95" r="2.4" fill="${p.sm ? '#ff3b2f' : '#3a1411'}"/>` +
+          `<circle cx="${cx + 8}" cy="96" r="6.8" fill="#111" opacity=".5"/><circle cx="${cx + 8}" cy="95" r="6.5" fill="url(#gVol)" stroke="#0c0c0d"/>` +
+          `<g class="strim${gi}_${si}" transform="translate(${cx + 8},95) rotate(${volAngle(p.sv)})"><path d="M0,-2 L0,-5.5" stroke="#ffb02e" stroke-width="1.6" stroke-linecap="round"/></g>`;
+        for (let i = 0; i < 5; i++)
+          body += `<rect class="slv${gi}_${si}" x="${cx + 19}" y="${66 - i * 4.6}" width="4" height="3.2" rx=".6" fill="rgba(0,0,0,.5)"/>`;
+      } else if (g.streams) { j.stream.muteK = j.stream.trimK = null; }
+      if (!rows && !cols) jx += k * JP;
     });
-    if (g.stereo) {
-      // a little hardware switch: one stereo jack, or L and R apart
+    // split streams: L and R printed once, left of the rows
+    if (streamCols(g)) {
+      const R2 = S.accent ? ROWS_BAND : ROWS_PLAIN;
+      body += `<text x="${x + 16}" y="${R2[0] + 3.2}" font-size="9" fill="${f.print}" text-anchor="middle">L</text><text x="${x + 16}" y="${R2[1] + 3.2}" font-size="9" fill="${f.print}" text-anchor="middle">R</text>`;
+    }
+    if ((g.stereo && !g.fromStream) || streamSwitch(g)) {
+      // a little hardware switch: one stereo jack, or L and R apart (for an app's stereo
+      // streams, all of them at once)
       const bx = x + jw - 42, by = 97;
       g.btn = { x: bx, y: by - 2, w: 36, h: 14 };
       body += `<rect x="${bx}" y="${by}" width="34" height="10" rx="2" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/>` +
         `<text x="${bx + 17}" y="${by + 7.6}" font-size="6.8" fill="#e6e7e8" text-anchor="middle" letter-spacing=".5">${g.split ? 'JOIN' : 'SPLIT'}</text>`;
     } else g.btn = null;
+    // B: the key that slides the streams' drawer out
+    if (g.streams && S.streamUI === 'drawer') {
+      g.drawerK = { x: x + 8, y: 95, w: 70, h: 13 };
+      body += `<rect x="${x + 8}" y="95" width="70" height="13" rx="2.5" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/>` +
+        `<text x="${x + 43}" y="104.4" font-size="7" fill="#e6e7e8" text-anchor="middle" letter-spacing=".6">STREAMS ${d.drawer ? '▴' : '▾'}</text>`;
+    } else g.drawerK = null;
     if (g.mix) mixStrip(g, x + jw);
     else g.knob = g.balK = g.muteK = null;
     g.x = x; g.w = gw;
     return x + gw + 10;
   };
-  let x = x0 + IDW + 14;
-  for (const g of ins) x = group(g, x);
-  const gx0 = x;
-  let ox = rack ? (d.ownMeters ? W - EAR - PAD + 10 : mx - 4) - span(outs) : x;
-  const gx1 = ox - 10;
-  for (const g of outs) ox = group(g, ox);
+  let x = x0 + IDW + 14, gx0 = 0, gx1 = 0;
+  if (units === 1) {
+    for (const g of ins) x = group(g, x);
+    gx0 = x;
+    let ox = rack ? (d.ownMeters ? W - EAR - PAD + 10 : mx - 4) - span(outs) : x;
+    gx1 = ox - 10;
+    for (const g of outs) ox = group(g, ox);
+  }
+  const colW = Array.from({ length: PER_ROW }, (_, c) => Math.max(0, ...rowsG.map((r) => (r[c] ? groupW(r[c]) : 0))));
+  const colX = colW.reduce((a, w) => [...a, a[a.length - 1] + w + 10], [x]);
+  if (units > 1) rowsG.forEach((row, u) => {
+    // a unit more: a groove across the face parts it from the one above
+    if (u) body += `<path d="M${EAR + 8},${u * DEV_H} H${W - EAR - 8}" stroke="rgba(0,0,0,.55)" stroke-width="1.2"/><path d="M${EAR + 8},${u * DEV_H + 1.2} H${W - EAR - 8}" stroke="rgba(255,255,255,.08)"/>`;
+    // in columns: a frame starts where the one above it does
+    row.forEach((g, c) => group(g, colX[c], u * DEV_H));
+  });
   let grille = '';
-  if (rack && gx1 - gx0 > 50) {
+  if (rack && units === 1 && gx1 - gx0 > 50) {
     for (let y = 30; y <= 98; y += 9.5)
       grille += `<rect x="${gx0}" y="${y}" width="${gx1 - gx0}" height="4.2" rx="2.1" fill="#0b0c0d"/>` +
         `<path d="M${gx0 + 2},${y + 5.1} h${gx1 - gx0 - 4}" stroke="rgba(255,255,255,.12)"/>`;
@@ -598,6 +755,7 @@ function renderDevice(d) {
   d.lcd1 = d.el.querySelector('.lcd1');
   d.lcd3 = d.el.querySelector('.lcd3');
   d.groups.forEach((g, gi) => {
+    if (g.streams) g.streams.forEach((p, si) => { p.leds = d.el.querySelectorAll(`.slv${gi}_${si}`); p.shown = -1; p.trimEl = d.el.querySelector(`.strim${gi}_${si}`); p.muteEl = d.el.querySelector(`.smled${gi}_${si}`); });
     if (!g.mix) return;
     g.leds = d.el.querySelectorAll('.sled' + gi); g.shown = '';
     g.knEl = d.el.querySelector('.kn' + gi); g.bkEl = d.el.querySelector('.bk' + gi); g.muteEl = d.el.querySelector('.mled' + gi);
@@ -833,6 +991,35 @@ function draw(now) {
   const order = [...cables].sort((u, v) => (held(u) - held(v)) || (focus.has(u) - focus.has(v)));
   for (const c of order) { const a = alphaOf(c); if (a > .01) drawShadow(c, a); }
   for (const c of order) { const a = alphaOf(c); if (a > .01) drawCord(c, a); }
+  // the jacks heard: a cyan ring and a little pair of headphones; a pinned one also glows (it
+  // plays on when the pointer leaves); one that would feed back is red
+  for (const j of cueJacks()) {
+    const x = j.dev.x + j.lx, y = j.dev.y + j.ly, bad = cueBlocked(j), pinned = CUE.pins.has(j);
+    const c = bad ? '255,80,60' : '95,212,255', pulse = .6 + .4 * Math.sin(now / 180);
+    if (pinned) {
+      const g = ctx.createRadialGradient(x, y, 14, x, y, 34);
+      g.addColorStop(0, `rgba(${c},.45)`); g.addColorStop(1, `rgba(${c},0)`);
+      ctx.beginPath(); ctx.arc(x, y, 34, 0, TAU); ctx.fillStyle = g; ctx.fill();
+    } else {
+      ctx.beginPath(); ctx.arc(x, y, 26, 0, TAU); ctx.strokeStyle = `rgba(${c},${.18 * pulse})`; ctx.lineWidth = 8; ctx.stroke();
+    }
+    ctx.beginPath(); ctx.arc(x, y, 20, 0, TAU); ctx.strokeStyle = `rgba(${c},.95)`; ctx.lineWidth = pinned ? 3.2 : 2.2; ctx.stroke();
+    const bx = x + 17, by = y - 17;
+    ctx.beginPath(); ctx.arc(bx, by, 8.5, 0, TAU); ctx.fillStyle = '#121315'; ctx.fill();
+    ctx.strokeStyle = `rgb(${c})`; ctx.lineWidth = 1.4; ctx.stroke();
+    // the same headphones as the CUE key and the pointer's badge: its shape spans x 3…21 and
+    // y 4…21 of a 24-unit box, so (12, 12.5) goes on the badge's centre
+    const k = 11 / 24;
+    ctx.save();
+    ctx.translate(bx - 12 * k, by - 12.5 * k); ctx.scale(k, k);
+    ctx.lineWidth = 2.4; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.fillStyle = `rgb(${c})`;
+    ctx.stroke(new Path2D('M4 15v-3a8 8 0 0 1 16 0v3'));
+    for (const cup of ['M4.5 14h1.5a1.5 1.5 0 0 1 1.5 1.5v4a1.5 1.5 0 0 1-1.5 1.5h-1.5a1.5 1.5 0 0 1-1.5-1.5v-4a1.5 1.5 0 0 1 1.5-1.5z',
+      'M18 14h1.5a1.5 1.5 0 0 1 1.5 1.5v4a1.5 1.5 0 0 1-1.5 1.5h-1.5a1.5 1.5 0 0 1-1.5-1.5v-4a1.5 1.5 0 0 1 1.5-1.5z']) {
+      const p2 = new Path2D(cup); ctx.fill(p2); ctx.stroke(p2);
+    }
+    ctx.restore();
+  }
   // alignment guides while a device is dragged on the desk
   if (guides.length) {
     ctx.fillStyle = 'rgba(255,200,90,.85)';
@@ -841,13 +1028,108 @@ function draw(now) {
   }
 }
 
+// ---------------- cue (listen) ----------------
+// Any jack can be listened to in the default output, as the PFL buttons of a mixing desk. Hold
+// Alt and move over the jacks, as with a test probe: the one under the pointer is heard. The CUE
+// key switches CUE mode on: a jack plays while the pointer is on it, a click pins it (it glows
+// and plays on), as many as wanted, all mixed; CUE again (or Escape) stops them all. The default
+// output itself (and its monitor) can't be heard: what it plays would come back into it.
+// (In the app: links from the jacks into a little cue output of Patchcord's, at the cue level,
+// linked on into the default output; PipeWire mixes what several links bring to one input.)
+const cueBadge = $('#cueBadge');
+function showCueBadge(on) { cueBadge.classList.toggle('show', on); }
+// below right of the pointer's tip, clear of the arrow
+function moveCueBadge(w) { cueBadge.style.left = (w.sx + 12) + 'px'; cueBadge.style.top = (w.sy + 14) + 'px'; }
+const defDevice = () => S.defOut.split(':');
+function cueBlocked(j) {
+  const [id, label] = defDevice();
+  return j.dev.id === id && (j.group.label === label || j.group.label === 'MONITOR');
+}
+const cueJacks = () => { const s = new Set(CUE.pins); if (CUE.hover) s.add(CUE.hover); return [...s]; };
+const jackName = (j) => `${j.dev.title} · ${j.group.label}${j.group.jacks.length > 1 ? ' ' + j.n : ''}`;
+function cueText() {
+  const heard = cueJacks().filter((j) => !cueBlocked(j));
+  if (CUE.hover && cueBlocked(CUE.hover)) return `can't listen to ${jackName(CUE.hover)}: it is the output you listen on (it would feed back)`;
+  if (!heard.length) return CUE.mode ? 'CUE mode: move over a jack to listen to it, click it to keep it on' : '';
+  return `CUE ▸ ${heard.map(jackName).join(' + ')} · in the default output at ${Math.round(CUE.level * 100)}%`;
+}
+const jackAt = (w) => { const pl = hitPlug(w); return hitJack(w) || (pl ? pl.c[pl.s].jack : null); };
+function setHover(j) {
+  if (j === CUE.hover) return;
+  CUE.hover = j;
+  if (j && !cueBlocked(j) && !CUE.pins.has(j)) sndPlug('out');
+  paintCue();
+}
+// a click in CUE mode: pin a jack, or unpin it
+function togglePin(j) {
+  if (cueBlocked(j)) { $('#st2').textContent = cueText(); return; }
+  if (CUE.pins.has(j)) CUE.pins.delete(j); else CUE.pins.add(j);
+  sndPlug(CUE.pins.has(j) ? 'in' : 'out');
+  paintCue();
+}
+function setCueMode(on) {
+  CUE.mode = on;
+  if (!on) { CUE.pins.clear(); CUE.hover = null; showCueBadge(CUE.probing); }
+  paintCue();
+  $('#st2').textContent = on ? 'CUE mode: move over a jack to listen to it, click it to keep it on (as many as you like); CUE again stops them all' : 'cue off';
+}
+function paintCue() {
+  // the key's LED: steady in CUE mode, blinking while only probing with Alt
+  const heard = cueJacks().some((j) => !cueBlocked(j));
+  $('#cue').classList.toggle('on', CUE.mode || heard);
+  $('#cue').classList.toggle('blink', !CUE.mode && heard);
+  if (CUE.mode || CUE.probing) $('#st2').textContent = cueText() || $('#st2').textContent;
+}
+addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && CUE.mode) { setCueMode(false); return; }
+  if (e.key !== 'Alt' || CUE.probing) return;
+  e.preventDefault();
+  CUE.probing = true;
+  showCueBadge(true);
+  if (CUE.at) { moveCueBadge(CUE.at); setHover(jackAt(CUE.at)); }
+});
+addEventListener('keyup', (e) => {
+  if (e.key !== 'Alt') return;
+  e.preventDefault();
+  CUE.probing = false;
+  // the probe ends; in CUE mode the pointer still listens where it is
+  showCueBadge(CUE.mode);
+  if (!CUE.mode) { setHover(null); $('#st2').textContent = 'cue off'; }
+});
+$('#cue').addEventListener('click', () => setCueMode(!CUE.mode));
+// the cue's level: a small knob, dragged up and down or turned with the wheel
+const cueKnob = $('#cueKnob');
+function drawCueKnob() {
+  const a = (-135 + 270 * CUE.level) * Math.PI / 180, L = '#26272a';
+  let o = '';
+  // as big as the CABLES knob, its scale around it
+  for (let i = 0; i <= 8; i++) { const b = (-135 + 270 * i / 8) * Math.PI / 180; o += `<path d="M${15.5 * Math.sin(b)},${-15.5 * Math.cos(b)} L${17.5 * Math.sin(b)},${-17.5 * Math.cos(b)}" stroke="${L}" stroke-width="1.2"/>`; }
+  o += `<circle r="14.5" fill="#111" opacity=".5" cy="1.5"/><circle r="14" fill="url(#gKnob)" stroke="#0c0c0d"/><circle r="10.5" fill="none" stroke="rgba(255,255,255,.08)"/>` +
+    `<path d="M${4 * Math.sin(a)},${-4 * Math.cos(a)} L${12 * Math.sin(a)},${-12 * Math.cos(a)}" stroke="#5fd4ff" stroke-width="2.4" stroke-linecap="round"/>`;
+  cueKnob.innerHTML = o;
+}
+function setCueLevel(v) {
+  CUE.level = clamp(Math.round(v * 100) / 100, 0, 1); drawCueKnob();
+  $('#st2').textContent = `cue level ${Math.round(CUE.level * 100)}%` + (cueJacks().length ? ' · ' + cueText() : '');
+}
+let cueDrag = null;
+cueKnob.addEventListener('pointerdown', (e) => { cueDrag = { y: e.clientY, v: CUE.level }; cueKnob.setPointerCapture(e.pointerId); });
+cueKnob.addEventListener('pointermove', (e) => { if (cueDrag) setCueLevel(cueDrag.v + (cueDrag.y - e.clientY) / 120); });
+cueKnob.addEventListener('pointerup', () => { cueDrag = null; });
+cueKnob.addEventListener('wheel', (e) => { e.preventDefault(); setCueLevel(CUE.level - Math.sign(e.deltaY) * .05); }, { passive: false });
+
 // ---------------- signal, meters, LCDs ----------------
 function updateSignal(now) {
   const lv = new Map();
   for (const d of devs) {
     let g = d.gen || 0;
     if (d.needsMidi && !cables.some((c) => live(c) && c.b.jack.dev === d && c.b.jack.t === 'midi')) g = 0;
-    lv.set(d, { out: g * gain(strip(d, 'out')), in: 0, raw: g });
+    // an app's streams: each at its own level, its trim and mute after the frame's volume
+    const ss = d.groups.find((x) => x.streams);
+    if (ss) for (const s of ss.streams) s.level = g * s.sg * gain(ss) * (s.sm ? 0 : s.sv ** 3);
+    const own = d.groups.filter((x) => x.sg !== undefined);
+    for (const x of own) x.level = g * x.sg * gain(x);
+    lv.set(d, { out: ss ? Math.max(0, ...ss.streams.map((s) => s.level)) : own.length ? Math.max(0, ...own.map((x) => x.level)) : g * gain(strip(d, 'out')), in: 0, raw: g });
   }
   for (let pass = 0; pass < 3; pass++) for (const c of cables) {
     if (!live(c) || c.a.jack.t !== 'audio') continue;
@@ -873,7 +1155,7 @@ function updateSignal(now) {
     };
     if (d.ownMeters) {
       // one meter per frame: the input's after its gain, the output's after its volume
-      for (const g of d.groups) if (g.ownMeter) meter(g, g.dir === 'in' ? l.in * gain(g) : l.out, g, d.dx + (g.dir === 'in' ? 0 : 3));
+      for (const g of d.groups) if (g.ownMeter) meter(g, g.dir === 'in' ? l.in * gain(g) : g.level ?? l.out, g, d.dx + (g.dir === 'in' ? 0 : 3));
     } else meter(d, base, strip(d, 'out') || strip(d, 'in'), d.dx);
     // the LCD's top line scrolls a name that is too long for it, pausing at the start
     const nm = d.name, long = nm.length > LCD_CH;
@@ -903,6 +1185,19 @@ function updateSignal(now) {
       d.stEl.style.filter = playing ? 'drop-shadow(0 0 2.5px #4cff6a)' : '';
     }
   }
+}
+// each stream's little meter (on the face or in the drawer), up at once and down slowly
+function streamMeters(now) {
+  for (const d of devs) for (const g of d.groups) if (g.streams) g.streams.forEach((p, si) => {
+    const wob = p.level ? p.level * (.6 + .3 * Math.sin(now / (120 + 17 * si)) + .15 * Math.random()) : 0;
+    p.lvl += (wob - p.lvl) * (wob > p.lvl ? .6 : .15);
+    const n = Math.round(clamp(p.lvl, 0, 1) * 5);
+    if (n === p.shown) return;
+    p.shown = n;
+    const paint = (els, on, off) => els && els.forEach((r, i) => { const c = i >= 4 ? '#ff3b2f' : i >= 3 ? '#ffb02e' : '#4cff6a'; r.style ? (r.style.background = i < n ? c : off) : 0; r.setAttribute && r.setAttribute('fill', i < n ? c : on); });
+    paint(p.leds, 'rgba(0,0,0,.5)', '');
+    if (p.dleds) p.dleds.forEach((r, i) => { const c = i >= 7 ? '#ff3b2f' : i >= 5 ? '#ffb02e' : '#4cff6a'; r.style.background = i < Math.round(clamp(p.lvl, 0, 1) * 8) ? c : 'rgba(0,0,0,.6)'; });
+  });
 }
 function updateInfo() {
   const n = links.size;
@@ -982,9 +1277,9 @@ function fit(anim) {
 // another's to stick to it; UNSNAP: how far the hand must then pull it to come free.
 const GAP = 8, SNAP = 16, UNSNAP = 32;
 let guides = [], snapped = [null, null], crowded = true;
-const apart = (a, b, gap) => a.x + a.w + gap <= b.x || b.x + b.w + gap <= a.x || a.y + DEV_H + gap <= b.y || b.y + DEV_H + gap <= a.y;
+const apart = (a, b, gap) => a.x + a.w + gap <= b.x || b.x + b.w + gap <= a.x || a.y + (a.h || DEV_H) + gap <= b.y || b.y + (b.h || DEV_H) + gap <= a.y;
 const others = (d) => devs.filter((o) => o !== d);
-const freeAt = (d, x, y) => others(d).every((o) => apart({ x, y, w: d.W }, { x: o.dx, y: o.dy, w: o.W }, GAP));
+const freeAt = (d, x, y) => others(d).every((o) => apart({ x, y, w: d.W, h: d.H }, { x: o.dx, y: o.dy, w: o.W, h: o.H }, GAP));
 // the furthest point on the way from `from` to `to` where the device keeps clear
 function reach(d, from, to) {
   if (freeAt(d, to.x, to.y)) return to;
@@ -1001,7 +1296,7 @@ function snap(d, at) {
   const px = 1 / S.view.s, xs = [], ys = [];
   for (const o of others(d)) {
     xs.push(o.dx, o.dx + (o.W - d.W) / 2, o.dx + o.W - d.W, o.dx + o.W + GAP, o.dx - GAP - d.W);
-    ys.push(o.dy, o.dy + DEV_H + GAP, o.dy - DEV_H - GAP);
+    ys.push(o.dy, o.dy + o.H + GAP, o.dy - d.H - GAP);
   }
   const choices = (held, raw, all) => {
     const near = all.filter((v) => Math.abs(v - raw) < SNAP * px).sort((a, b) => Math.abs(a - raw) - Math.abs(b - raw));
@@ -1016,7 +1311,7 @@ function snap(d, at) {
 function guidesAt(d, at) {
   const lines = (x, w) => [x, x + w / 2, x + w], same = (a, b) => Math.abs(a - b) < .5, out = [];
   for (const o of others(d)) {
-    const y0 = Math.min(at.y, o.dy) - 14, y1 = Math.max(at.y, o.dy) + DEV_H + 14;
+    const y0 = Math.min(at.y, o.dy) - 14, y1 = Math.max(at.y + d.H, o.dy + o.H) + 14;
     const x0 = Math.min(at.x, o.dx) - 14, x1 = Math.max(at.x + d.W, o.dx + o.W) + 14;
     if (snapped[0] !== null && same(snapped[0], at.x))
       for (const v of lines(at.x, d.W)) if (lines(o.dx, o.W).some((t) => same(t, v))) out.push([v, y0, v, y1]);
@@ -1043,8 +1338,8 @@ function makeRoom() {
     let moved = false;
     for (const a of devs) for (const b of devs) {
       if (a === b || b.dx < a.dx || (b.dx === a.dx && b.dy < a.dy)) continue;
-      if (apart({ x: a.dx, y: a.dy, w: a.W }, { x: b.dx, y: b.dy, w: b.W }, GAP)) continue;
-      const right = a.dx + a.W + GAP - b.dx, down = a.dy + DEV_H + GAP - b.dy;
+      if (apart({ x: a.dx, y: a.dy, w: a.W, h: a.H }, { x: b.dx, y: b.dy, w: b.W, h: b.H }, GAP)) continue;
+      const right = a.dx + a.W + GAP - b.dx, down = a.dy + a.H + GAP - b.dy;
       if (b.dy >= a.dy && down < right) b.dy += down; else b.dx += right;
       if (S.mode === 'desk') { b.tx = b.dx; b.ty = b.dy; }
       moved = true;
@@ -1141,8 +1436,9 @@ const balText = (g) => (Math.abs(g.bal) < .005 ? 'BAL CENTRE' : `BAL ${g.bal < 0
 const stripText = (d, g, s) => (d.groups.filter((x) => x.mix).length > 1 ? g.label + ' ' : '') + s;
 function paintMix(g) {
   if (!g.knob) return;
-  g.knEl.setAttribute('transform', `translate(${g.knob.x},${g.knob.y}) rotate(${volAngle(g.vol)})`);
-  if (g.balK) g.bkEl.setAttribute('transform', `translate(${g.balK.x},${g.balK.y}) rotate(${g.bal * 135})`);
+  const oy = g.oy || 0;
+  g.knEl.setAttribute('transform', `translate(${g.knob.x},${g.knob.y - oy}) rotate(${volAngle(g.vol)})`);
+  if (g.balK) g.bkEl.setAttribute('transform', `translate(${g.balK.x},${g.balK.y - oy}) rotate(${g.bal * 135})`);
   g.muteEl.setAttribute('fill', g.mute ? '#ff3b2f' : '#3a1411');
   g.muteEl.style.filter = g.mute ? 'drop-shadow(0 0 2.5px #ff3b2f)' : '';
 }
@@ -1207,7 +1503,7 @@ function openPorts(d, keep) {
   ports_.dataset.at = d.id;
   // a section per output with ports: its name when there are several, its ports, its latency
   const outs = d.groups.filter((g) => g.routes && g.routes.length > 1);
-  ports_.innerHTML = `<h2>${esc(d.title.toUpperCase())} · PORT</h2>` + outs.map((g) => {
+  ports_.innerHTML = outs.map((g) => {
     const gi = d.groups.indexOf(g), r = g.routes[g.route];
     return (outs.length > 1 ? `<h2>${g.label}</h2>` : '') + g.routes.map((x, i) =>
       `<div class="row${i === g.route ? ' cur' : ''}${x.unplugged ? ' off' : ''}" data-g="${gi}" data-i="${i}"><span>${esc(x.name)}</span>${x.unplugged ? '<i>UNPLUGGED</i>' : ''}</div>`).join('') +
@@ -1237,6 +1533,49 @@ ports_.addEventListener('click', (e) => {
   openPorts(d, true);
 });
 addEventListener('pointerdown', (e) => { if (!ports_.contains(e.target) && !e.target.closest?.('#stage')) closePorts(); });
+// ---------------- an app's streams, one by one ----------------
+const streamName = (d, g, p) => `${d.title} · ${g.label} ${p.n}`;
+function streamNote(d, g, p) {
+  mixNote(d, p.sm ? `STREAM ${p.n} MUTED` : `STREAM ${p.n} VOL ${String(Math.round(p.sv * 100)).padStart(3)}%`);
+}
+function paintStream(p) {
+  if (p.trimEl && p.trimK) p.trimEl.setAttribute('transform', `translate(${p.trimK.x},${p.trimK.y}) rotate(${volAngle(p.sv)})`);
+  if (p.muteEl) p.muteEl.setAttribute('fill', p.sm ? '#ff3b2f' : '#3a1411');
+  if (p.dEl) { p.dEl.querySelector('.mute').classList.toggle('on', p.sm); p.dEl.querySelector('g').setAttribute('transform', `rotate(${volAngle(p.sv)})`); }
+}
+function setStreamVol(d, g, p, v) { p.sv = Math.round(clamp(v, 0, VMAX) * 100) / 100; paintStream(p); streamNote(d, g, p); }
+function toggleStreamMute(d, g, p) { p.sm = !p.sm; paintStream(p); streamNote(d, g, p); sndPlug('in'); }
+const hitStream = (w, d, which) => { for (const g of d.groups) if (g.streams) for (const p of g.streams) { const k = p[which]; if (k && Math.hypot(w.x - d.x - k.x, w.y - d.y - k.y) <= k.r) return { g, p }; } return null; };
+const hitDrawerKey = (w, d) => d.groups.find((g) => g.drawerK && hitRect(w, d, g.drawerK)) || null;
+// B: the drawer, a channel strip per stream, under the device; it moves with it
+function toggleDrawer(d) {
+  d.drawer = !d.drawer;
+  if (d.drawerEl) { d.drawerEl.remove(); d.drawerEl = null; }
+  const g = d.groups.find((x) => x.streams);
+  if (d.drawer && g) {
+    const el = document.createElement('div');
+    el.className = 'drawer';
+    el.innerHTML = g.streams.map((p, i) => `<div class="strip" data-i="${i}"><b>${p.n}</b><span>${esc(p.what)}</span>` +
+      `<div class="row"><div class="lv">${'<i></i>'.repeat(8)}</div><svg width="30" height="30" viewBox="-15 -15 30 30"><circle r="12.5" fill="#111" opacity=".5" cy="1.3"/><circle r="12" fill="url(#gVol)" stroke="#0c0c0d"/>` +
+      `<g transform="rotate(${volAngle(p.sv)})"><path d="M0,-3.5 L0,-10" stroke="#ffb02e" stroke-width="2.2" stroke-linecap="round"/></g></svg></div>` +
+      `<button class="mute${p.sm ? ' on' : ''}"><i></i>MUTE</button><button class="cue"><i></i>CUE</button></div>`).join('');
+    world.appendChild(el);
+    d.drawerEl = el;
+    g.streams.forEach((p, i) => { p.dEl = el.children[i] || null; p.dleds = p.dEl ? p.dEl.querySelectorAll('.lv i') : null; p.shown = -1; });
+    el.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      const s = e.target.closest('.strip'); if (!s) return;
+      const p = g.streams[+s.dataset.i];
+      if (e.target.closest('.mute')) return toggleStreamMute(d, g, p);
+      if (e.target.closest('.cue')) { e.target.closest('.cue').classList.toggle('on'); $('#st2').textContent = `cue: ${streamName(d, g, p)}`; return; }
+      const svg = e.target.closest('svg');
+      if (svg) { svg.setPointerCapture(e.pointerId); const sy = e.clientY, v0 = p.sv; svg.onpointermove = (m) => setStreamVol(d, g, p, v0 + (sy - m.clientY) * VMAX / 160); svg.onpointerup = () => { svg.onpointermove = null; }; }
+    });
+    el.addEventListener('wheel', (e) => { e.preventDefault(); e.stopPropagation(); const s = e.target.closest('.strip'); if (s) { const p = g.streams[+s.dataset.i]; setStreamVol(d, g, p, p.sv - Math.sign(e.deltaY) * .05); } }, { passive: false });
+  } else if (g) g.streams.forEach((p) => { p.dEl = null; p.dleds = null; });
+  renderDevice(d);
+}
+
 // ---------------- defaults ----------------
 // Where new apps play and record is one setting of the whole system (PipeWire's default sink and
 // source), so it lives on the top panel, not on a device: its screen always says which they are,
@@ -1259,8 +1598,9 @@ function openDefaults(keep) {
     return `<div class="row${key === cur ? ' cur' : ''}" data-k="${kind}|${key}"><span>${esc(endName(d, g, all))}</span>` +
       `<b>${g.stereo ? 'STEREO' : 'MONO'}</b><button data-find="${d.id}" title="Show it on the desk">⌖</button></div>`;
   }).join('') || '<div class="row"><span>none</span></div>';
-  dlist.innerHTML = `<h2>DEFAULT OUTPUT · NEW APPS PLAY HERE</h2>${rows(outputs(), S.defOut, 'out')}<h2>DEFAULT INPUT · NEW APPS RECORD FROM HERE</h2>${rows(inputs(), S.defIn, 'in')}`;
-  dlist.style.left = $('#dlcd').offsetLeft + 'px';
+  dlist.innerHTML = `<h2 title="New apps play here">DEFAULT OUTPUT</h2>${rows(outputs(), S.defOut, 'out')}<h2 title="New apps record from here">DEFAULT INPUT</h2>${rows(inputs(), S.defIn, 'in')}`;
+  const bar = $('#bar').getBoundingClientRect(), at = $('#dlcd').getBoundingClientRect().left - bar.left;
+  dlist.style.left = Math.max(8, Math.min(at, bar.width - 360 - 18)) + 'px';
   dlist.classList.remove('hide');
 }
 // glides the view to a device and makes it glow for a moment
@@ -1288,7 +1628,7 @@ const prof = $('#profiles');
 function openProfiles(d, keep) {
   if (!keep && prof.dataset.dev === d.id) { prof.classList.add('hide'); prof.dataset.dev = ''; return; }
   prof.dataset.dev = d.id;
-  prof.innerHTML = `<h2>${esc(d.title.toUpperCase())} · PROFILE</h2>` + d.profiles.map((p, i) => {
+  prof.innerHTML = d.profiles.map((p, i) => {
     const cur = i === d.profile;
     const row = `<div class="row${cur ? ' cur' : ''}${p.unplugged ? ' off' : ''}" data-i="${i}"><b>${p.short}</b><span>${esc(p.name)}</span>${p.unplugged ? '<i>UNPLUGGED</i>' : ''}</div>`;
     const codecs = cur && p.codecs ? `<div class="codecs">${p.codecs.map((c) => `<span class="${c === d.codec ? 'cur' : ''}" data-c="${c}">${c}</span>`).join('')}</div>` : '';
@@ -1346,6 +1686,8 @@ stage.addEventListener('pointerdown', (e) => {
   if (ports_.dataset.at && !(pd && ports_.dataset.at === pd.id && hitPort(w, pd))) closePorts();
   stage.setPointerCapture(e.pointerId);
   if (e.button === 1 || e.button === 2) { drag = { type: 'pan', sx: w.sx, sy: w.sy, v0: { ...S.view } }; S.vt = null; return; }
+  // in CUE mode a click on a jack pins it (or unpins it) instead of pulling a cord
+  if (CUE.mode) { const j = jackAt(w); if (j) { togglePin(j); return; } }
   const plug = hitPlug(w);
   if (plug) {
     const ends = [{ c: plug.c, s: plug.s, rel: 0 }];
@@ -1379,6 +1721,10 @@ stage.addEventListener('pointerdown', (e) => {
   if (cab) { cab.c.grab = cab.k; drag = { type: 'rope', c: cab.c, hand: w }; return; }
   const d = hitDevice(w);
   if (d) {
+    const st = hitStream(w, d, 'trimK'), sm = hitStream(w, d, 'muteK'), dk = hitDrawerKey(w, d);
+    if (st) { drag = { type: 'strim', d, g: st.g, p: st.p, sy: w.sy, raw: st.p.sv }; return; }
+    if (sm) { toggleStreamMute(d, sm.g, sm.p); return; }
+    if (dk) { toggleDrawer(d); return; }
     const kg = hitKnob(w, d), bg = hitBal(w, d), mg = hitMute(w, d);
     if (kg) { drag = { type: 'knob', d, g: kg, sy: w.sy, raw: kg.vol }; return; }
     if (bg) { drag = { type: 'bal', d, g: bg, sy: w.sy, sy0: w.sy, raw: bg.bal, turned: false }; holdBal(d, bg, true); sndPlug('in'); return; }
@@ -1405,9 +1751,25 @@ function toggleSplit(d, g) {
 
 stage.addEventListener('pointermove', (e) => {
   const w = toWorld(e);
+  CUE.at = w;
+  if (!drag && (CUE.probing || CUE.mode || e.altKey)) {
+    // the jack (or plug's jack) under the pointer is heard while it is there
+    if (!CUE.probing && e.altKey) CUE.probing = true;
+    showCueBadge(true); moveCueBadge(w);
+    setHover(jackAt(w));
+    const j = CUE.hover;
+    showTip({ ...w, sy: w.sy + 14 }, j ? (cueBlocked(j) ? `<b>${esc(cueText())}</b>` : `<b>${esc(jackName(j))}</b>${CUE.mode ? (CUE.pins.has(j) ? ' · click: stop' : ' · click: keep it on') : ''}`) : '');
+    if (!j && CUE.mode) { stage.style.cursor = ''; updateHover(w); }
+    return;
+  }
   if (!drag) { updateHover(w); return; }
   if (drag.type === 'pan') {
     S.view.x = drag.v0.x + w.sx - drag.sx; S.view.y = drag.v0.y + w.sy - drag.sy;
+  } else if (drag.type === 'strim') {
+    drag.raw = clamp(drag.raw + (drag.sy - w.sy) * VMAX / 160 * (e.shiftKey ? .2 : 1), 0, VMAX);
+    drag.sy = w.sy;
+    setStreamVol(drag.d, drag.g, drag.p, Math.abs(drag.raw - 1) < .04 ? 1 : drag.raw);
+    showTip(w, `${esc(streamName(drag.d, drag.g, drag.p))} · <b>${Math.round(drag.p.sv * 100)}%</b>`);
   } else if (drag.type === 'knob') {
     // up is louder: the whole range in 200 px, Shift for fine steps; it rests at 100% for a moment
     drag.raw = clamp(drag.raw + (drag.sy - w.sy) * VMAX / 200 * (e.shiftKey ? .2 : 1), 0, VMAX);
@@ -1722,7 +2084,7 @@ function openSave() {
 function openLoad() {
   if (pop.dataset.mode === 'load') return closePop();
   pop.dataset.mode = 'load';
-  pop.innerHTML = '<h2>PRESETS</h2>' + (store.slots.length ? store.slots.map((sl, i) =>
+  pop.innerHTML = (store.slots.length ? store.slots.map((sl, i) =>
     `<div class="row${sl.id === store.current ? ' cur' : ''}" data-id="${sl.id}"><b>${String(i + 1).padStart(2, '0')}</b><span>${esc(sl.name)}</span><button class="del" title="Delete">✕</button></div>`).join('')
     : '<div class="empty">No presets yet. Save one first.</div>');
   pop.classList.remove('hide');
@@ -1766,6 +2128,17 @@ addEventListener('keydown', (e) => {
   else if (k === 'g') toggleAlign();
   else if (k === 'a') arrange();
   else if (k === 'f' || k === '0') fit(true);
+  else if (k === 'v') {
+    for (const d of devs) if (d.drawer) toggleDrawer(d);
+    const was = S.streamUI;
+    S.streamUI = { units: 'face', face: 'drawer', drawer: 'units' }[was];
+    for (const d of devs) if (d.groups0 && d.groups0.some((g) => g.streams) && (was === 'units') !== (S.streamUI === 'units')) regroup(d);
+    for (const k of [...links]) { const [o, n] = k.split('>'); if (!ports.has(o) || !ports.has(n)) links.delete(k); }
+    reconcile(true);
+    for (const d of devs) renderDevice(d);
+    crowded = true;
+    $('#st2').textContent = { units: 'streams: 6, a frame each, three to a unit (V: A)', face: 'streams: A, on the face under each jack (V: B)', drawer: 'streams: B, in a drawer under the device (V: 6)' }[S.streamUI];
+  }
   else if (k === 'k') { S.accent = !S.accent; for (const d of devs) renderDevice(d); $('#st2').textContent = `group colours ${S.accent ? 'on' : 'off'} (K)`; }
   else if (k === '?') $('#help').classList.toggle('hide');
 });
@@ -1791,6 +2164,7 @@ function frame(now) {
     const k = ease(.18, dt);
     if (!(drag && drag.type === 'device' && drag.d === d)) { d.x += (d.tx - d.x) * k; d.y += (d.ty - d.y) * k; }
     d.el.style.transform = `translate(${d.x}px,${d.y}px)`;
+    if (d.drawerEl) { d.drawerEl.style.transform = `translate(${d.x + 14}px,${d.y + d.H - 2}px)`; }
   }
   if (drag && drag.type === 'plug') {
     // the plug is a weight on a critically damped spring to the hand; near a jack it is pulled in
@@ -1804,6 +2178,7 @@ function frame(now) {
   for (const c of [...cables]) updateCable(c, now, dt);
   draw(now);
   updateSignal(now);
+  streamMeters(now);
   requestAnimationFrame(frame);
 }
 
@@ -1823,6 +2198,7 @@ undoStack.length = 0; S.edited = false; updateInfo(); // opening the app is not 
 updateInfo();
 $('#st2').textContent = 'wheel: zoom · drag: pan';
 showDefaults();
+drawCueKnob();
 requestAnimationFrame(frame);
 </script>
 </body>

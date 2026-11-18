@@ -112,6 +112,11 @@ const MIX_HOLD: Duration = Duration::from_millis(600);
 const MIX_NOTE: Duration = Duration::from_millis(1500);
 
 impl DevView {
+    /// How high the face is: a unit for each row of frames (one before it is first drawn).
+    pub fn h(&self) -> f64 {
+        if self.geo.h > 0.0 { self.geo.h } else { DEV_H }
+    }
+
     /// A group's volume, balance and mute: as last set here, else as PipeWire has them.
     pub fn mix(&self, gi: usize) -> Option<(f64, f64, bool)> {
         let g = self.dev.groups.get(gi)?;
@@ -225,7 +230,9 @@ pub struct Scene {
     pub accents: bool,
     rack_scale: f64,
     /// pictures of a mono, a stereo and a MIDI jack and of the plus badge, laid over the faces
-    pub jack_pics: [Option<Layer>; 4],
+    /// (then, for each group colour of `face::ACCENTS`, a mono, a stereo and a MIDI jack ringed
+    /// in it)
+    pub jack_pics: [Option<Layer>; 22],
     pics_scale: f64,
     /// what the pointer is over; its cords stand out, the others fade (`lit` eases in and out,
     /// `lit_for` keeps what was hovered while it fades out)
@@ -252,9 +259,9 @@ const GAP: f64 = 8.0;
 const SNAP: f64 = 16.0;
 const UNSNAP: f64 = 32.0;
 
-/// Whether two devices on the desk, at (x, y) and `w` wide, are at least `gap` apart.
-fn apart((ax, ay, aw): (f64, f64, f64), (bx, by, bw): (f64, f64, f64), gap: f64) -> bool {
-    ax + aw + gap <= bx || bx + bw + gap <= ax || ay + DEV_H + gap <= by || by + DEV_H + gap <= ay
+/// Whether two devices on the desk, at (x, y), `w` wide and `h` high, are at least `gap` apart.
+fn apart((ax, ay, aw, ah): (f64, f64, f64, f64), (bx, by, bw, bh): (f64, f64, f64, f64), gap: f64) -> bool {
+    ax + aw + gap <= bx || bx + bw + gap <= ax || ay + ah + gap <= by || by + bh + gap <= ay
 }
 
 /// The furthest point on the way from `from` to `to` where `free` still holds (`from` must).
@@ -303,7 +310,7 @@ impl Scene {
             align: true,
             accents: true,
             rack_scale: 0.0,
-            jack_pics: [None, None, None, None],
+            jack_pics: Default::default(),
             pics_scale: 0.0,
             hover: Hover::None,
             lit_for: Hover::None,
@@ -389,18 +396,18 @@ impl Scene {
         }
         // devices that have a remembered place go back to it, unless another device sits there
         // now (an app that comes back after the others moved): then it goes below them all
-        let bottom = self.devs.iter().filter(|d| !fresh.contains(&d.dev.key)).map(|d| d.ty + DEV_H + 46.0).fold(40.0, f64::max);
+        let bottom = self.devs.iter().filter(|d| !fresh.contains(&d.dev.key)).map(|d| d.ty + d.h() + 46.0).fold(40.0, f64::max);
         let mut below = bottom;
         for i in 0..self.devs.len() {
             if !fresh.contains(&self.devs[i].dev.key) {
                 continue;
             }
             if let Some(&(x, y)) = self.saved_pos.get(&self.devs[i].dev.key) {
-                let w = self.devs[i].geo.w;
-                let taken = !self.others(i).all(|o| apart((x, y, w), (o.tx, o.ty, o.geo.w), 0.0));
+                let (w, h) = (self.devs[i].geo.w, self.devs[i].h());
+                let taken = !self.others(i).all(|o| apart((x, y, w, h), (o.tx, o.ty, o.geo.w, o.h()), 0.0));
                 if taken {
                     (self.devs[i].tx, self.devs[i].ty) = (40.0, below);
-                    below += DEV_H + 46.0;
+                    below += h + 46.0;
                 } else {
                     (self.devs[i].tx, self.devs[i].ty) = (x, y);
                 }
@@ -454,7 +461,7 @@ impl Scene {
     fn regeo(&mut self) {
         self.rack_w = self.rack.then(|| self.devs.iter().map(|d| face::natural_w(&d.dev, &d.defs, &d.counts, true)).fold(RACK_MIN, f64::max));
         for d in &mut self.devs {
-            d.geo = face::face_geometry(&d.dev, &d.defs, &d.counts, self.rack_w);
+            d.geo = face::face_geometry(&d.dev, &d.defs, &d.counts, self.rack_w, self.accents);
         }
     }
 
@@ -472,23 +479,25 @@ impl Scene {
         {
             order.retain(|o| o != k);
             let (mut y, mut idx) = (0.0, order.len());
-            for (i, _) in order.iter().enumerate() {
-                if d.y + DEV_H / 2.0 < y + DEV_H / 2.0 {
+            for (i, o) in order.iter().enumerate() {
+                let oh = self.devs.iter().find(|x| x.dev.key == *o).map_or(DEV_H, DevView::h);
+                if d.y + d.h() / 2.0 < y + oh / 2.0 {
                     idx = i;
                     break;
                 }
-                y += DEV_H + RACK_GAP;
+                y += oh + RACK_GAP;
             }
             order.insert(idx, k.to_owned());
         }
         let mut y = 0.0;
         for k in &order {
+            let h = self.devs.iter().find(|d| d.dev.key == *k).map_or(DEV_H, DevView::h);
             if let Some(d) = self.devs.iter_mut().find(|d| d.dev.key == *k)
                 && Some(k.as_str()) != dragged
             {
                 (d.tx, d.ty) = (0.0, y);
             }
-            y += DEV_H + RACK_GAP;
+            y += h + RACK_GAP;
         }
         self.rack_order = order;
         self.rack_h = y;
@@ -538,8 +547,8 @@ impl Scene {
 
     /// Whether device `i` at `at` on the desk keeps clear of the others.
     fn free_at(&self, i: usize, (x, y): (f64, f64)) -> bool {
-        let w = self.devs[i].geo.w;
-        self.others(i).all(|o| apart((x, y, w), (o.dx, o.dy, o.geo.w), GAP))
+        let (w, h) = (self.devs[i].geo.w, self.devs[i].h());
+        self.others(i).all(|o| apart((x, y, w, h), (o.dx, o.dy, o.geo.w, o.h()), GAP))
     }
 
     /// Where device `i`, held at `at` on the desk, settles: lined up with another device by the
@@ -552,11 +561,11 @@ impl Scene {
             self.snapped = (None, None);
             return at;
         }
-        let w = self.devs[i].geo.w;
+        let (w, h) = (self.devs[i].geo.w, self.devs[i].h());
         let (mut xs, mut ys) = (Vec::new(), Vec::new());
         for o in self.others(i) {
             xs.extend([o.dx, o.dx + (o.geo.w - w) / 2.0, o.dx + o.geo.w - w, o.dx + o.geo.w + GAP, o.dx - GAP - w]);
-            ys.extend([o.dy, o.dy + DEV_H + GAP, o.dy - DEV_H - GAP]);
+            ys.extend([o.dy, o.dy + o.h() + GAP, o.dy - h - GAP]);
         }
         // the choices on each axis, nearest first: where it already sticks, those near, or none
         let choices = |held: Option<f64>, raw: f64, all: &[f64]| {
@@ -575,12 +584,12 @@ impl Scene {
     /// The guide lines for device `i` at `at`: every edge or centre it shares with another
     /// device on the axis it sticks on, drawn across both.
     fn guides_at(&self, i: usize, at: (f64, f64)) -> Vec<[f64; 4]> {
-        let w = self.devs[i].geo.w;
+        let (w, h) = (self.devs[i].geo.w, self.devs[i].h());
         let lines = |x: f64, w: f64| [x, x + w / 2.0, x + w];
         let same = |a: f64, b: f64| (a - b).abs() < 0.5;
         let mut guides = Vec::new();
         for o in self.others(i) {
-            let (y0, y1) = (at.1.min(o.dy) - 14.0, (at.1 + DEV_H).max(o.dy + DEV_H) + 14.0);
+            let (y0, y1) = (at.1.min(o.dy) - 14.0, (at.1 + h).max(o.dy + o.h()) + 14.0);
             let (x0, x1) = (at.0.min(o.dx) - 14.0, (at.0 + w).max(o.dx + o.geo.w) + 14.0);
             if self.snapped.0.is_some_and(|s| same(s, at.0)) {
                 for v in lines(at.0, w).into_iter().filter(|v| lines(o.dx, o.geo.w).iter().any(|t| same(*t, *v))) {
@@ -588,7 +597,7 @@ impl Scene {
                 }
             }
             if self.snapped.1.is_some_and(|s| same(s, at.1)) && same(at.1, o.dy) {
-                for v in lines(at.1, DEV_H) {
+                for v in lines(at.1, h.min(o.h())) {
                     guides.push([x0, v, x1, v]);
                 }
             }
@@ -605,12 +614,12 @@ impl Scene {
             for i in 0..self.devs.len() {
                 for j in 0..self.devs.len() {
                     let (a, b) = (&self.devs[i], &self.devs[j]);
-                    if i == j || (b.dx, b.dy) < (a.dx, a.dy) || apart((a.dx, a.dy, a.geo.w), (b.dx, b.dy, b.geo.w), GAP) {
+                    if i == j || (b.dx, b.dy) < (a.dx, a.dy) || apart((a.dx, a.dy, a.geo.w, a.h()), (b.dx, b.dy, b.geo.w, b.h()), GAP) {
                         continue;
                     }
                     // how far b must go right, or down, to clear a
                     let right = a.dx + a.geo.w + GAP - b.dx;
-                    let down = a.dy + DEV_H + GAP - b.dy;
+                    let down = a.dy + a.h() + GAP - b.dy;
                     let push_down = b.dy >= a.dy && down < right;
                     let b = &mut self.devs[j];
                     if push_down {
@@ -984,7 +993,7 @@ impl Scene {
                 let d = &mut self.devs[i];
                 (d.tx, d.ty) = (x, y);
                 (d.dx, d.dy) = (x, y);
-                y += DEV_H + 46.0;
+                y += d.h() + 46.0;
                 w = w.max(d.geo.w);
             }
             x += w + 110.0;
@@ -993,11 +1002,11 @@ impl Scene {
 
     /// Devices that appeared later go below everything else.
     fn place_new(&mut self, keys: &[String]) {
-        let mut y = self.devs.iter().filter(|d| !keys.contains(&d.dev.key)).map(|d| d.dy + DEV_H + 46.0).fold(40.0, f64::max);
+        let mut y = self.devs.iter().filter(|d| !keys.contains(&d.dev.key)).map(|d| d.dy + d.h() + 46.0).fold(40.0, f64::max);
         for d in self.devs.iter_mut().filter(|d| keys.contains(&d.dev.key)) {
             (d.tx, d.ty) = (40.0, y);
             (d.x, d.y) = (d.tx, d.ty);
-            y += DEV_H + 46.0;
+            y += d.h() + 46.0;
         }
     }
 
@@ -1005,9 +1014,9 @@ impl Scene {
     pub fn bounds(&self) -> Option<(f64, f64, f64, f64)> {
         let mut it = self.devs.iter();
         let f = it.next()?;
-        let mut b = (f.tx, f.ty, f.tx + f.geo.w, f.ty + DEV_H);
+        let mut b = (f.tx, f.ty, f.tx + f.geo.w, f.ty + f.h());
         for d in it {
-            b = (b.0.min(d.tx), b.1.min(d.ty), b.2.max(d.tx + d.geo.w), b.3.max(d.ty + DEV_H));
+            b = (b.0.min(d.tx), b.1.min(d.ty), b.2.max(d.tx + d.geo.w), b.3.max(d.ty + d.h()));
         }
         Some(b)
     }
@@ -1038,6 +1047,12 @@ impl Scene {
             for (i, kind) in [Some(JackKind::Mono), Some(JackKind::Stereo), Some(JackKind::Midi), None].into_iter().enumerate() {
                 let pm = rasterize(&self.opt, &face::jack_pic(kind), scale);
                 self.jack_pics[i] = Some(Layer { id: next_id(), pm, x: -PIC, y: -PIC, w: 2.0 * PIC, h: 2.0 * PIC });
+            }
+            for (i, c) in face::ACCENTS.iter().enumerate() {
+                for (k, kind) in [JackKind::Mono, JackKind::Stereo, JackKind::Midi].into_iter().enumerate() {
+                    let pm = rasterize(&self.opt, &face::jack_pic_ring(kind, c), scale);
+                    self.jack_pics[4 + 3 * i + k] = Some(Layer { id: next_id(), pm, x: -PIC, y: -PIC, w: 2.0 * PIC, h: 2.0 * PIC });
+                }
             }
             self.pics_scale = scale;
         }
@@ -1079,7 +1094,7 @@ impl Scene {
                 let (svg, geo) = face::face(&d.dev, &d.defs, &d.counts, &d.split, self.rack_w, self.accents);
                 d.geo = geo;
                 let pm = rasterize(&self.opt, &svg, scale);
-                d.face = Some(Layer { id: next_id(), pm, x: -SHADOW, y: -SHADOW, w: d.geo.w + 2.0 * SHADOW, h: DEV_H + 2.0 * SHADOW });
+                d.face = Some(Layer { id: next_id(), pm, x: -SHADOW, y: -SHADOW, w: d.geo.w + 2.0 * SHADOW, h: d.geo.h + 2.0 * SHADOW });
                 (d.face_sig, d.face_scale) = (sig, scale);
                 d.lcd = None;
                 d.meter = None;
@@ -1091,22 +1106,22 @@ impl Scene {
             for (gi, m) in &d.geo.mix {
                 let Some((vol, bal, mute)) = d.mix(*gi) else { continue };
                 let mut h = DefaultHasher::new();
-                (vol.to_bits(), bal.to_bits(), mute, d.bal(*gi), scale.to_bits(), m.x.to_bits()).hash(&mut h);
+                (vol.to_bits(), bal.to_bits(), mute, d.bal(*gi), scale.to_bits(), m.x.to_bits(), m.y.to_bits()).hash(&mut h);
                 let sig = h.finish();
                 match d.mix_pics.iter().position(|(g, s, _)| g == gi && *s == sig) {
                     Some(i) => pics.push(d.mix_pics.swap_remove(i)),
                     None => {
                         let pm = rasterize(&self.opt, &face::mix_pic(m, vol, bal, mute, d.bal(*gi)), scale);
-                        pics.push((*gi, sig, Layer { id: next_id(), pm, x: m.x, y: MIX_Y, w: m.w, h: MIX_H }));
+                        pics.push((*gi, sig, Layer { id: next_id(), pm, x: m.x, y: m.y + MIX_Y, w: m.w, h: MIX_H }));
                     }
                 }
             }
             d.mix_pics = pics;
-            let wsig = d.geo.w.to_bits() ^ self.rack_w.is_some() as u64;
+            let wsig = d.geo.w.to_bits() ^ d.geo.h.to_bits().rotate_left(17) ^ self.rack_w.is_some() as u64;
             if d.shade.as_ref().is_none_or(|(s, _)| *s != wsig) {
                 // a blur: drawn at a small fixed scale and stretched, so zooming never redraws it
-                let pm = rasterize(&self.opt, &face::shadow(d.geo.w, self.rack_w.is_some()), SHADE_SCALE);
-                d.shade = Some((wsig, Layer { id: next_id(), pm, x: -SHADOW, y: -SHADOW, w: d.geo.w + 2.0 * SHADOW, h: DEV_H + 2.0 * SHADOW }));
+                let pm = rasterize(&self.opt, &face::shadow(d.geo.w, d.geo.h, self.rack_w.is_some()), SHADE_SCALE);
+                d.shade = Some((wsig, Layer { id: next_id(), pm, x: -SHADOW, y: -SHADOW, w: d.geo.w + 2.0 * SHADOW, h: d.geo.h + 2.0 * SHADOW }));
             }
             let n = links.get(&di).copied().unwrap_or(0);
             let note = d.mix_note.as_ref().filter(|(until, _)| Instant::now() < *until).map(|(_, s)| s.clone());
@@ -1150,13 +1165,13 @@ impl Scene {
             let mut meters = Vec::new();
             for (gi, m) in &d.geo.mix {
                 let (Some(x), Some(lv)) = (m.meter, d.glevel.get(gi)) else { continue };
-                let lit = (lv[0].round() as u8, lv[1].round() as u8);
+                let lit = (lv[0].round() as u8, if m.cols > 1 { lv[1].round() as u8 } else { 0 });
                 if lit == (0, 0) {
                     continue;
                 }
                 match d.gmeters.iter().position(|(g, l, _)| g == gi && *l == lit) {
                     Some(i) => meters.push(d.gmeters.swap_remove(i)),
-                    None => meters.push((*gi, lit, meter_layer(lit, Leds::strip(x), scale))),
+                    None => meters.push((*gi, lit, meter_layer(lit, Leds::strip(x, m.y, m.cols, self.accents), scale))),
                 }
             }
             d.gmeters = meters;
@@ -1166,8 +1181,9 @@ impl Scene {
 
     /// The cords in the window area (x, y, w, h) in pixels, or None when there are none.
     /// `rings`: jacks the end in the hand may go into (world position, the one it is pulled to).
-    pub fn cord_layer(&self, view: View, win: (u32, u32), rings: &[((f32, f32), bool)], pulse: f32) -> Option<(Pixmap, i32, i32)> {
-        if self.cords.is_empty() {
+    /// `cue`: the jacks listened to (world position, pinned, would feed back).
+    pub fn cord_layer(&self, view: View, win: (u32, u32), rings: &[((f32, f32), bool)], cue: &[((f32, f32), bool, bool)], pulse: f32) -> Option<(Pixmap, i32, i32)> {
+        if self.cords.is_empty() && cue.is_empty() {
             return None;
         }
         let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
@@ -1176,6 +1192,9 @@ impl Scene {
             for p in &c.pts {
                 (x0, y0, x1, y1) = (x0.min(p.x), y0.min(p.y), x1.max(p.x), y1.max(p.y));
             }
+        }
+        for &((x, y), _, _) in cue {
+            (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
         }
         if ![x0, y0, x1, y1].iter().all(|v| v.is_finite()) {
             return None;
@@ -1198,6 +1217,7 @@ impl Scene {
         // faded or hidden cords; a cord in the hand always shows, and so do the hovered thing's
         // cords, while the others fade
         let fade = [1.0, 0.22, 0.0][self.cables.min(2) as usize];
+        paint::cue_marks(&mut pm, cue, pulse, ts);
         paint::cords(
             &mut pm,
             &self.cords,
@@ -1252,14 +1272,16 @@ impl Scene {
         let mut v = Vec::new();
         for (ji, j) in d.defs.iter().enumerate() {
             let (Some(&(jx, jy)), Some(&n)) = (d.geo.jacks.get(ji), d.counts.get(ji)) else { continue };
-            // the L and R of a split stereo jack keep its gold ring: still the same pair
+            // every jack is ringed in its group's colour (K switches only the bands); the L and R
+            // of a split stereo jack keep its double ring: still the same pair
             let stereo = d.dev.groups.get(j.group).is_some_and(|g| g.stereo);
-            let pic = match j.kind {
-                JackKind::Mono if stereo => 1,
-                JackKind::Mono => 0,
-                JackKind::Stereo => 1,
-                JackKind::Midi => 2,
-            };
+            let kind = if stereo { JackKind::Stereo } else { j.kind };
+            let pic = 4 + 3 * face::accent_index(&d.dev, j.group)
+                + match kind {
+                    JackKind::Mono => 0,
+                    JackKind::Stereo => 1,
+                    JackKind::Midi => 2,
+                };
             let k = face::slots(n);
             for s in 0..k {
                 let (x, y) = (d.x + jx + s as f64 * JP, d.y + jy);
@@ -1424,6 +1446,88 @@ impl Scene {
             }
         }
         v
+    }
+
+    /// What listening to a jack brings into the cue: (node, port, channel) of each output port
+    /// heard: an output jack's own ports; for an input jack, what is linked into it.
+    pub fn cue_sources(&self, key: &str) -> Vec<(u32, u32, Option<usize>)> {
+        let Some((d, j)) = self.jack(key) else { return Vec::new() };
+        let ch = |p: &crate::graph::Port| match p.channel.as_str() {
+            "FL" => Some(0),
+            "FR" => Some(1),
+            _ => None,
+        };
+        let ports: Vec<&crate::graph::Port> = j.ports.iter().filter_map(|id| d.dev.groups.iter().flat_map(|g| &g.ports).find(|p| p.id == *id)).collect();
+        if j.dir == Dir::Out {
+            return ports.iter().map(|p| (p.node, p.id, ch(p))).collect();
+        }
+        // a device's output (PLAYBACK): what it plays, its monitor (all it gets, mixed)
+        let node = ports.first().map(|p| p.node);
+        if let Some(mon) = d.dev.groups.iter().find(|g| g.label == "MONITOR" && g.ports.first().map(|p| p.node) == node) {
+            return mon.ports.iter().map(|p| (p.node, p.id, ch(p))).collect();
+        }
+        let links = self.graph.links();
+        ports.iter().flat_map(|p| links.iter().filter(move |l| l.in_port == p.id).filter_map(|l| Some((self.graph.port_node(l.out_port)?, l.out_port, ch(p))))).collect()
+    }
+
+    /// What a set of heard jacks brings into the cue, each sound once: a source whose sound also
+    /// reaches a heard device's monitor (an app playing into a device heard) is heard there, and
+    /// one that plays in the output listened on is heard already (the cue would double it).
+    pub fn cue_mix(&self, keys: &[String]) -> Vec<(u32, u32, Option<usize>)> {
+        let all: Vec<(u32, u32, Option<usize>)> = keys.iter().flat_map(|k| self.cue_sources(k)).collect();
+        // the devices whose monitor is heard, and the output listened on
+        let mut monitored: Vec<u32> = self.devs.iter().flat_map(|d| d.dev.groups.iter().filter(|g| g.label == "MONITOR").flat_map(|g| &g.ports)).filter(|p| all.iter().any(|s| s.1 == p.id)).map(|p| p.node).collect();
+        monitored.extend(self.default_output_node());
+        let mut out: Vec<(u32, u32, Option<usize>)> = Vec::new();
+        for s in all {
+            // however far along the cords (through a device and out of its monitor, and on)
+            let into_heard = self.graph.reaches(s.1).iter().any(|n| monitored.contains(n) && *n != s.0);
+            if !into_heard && !out.iter().any(|o| o.1 == s.1 && o.2 == s.2) {
+                out.push(s);
+            }
+        }
+        out
+    }
+
+    /// The default output's node.
+    fn default_output_node(&self) -> Option<u32> {
+        let name = self.default_name(true)?;
+        let (di, gi, _, _) = self.ends(true).into_iter().find(|e| e.2 == name)?;
+        self.devs[di].dev.groups[gi].ports.first().map(|p| p.node)
+    }
+
+    /// A jack whose sound plays in the output listened on already: the cue adds nothing.
+    pub fn cue_already_heard(&self, key: &str) -> bool {
+        !self.cue_sources(key).is_empty() && self.cue_mix(&[key.to_owned()]).is_empty()
+    }
+
+    /// Listening to a jack of the default output, or of its monitor, would feed what it plays
+    /// back into it.
+    pub fn cue_blocked(&self, key: &str) -> bool {
+        let Some((d, j)) = self.jack(key) else { return false };
+        let Some(node) = j.ports.first().and_then(|id| d.dev.groups.iter().flat_map(|g| &g.ports).find(|p| p.id == *id)).map(|p| p.node) else { return false };
+        self.default_name(true).is_some_and(|n| self.graph.node_name(node) == Some(n.as_str()))
+    }
+
+    /// How the status bar names a jack: "fooyin · OUTPUT", "Ryzen … · PLAYBACK L".
+    pub fn jack_title(&self, key: &str) -> String {
+        let Some((d, j)) = self.jack(key) else { return "?".into() };
+        let g = d.dev.groups.get(j.group);
+        let split = d.defs.iter().filter(|x| x.group == j.group).count() > 1;
+        format!("{} · {}{}", d.dev.name, g.map_or("", |g| g.label.as_str()), if split { format!(" {}", j.label) } else { String::new() })
+    }
+
+    /// The jack (or a plug's jack) under a world point.
+    pub fn jack_key_at(&self, x: f64, y: f64) -> Option<String> {
+        match self.hover_at(x, y) {
+            Hover::Jack(k) => Some(k),
+            _ => None,
+        }
+    }
+
+    /// Where a jack is (its first jack's centre), in world units.
+    pub fn jack_pos(&self, key: &str) -> Option<(f32, f32)> {
+        self.slot_pos(key, 0)
     }
 
     /// How the panel names the default output or input: the device (and group), or NONE.
@@ -1839,7 +1943,7 @@ impl Scene {
     pub fn device_at(&self, x: f64, y: f64) -> Option<usize> {
         (0..self.devs.len()).rev().find(|&i| {
             let d = &self.devs[i];
-            x >= d.x && x <= d.x + d.geo.w && y >= d.y && y <= d.y + DEV_H
+            x >= d.x && x <= d.x + d.geo.w && y >= d.y && y <= d.y + d.h()
         })
     }
 
@@ -2127,7 +2231,7 @@ mod tests {
 
     fn overlap(s: &Scene) -> bool {
         let d = &s.devs;
-        (0..d.len()).any(|i| (0..d.len()).any(|j| i != j && !apart((d[i].dx, d[i].dy, d[i].geo.w), (d[j].dx, d[j].dy, d[j].geo.w), 0.0)))
+        (0..d.len()).any(|i| (0..d.len()).any(|j| i != j && !apart((d[i].dx, d[i].dy, d[i].geo.w, d[i].h()), (d[j].dx, d[j].dy, d[j].geo.w, d[j].h()), 0.0)))
     }
 
     /// A device dragged near another's edge or centre sticks to it, with a guide to show it;
@@ -2196,6 +2300,7 @@ mod tests {
             meter: false,
             mix: None,
             ports_to: Vec::new(),
+            stream: 0,
         };
         let mut s = desk(&[(0.0, 0.0, 300.0), (400.0, 0.0, 300.0), (400.0, 200.0, 300.0)]);
         for (d, g) in s.devs.iter_mut().zip([group("OUTPUT", Dir::Out, [1, 2]), group("PLAYBACK", Dir::In, [3, 4]), group("PLAYBACK", Dir::In, [5, 6])]) {

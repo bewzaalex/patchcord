@@ -32,11 +32,11 @@
   <screenshots>
     <screenshot type="default">
       <caption>Devices on the desk, patched with cords</caption>
-      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.2.2/docs/screenshots/desk.png</image>
+      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.3.0/docs/screenshots/desk.png</image>
     </screenshot>
     <screenshot>
       <caption>The same devices in a rack</caption>
-      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.2.2/docs/screenshots/rack.png</image>
+      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.3.0/docs/screenshots/rack.png</image>
     </screenshot>
   </screenshots>
   <description>
@@ -47,7 +47,10 @@
       <li>Pull a cord from a jack and plug it into another to connect; pull it out to disconnect</li>
       <li>Stereo jacks that split into separate left and right jacks</li>
       <li>Signal meters and the state of each device</li>
-      <li>Each app's volume or recording gain, balance and mute, beside its jacks</li>
+      <li>Each app's volume or recording gain, balance and mute, beside its jacks; an app with several streams gets a frame for each</li>
+      <li>Sound card volumes, ports (speakers or headphones) and latency offsets</li>
+      <li>The default output and input, chosen on the top panel</li>
+      <li>Listen to any jack (cue) in the default output, without repatching</li>
       <li>Sound card profiles, such as Bluetooth hi-fi or headset and its codec</li>
       <li>Devices on a desk, or in a 19" rack</li>
       <li>Presets of connections, layouts, volumes and profiles, undo and redo</li>
@@ -55,6 +58,22 @@
     </ul>
   </description>
   <releases>
+    <release version="0.3.0" date="2026-11-18">
+      <url type="details">https://github.com/bewzaalex/patchcord/releases/tag/v0.3.0</url>
+      <description>
+        <p>A mixer on every device, and listening to any jack.</p>
+        <ul>
+          <li>VOLUME or GAIN, a push-push BAL knob and MUTE beside the jacks of each app stream and each device's output and input, as in pavucontrol</li>
+          <li>Sound cards: their hardware volume, a PORT list (speakers, headphones, microphones) with latency offsets, beside PROFILE</li>
+          <li>The default output and input on the top panel's screen, with a list to change them and find them on the desk</li>
+          <li>Cue: hold Alt over a jack to hear it in the default output, or turn on CUE mode to keep several playing, with its own LEVEL</li>
+          <li>An app with several streams (Teams, a browser's tabs) is one device with a numbered frame for each stream, each with its own controls and meter</li>
+          <li>At most three frames side by side: bigger devices grow to two or three units</li>
+          <li>Coloured bands by kind of group (K), meters in each frame, and a slimmer rack</li>
+          <li>Presets also keep volumes, profiles, ports and the defaults</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.2" date="2026-11-17">
       <url type="details">https://github.com/bewzaalex/patchcord/releases/tag/v0.2.2</url>
       <description>

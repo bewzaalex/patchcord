@@ -87,6 +87,59 @@ pub fn rings(pm: &mut Pixmap, rings: &[((f32, f32), bool)], pulse: f32, ts: Tran
     }
 }
 
+/// The jacks listened to (cue): a cyan ring with a little pair of headphones on a badge; a
+/// pinned one also glows (it plays on when the pointer leaves); one that would feed back is red.
+pub fn cue_marks(pm: &mut Pixmap, marks: &[((f32, f32), bool, bool)], pulse: f32, ts: Transform) {
+    for &((x, y), pinned, bad) in marks {
+        let c: Rgb = if bad { [255, 80, 60] } else { [95, 212, 255] };
+        if pinned {
+            let glow = RadialGradient::new(Point::from_xy(x, y), Point::from_xy(x, y), 34.0, vec![GradientStop::new(0.0, rgba(c, 0.0)), GradientStop::new(0.4, rgba(c, 0.45)), GradientStop::new(1.0, rgba(c, 0.0))], SpreadMode::Pad, Transform::identity());
+            if let (Some(p), Some(sh)) = (PathBuilder::from_circle(x, y, 34.0), glow) {
+                pm.fill_path(&p, &Paint { shader: sh, anti_alias: true, ..Default::default() }, FillRule::Winding, ts, None);
+            }
+        } else if let Some(p) = PathBuilder::from_circle(x, y, 26.0) {
+            pm.stroke_path(&p, &solid(c, 0.18 * (0.6 + 0.4 * pulse)), &stroke(8.0), ts, None);
+        }
+        if let Some(p) = PathBuilder::from_circle(x, y, 20.0) {
+            pm.stroke_path(&p, &solid(c, 0.95), &stroke(if pinned { 3.2 } else { 2.2 }), ts, None);
+        }
+        // the badge, top right of the jack, with the same headphones as the CUE key
+        let (bx, by) = (x + 17.0, y - 17.0);
+        if let Some(p) = PathBuilder::from_circle(bx, by, 8.5) {
+            pm.fill_path(&p, &solid([18, 19, 21], 1.0), FillRule::Winding, ts, None);
+            pm.stroke_path(&p, &solid(c, 1.0), &stroke(1.4), ts, None);
+        }
+        // 24 units of the icon to 11 world units, its shape's middle (12, 12.5) on the badge's centre
+        let k = 11.0 / 24.0;
+        let at = |ux: f32, uy: f32| (bx + (ux - 12.0) * k, by + (uy - 12.5) * k);
+        let mut band = PathBuilder::new();
+        let (sx, sy) = at(4.0, 15.0);
+        band.move_to(sx, sy);
+        let (ax, ay) = at(4.0, 12.0);
+        band.line_to(ax, ay);
+        // the headband: half a circle of radius 8 from (4, 12) to (20, 12) over (12, 4)
+        let (c1x, c1y) = at(4.0, 7.6);
+        let (m1x, m1y) = at(7.6, 4.0);
+        let (mx, my) = at(12.0, 4.0);
+        band.cubic_to(c1x, c1y, m1x, m1y, mx, my);
+        let (m2x, m2y) = at(16.4, 4.0);
+        let (c2x, c2y) = at(20.0, 7.6);
+        let (bx2, by2) = at(20.0, 12.0);
+        band.cubic_to(m2x, m2y, c2x, c2y, bx2, by2);
+        let (ex, ey) = at(20.0, 15.0);
+        band.line_to(ex, ey);
+        if let Some(p) = band.finish() {
+            pm.stroke_path(&p, &solid(c, 1.0), &stroke(2.4 * k), ts, None);
+        }
+        for ux in [3.0, 16.5] {
+            let (cx, cy) = at(ux, 14.0);
+            if let Some(r) = resvg::tiny_skia::Rect::from_xywh(cx, cy, 4.5 * k, 7.0 * k) {
+                pm.fill_path(&PathBuilder::from_rect(r), &solid(c, 1.0), FillRule::Winding, ts, None);
+            }
+        }
+    }
+}
+
 /// All cords: their shadows, then the cords. A cord ends straight in its jack, as in Reason.
 /// `alpha_of` gives each cord's opacity (fading, focus).
 pub fn cords(pm: &mut Pixmap, cords: &[Cord], alpha_of: impl Fn(&Cord) -> f32, ts: Transform) {

@@ -13,7 +13,7 @@ use winit::window::{CursorIcon, Window, WindowId};
 
 use super::cord::Held;
 use super::ease;
-use super::face::{BalKnob, DEV_H, LCD_CH};
+use super::face::{BalKnob, LCD_CH};
 use super::gpu::{Gpu, Sprite};
 use super::panel::{self, Key, Menu, MenuHit, Panel, ProfileHit};
 use crate::config::{self, Preset, Settings};
@@ -41,6 +41,8 @@ enum Drag {
     Switch { from: (f64, f64), pos0: u8, moved: bool },
     /// a panel key held down
     Key,
+    /// the cue's LEVEL knob, turned by dragging up and down
+    CueLevel { from: f64, v0: f64 },
     /// an app's VOLUME knob, turned by dragging up and down: the pointer's last height and the
     /// volume it has turned to (before resting at 100%)
     Knob { key: String, gi: usize, last: f64, raw: f64 },
@@ -63,6 +65,22 @@ pub fn defaults_menu(scene: &Scene) -> Menu {
     let (dout, din) = (scene.default_name(true), scene.default_name(false));
     let at = |v: &[(usize, usize, String, String)], n: &Option<String>| v.iter().position(|e| Some(&e.2) == n.as_ref());
     Menu::Defaults { out: at(&outs, &dout), inp: at(&ins, &din), outs: outs.into_iter().map(|e| e.3).collect(), ins: ins.into_iter().map(|e| e.3).collect() }
+}
+
+/// Listening (cue): jacks heard in the default output through a little node of Patchcord's.
+/// Holding Alt probes the jack under the pointer; CUE mode (the CUE key) hears the hovered jack,
+/// and a click pins one to keep playing, as many as wanted.
+#[derive(Default)]
+struct Cue {
+    mode: bool,
+    probing: bool,
+    hover: Option<String>,
+    pins: Vec<String>,
+    /// 0…1, as the knob shows it (the volume is its cube)
+    level: f64,
+    /// what PipeWire was last told
+    sent: Option<(Vec<(u32, u32, Option<usize>)>, u32, bool)>,
+    badge: Option<(u64, Layer)>,
 }
 
 /// How long a device found from the defaults list glows.
@@ -125,6 +143,7 @@ pub struct App {
     glow: Option<(String, u64, Layer)>,
     /// a device found from the defaults list: it glows a moment, fading
     found: Option<(String, Instant, Layer)>,
+    cue: Cue,
     settings: Settings,
     presets: Vec<Preset>,
     /// the preset last saved or loaded
@@ -168,7 +187,7 @@ impl App {
             animating: true,
             next_frame: now,
             last_press: (now, (0.0, 0.0)),
-            panel: Panel::new(panel::State { rack: false, locked: settings.lock, align: settings.align, cables: settings.cables, sound: false, lcd: [String::new(), String::new()], defaults: [String::new(), String::new()], pressed: None }),
+            panel: Panel::new(panel::State { rack: false, locked: settings.lock, align: settings.align, cables: settings.cables, sound: false, lcd: [String::new(), String::new()], defaults: [String::new(), String::new()], cue_led: false, cue_level: 70, pressed: None }),
             hint: String::new(),
             status: None,
             notice: None,
@@ -176,6 +195,7 @@ impl App {
             tip: None,
             profiles: None,
             found: None,
+            cue: Cue { level: 0.7, ..Default::default() },
             glow: None,
             settings,
             presets,
@@ -327,15 +347,85 @@ impl App {
         defaults_menu(&self.scene)
     }
 
+    /// The jacks heard: the pinned ones and the hovered one.
+    fn cue_heard(&self) -> Vec<String> {
+        let mut v = self.cue.pins.clone();
+        if let Some(h) = &self.cue.hover
+            && !v.contains(h)
+        {
+            v.push(h.clone());
+        }
+        v
+    }
+
+    /// Where to draw the rings of the jacks heard: (position, pinned, would feed back).
+    fn cue_marks(&self) -> Vec<((f32, f32), bool, bool)> {
+        self.cue_heard().iter().filter_map(|k| Some((self.scene.jack_pos(k)?, self.cue.pins.contains(k), self.scene.cue_blocked(k)))).collect()
+    }
+
+    /// Tells PipeWire what to hear, when that changed (the jacks, what is linked into an input
+    /// jack, the default output, the level).
+    fn cue_sync(&mut self) {
+        let heard: Vec<String> = self.cue_heard().into_iter().filter(|k| !self.scene.cue_blocked(k)).collect();
+        let sources = self.scene.cue_mix(&heard);
+        // in CUE mode the cue stays, between one jack and the next
+        let keep = self.cue.mode;
+        let level = (self.cue.level.powi(3) as f32).to_bits();
+        let want = (sources, level, keep);
+        if self.cue.sent.as_ref() != Some(&want) {
+            self.conn.send(Cmd::Cue { sources: want.0.clone(), level: f32::from_bits(level), keep });
+            self.cue.sent = Some(want);
+        }
+    }
+
+    /// The status bar while listening.
+    fn cue_hint(&self) -> String {
+        if let Some(h) = &self.cue.hover
+            && self.scene.cue_blocked(h)
+        {
+            return format!("can't listen to {}: it is the output you listen on (it would feed back)", self.scene.jack_title(h));
+        }
+        let heard: Vec<String> = self
+            .cue_heard()
+            .iter()
+            .filter(|k| !self.scene.cue_blocked(k))
+            .map(|k| if self.scene.cue_already_heard(k) { format!("{} (already in the output you listen on)", self.scene.jack_title(k)) } else { self.scene.jack_title(k) })
+            .collect();
+        let what = if heard.is_empty() { "move over a jack to listen to it".to_owned() } else { format!("CUE ▸ {} · in the default output at {:.0}%", heard.join(" + "), self.cue.level * 100.0) };
+        if self.cue.mode {
+            let click = match &self.cue.hover {
+                Some(h) if self.cue.pins.contains(h) => "  ·  click: stop it",
+                Some(_) => "  ·  click: keep it on",
+                None => "  ·  click a jack to keep it on; CUE or Esc stops all",
+            };
+            format!("{what}{click}")
+        } else {
+            what
+        }
+    }
+
+    /// CUE mode on or off; off, every jack heard stops.
+    fn set_cue_mode(&mut self, on: bool) {
+        self.cue.mode = on;
+        if !on {
+            self.cue.pins.clear();
+            if !self.cue.probing {
+                self.cue.hover = None;
+            }
+        }
+        self.say(if on { "CUE: hover a jack to hear it, click to keep it on" } else { "Cue off" });
+        self.redraw();
+    }
+
     /// Glides the view to a device and makes it glow for a moment.
     fn find_device(&mut self, di: usize) {
         let dpi = self.dpi();
         let (top, bottom) = self.field();
         let Some(d) = self.scene.devs.get(di) else { return };
         let s = self.view.s.max(0.8 * dpi);
-        let (cx, cy) = (d.x + d.geo.w / 2.0, d.y + DEV_H / 2.0);
+        let (cx, cy) = (d.x + d.geo.w / 2.0, d.y + d.h() / 2.0);
         self.view_to = Some(View { s, x: self.size.0 as f64 / 2.0 - cx * s, y: (top + bottom) / 2.0 - cy * s });
-        self.found = Some((d.dev.key.clone(), Instant::now(), glow_layer(d.geo.w, self.scene.rack, self.raster)));
+        self.found = Some((d.dev.key.clone(), Instant::now(), glow_layer(d.geo.w, d.h(), self.scene.rack, self.raster)));
         self.redraw();
     }
 
@@ -381,6 +471,8 @@ impl App {
             Key::Save => self.open_menu(true),
             Key::Load | Key::Lcd => self.open_menu(false),
             Key::Defaults => self.open_defaults(true),
+            Key::Cue => self.set_cue_mode(!self.cue.mode),
+            Key::CueLevel => {}
             Key::Sound => self.say("Plug sounds are not implemented yet"),
         }
         self.redraw();
@@ -506,6 +598,11 @@ impl App {
         self.panel.state.rack = self.scene.rack;
         self.panel.state.lcd = self.lcd();
         self.panel.state.defaults = [true, false].map(|output| self.scene.default_shown(output));
+        // the CUE LED: lit in CUE mode, blinking while only probing with Alt
+        let heard = self.cue_heard().iter().any(|k| !self.scene.cue_blocked(k));
+        self.panel.state.cue_led = self.cue.mode || (heard && (now - self.start).as_millis() / 250 % 2 == 0);
+        self.panel.state.cue_level = (self.cue.level * 100.0).round() as u8;
+        self.cue_sync();
         // the open defaults list follows what is the default
         if let Some(Menu::Defaults { .. }) = &self.panel.menu {
             let m = self.defaults_menu();
@@ -539,9 +636,19 @@ impl App {
         self.place_profiles(dpi);
         self.update_glow();
         let pulse = 0.5 + 0.5 * ((now - self.start).as_secs_f32() * 6.0).sin();
-        let cords = self.scene.cord_layer(self.view, self.size, &rings, pulse);
+        let cue = self.cue_marks();
+        let cords = self.scene.cord_layer(self.view, self.size, &rings, &cue, pulse);
         let cord_id = next_id();
 
+        // the badge beside the pointer while listening, over the field
+        let (ftop, fbottom) = self.field();
+        let show_badge = (self.cue.probing || self.cue.mode) && self.cursor.1 >= ftop && self.cursor.1 <= fbottom && self.drag.is_none();
+        if show_badge {
+            let raster = (self.dpi() * 1e6).round() as u64;
+            if self.cue.badge.as_ref().is_none_or(|(s, _)| *s != raster) {
+                self.cue.badge = Some((raster, panel::cue_badge(self.dpi())));
+            }
+        }
         let Some(sf) = &mut self.win else { return };
         let v = self.view;
         let mut sprites: Vec<Sprite> = Vec::new();
@@ -604,6 +711,10 @@ impl App {
         {
             sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: pl.at.0, y: pl.at.1, w: l.w * dpi, h: l.h * dpi, alpha: 1.0 });
         }
+        if show_badge && let Some((_, l)) = &self.cue.badge {
+            // below and right of the pointer's tip, clear of the arrow
+            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (self.cursor.0 + 12.0 * dpi).round(), y: (self.cursor.1 + 14.0 * dpi).round(), w: l.w * dpi, h: l.h * dpi, alpha: 1.0 });
+        }
         if let Some(l) = &self.tip {
             // below and right of the pointer; kept inside the window, above the pointer near the bottom
             let (w, h) = (l.w * dpi, l.h * dpi);
@@ -636,7 +747,7 @@ impl App {
         if self.found.as_ref().is_some_and(|(_, at, _)| at.elapsed() > FOUND) {
             self.found = None;
         }
-        self.animating = self.found.is_some() || moving || self.view_to.is_some() || self.drag.is_some() || self.rescale_at.is_some() || self.notice.is_some() || faces_waiting || self.scene.noting() || (self.scene.hover != Hover::None && self.tip.is_none() && now - self.hover_since < 2 * TIP_DELAY);
+        self.animating = !self.cue_heard().is_empty() || self.found.is_some() || moving || self.view_to.is_some() || self.drag.is_some() || self.rescale_at.is_some() || self.notice.is_some() || faces_waiting || self.scene.noting() || (self.scene.hover != Hover::None && self.tip.is_none() && now - self.hover_since < 2 * TIP_DELAY);
     }
 
     /// The glow around the device under the pointer (not while dragging, nor over its switches).
@@ -652,10 +763,10 @@ impl App {
         let Some(d) = self.scene.devs.iter().find(|d| d.dev.key == key) else { return };
         let rack = self.scene.rack;
         let mut h = std::hash::DefaultHasher::new();
-        std::hash::Hash::hash(&(&key, d.geo.w.to_bits(), rack, self.raster.to_bits()), &mut h);
+        std::hash::Hash::hash(&(&key, d.geo.w.to_bits(), d.h().to_bits(), rack, self.raster.to_bits()), &mut h);
         let sig = std::hash::Hasher::finish(&h);
         if self.glow.as_ref().is_none_or(|(k, s, _)| *k != key || *s != sig) {
-            self.glow = Some((key, sig, glow_layer(d.geo.w, rack, self.raster)));
+            self.glow = Some((key, sig, glow_layer(d.geo.w, d.h(), rack, self.raster)));
         }
     }
 
@@ -797,6 +908,7 @@ impl App {
                 self.panel.state.pressed = Some(key);
                 self.drag = Some(match key {
                     Key::Cables => Drag::Switch { from: self.cursor, pos0: self.scene.cables, moved: false },
+                    Key::CueLevel => Drag::CueLevel { from: self.cursor.1, v0: self.cue.level },
                     _ => Drag::Key,
                 });
                 if key != Key::Cables {
@@ -811,6 +923,19 @@ impl App {
         if button != MouseButton::Left {
             self.drag = Some(Drag::Pan { from: self.cursor, view: self.view });
             return;
+        }
+        // in CUE mode a click on a jack keeps it playing, or stops it, instead of pulling a cord
+        if self.cue.mode
+            && let Some(k) = self.scene.jack_key_at(w.0, w.1)
+        {
+            if self.scene.cue_blocked(&k) {
+                self.say("That is the output you listen on: it would feed back");
+            } else if let Some(i) = self.cue.pins.iter().position(|p| *p == k) {
+                self.cue.pins.remove(i);
+            } else {
+                self.cue.pins.push(k);
+            }
+            return self.redraw();
         }
         let now = Instant::now();
         let double = now - self.last_press.0 < DOUBLE && (self.cursor.0 - self.last_press.1.0).abs() + (self.cursor.1 - self.last_press.1.1).abs() < 8.0;
@@ -951,6 +1076,12 @@ impl App {
             }
             Some(Drag::Cord { .. }) => self.redraw(),
             Some(Drag::Key) => {}
+            Some(Drag::CueLevel { from, v0 }) => {
+                let v = (v0 + (from - self.cursor.1) / (120.0 * self.dpi())).clamp(0.0, 1.0);
+                self.cue.level = (v * 100.0).round() / 100.0;
+                self.hint = format!("cue level {:.0}%", self.cue.level * 100.0);
+                self.redraw();
+            }
             Some(Drag::Knob { key, gi, last, raw }) => {
                 // up is louder; Shift turns it finely; it rests at 100% for a moment on the way
                 let fine = if self.mods.shift_key() { 0.2 } else { 1.0 };
@@ -1006,6 +1137,25 @@ impl App {
             None => {
                 let (top, bottom) = self.field();
                 let dpi = self.dpi();
+                // listening: the jack under the pointer is heard while it is there
+                if (self.cue.probing || self.cue.mode) && self.cursor.1 >= top && self.cursor.1 <= bottom && self.profile_hit().is_none() && self.panel.menu.is_none() {
+                    let k = self.scene.jack_key_at(w.0, w.1);
+                    if k != self.cue.hover {
+                        self.cue.hover = k;
+                        self.redraw();
+                    }
+                    if self.cue.hover.is_some() || self.cue.probing {
+                        let hint = self.cue_hint();
+                        if hint != self.hint {
+                            self.hint = hint;
+                            self.redraw();
+                        }
+                        if let Some(sf) = &self.win {
+                            sf.window.set_cursor(CursorIcon::Default);
+                        }
+                        return;
+                    }
+                }
                 // the open profile list takes the pointer: nothing under it reacts
                 let in_list = self.profile_hit();
                 let (icon, hint) = if let Some(h) = in_list {
@@ -1107,6 +1257,9 @@ impl App {
             KeyCode::Escape => {
                 self.panel.menu = None;
                 self.profiles = None;
+                if self.cue.mode {
+                    self.set_cue_mode(false);
+                }
                 self.redraw();
             }
             _ => {}
@@ -1195,6 +1348,11 @@ impl ApplicationHandler<()> for App {
                 if self.cursor.1 < top {
                     match self.panel.hit(self.cursor.0 / dpi, self.cursor.1 / dpi) {
                         // the wheel steps the cords switch, one click at a time
+                        Some(Key::CueLevel) if f != 1.0 => {
+                            self.cue.level = (self.cue.level + if f > 1.0 { 0.05 } else { -0.05 }).clamp(0.0, 1.0);
+                            self.hint = format!("cue level {:.0}%", self.cue.level * 100.0);
+                            self.redraw();
+                        }
                         Some(Key::Cables | Key::CablesAt(_)) if f != 1.0 => {
                             let step = if f > 1.0 { 1 } else { -1 };
                             self.scene.cables = (self.scene.cables as i32 + step).clamp(0, 2) as u8;
@@ -1224,7 +1382,23 @@ impl ApplicationHandler<()> for App {
                     }
                 }
             }
-            WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
+            WindowEvent::ModifiersChanged(m) => {
+                self.mods = m.state();
+                // holding Alt probes: the jack under the pointer is heard while Alt is held
+                let alt = self.mods.alt_key();
+                if alt != self.cue.probing {
+                    self.cue.probing = alt;
+                    if alt {
+                        let w = self.world(self.cursor);
+                        self.cue.hover = self.scene.jack_key_at(w.0, w.1);
+                        self.hint = self.cue_hint();
+                    } else if !self.cue.mode {
+                        self.cue.hover = None;
+                        self.hint.clear();
+                    }
+                    self.redraw();
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state == ElementState::Pressed
                     && let PhysicalKey::Code(code) = event.physical_key
@@ -1284,18 +1458,18 @@ fn with_app_id(attrs: winit::window::WindowAttributes) -> winit::window::WindowA
     WindowAttributesExtX11::with_name(attrs, APP_ID, APP_ID)
 }
 
-/// The glow around a hovered device `w` wide: a thin amber ring along its edge and a soft halo,
-/// as in the mockup.
-fn glow_layer(w: f64, rack: bool, scale: f64) -> Layer {
+/// The glow around a hovered device `w` wide and `h` high: a thin amber ring along its edge and
+/// a soft halo, as in the mockup.
+fn glow_layer(w: f64, h: f64, rack: bool, scale: f64) -> Layer {
     let m = 26.0;
-    let (gw, gh) = (w + 2.0 * m, DEV_H + 2.0 * m);
+    let (gw, gh) = (w + 2.0 * m, h + 2.0 * m);
     let r = if rack { 4.0 } else { 13.0 };
     let svg = format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{gw}" height="{gh}" viewBox="0 0 {gw} {gh}"><defs><filter id="b" x="-20%" y="-50%" width="140%" height="200%"><feGaussianBlur stdDeviation="8"/></filter></defs><rect x="{m}" y="{m}" width="{w}" height="{DEV_H}" rx="{r}" fill="none" stroke="#ffaa3c" stroke-opacity=".3" stroke-width="12" filter="url(#b)"/><rect x="{}" y="{}" width="{}" height="{}" rx="{}" fill="none" stroke="#ffbe5a" stroke-opacity=".6" stroke-width="2"/></svg>"##,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{gw}" height="{gh}" viewBox="0 0 {gw} {gh}"><defs><filter id="b" x="-20%" y="-50%" width="140%" height="200%"><feGaussianBlur stdDeviation="8"/></filter></defs><rect x="{m}" y="{m}" width="{w}" height="{h}" rx="{r}" fill="none" stroke="#ffaa3c" stroke-opacity=".3" stroke-width="12" filter="url(#b)"/><rect x="{}" y="{}" width="{}" height="{}" rx="{}" fill="none" stroke="#ffbe5a" stroke-opacity=".6" stroke-width="2"/></svg>"##,
         m - 1.0,
         m - 1.0,
         w + 2.0,
-        DEV_H + 2.0,
+        h + 2.0,
         r + 1.0
     );
     Layer { id: next_id(), pm: super::scene::rasterize(&super::text::svg_options(), &svg, scale), x: -m, y: -m, w: gw, h: gh }

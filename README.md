@@ -132,9 +132,12 @@ To uninstall, delete those three files.
 | VOLUME / GAIN knob beside the jacks | each app stream and each device's output and input has its controls in the same frame as its jacks: VOLUME on what plays (an app's OUTPUT, a device's PLAYBACK), GAIN on what comes in (an app's INPUT, a microphone's CAPTURE). A sound card's are its own hardware volume, as pavucontrol sets it. From silence to 153% as in pavucontrol (red past 100%: it can clip): drag up or down (Shift: fine), or the wheel (5%, Shift: 1%); it rests at 100% for a moment, and a double-click sets 100%. The screen shows the value in % and dB while it changes |
 | BAL knob on a stereo stream | the balance between L and R. A push-push knob, as on an old car stereo: click to pop it out, then turn it like VOLUME; click again to push it back in, where it can't be turned by accident |
 | MUTE key | silences the stream; its LED lights red |
+| OUTPUT 1, OUTPUT 2… | an app with several streams of a kind (Teams plays on five) is one device with a frame for each stream, numbered, each with its own controls and meter; a stereo stream's SPLIT sits beside its MUTE. A device shows at most three frames side by side: the fourth starts a second unit under them, the seventh a third |
 | A device with two sets of controls | an app that records and plays (as Audacity) is one device with INPUT and OUTPUT; a sound card has PLAYBACK and CAPTURE. Each frame then has its own meter, after its volume or gain |
 | PORT ▾ beside PROFILE | on a sound card whose output or input has several ports: where it plays (speakers, headphones) or records from (internal or plugged-in microphone), unplugged ones marked, and each port's latency offset (− and +, 10 ms with Shift) |
-| OUT ▸ / IN ▸ screen on the top panel | the default output and input, where new apps play and record. Click it for the list of outputs and inputs: click one to make it the default, or ⌖ to glide to it on the desk |
+| OUT ▸ / IN ▸ on the top panel's screen | the default output and input, where new apps play and record (the screen's left half; its right half is the preset and the clock). Click it for the list of outputs and inputs: click one to make it the default, or ⌖ to glide to it on the desk |
+| Hold Alt over the jacks | listen (cue): the jack under the pointer plays in the default output, like a test probe, while Alt is held. A cyan ring with headphones marks it; the pointer stays your own, with a small headphones badge beside it |
+| CUE key · LEVEL on the top panel | CUE mode (LED lit): hover a jack to hear it, click it to keep it playing (it glows; as many as you like, mixed); CUE again or Esc stops them all. LEVEL sets how loud the cue is, without touching any app's or device's volume. The output you listen on, and its monitor, can't be heard (they would feed back). Listening only hears what already flows: it never makes an app play, so one with no cords stays silent |
 | PROFILE ▾ under a card's screen | pick the sound card's profile: which inputs and outputs it has (analog or HDMI, Bluetooth hi-fi or headset) and, for Bluetooth, its codec; profiles with nothing plugged in are marked. The list stays open to try another; a click elsewhere, Escape or the wheel closes it. A card that is off shows too, so it can be switched on |
 | Ctrl+Z / Ctrl+Shift+Z | undo / redo |
 | Drag a device | move it; on the desk it stops at other devices and slides along them, and its edges and centre stick lightly to those of the others, with a guide line, to line devices up (also right beside, above or below one); in RACK, drag it up or down to change the order |
@@ -146,7 +149,8 @@ To uninstall, delete those three files.
 | Top panel | undo, redo, save and load presets, lock devices (L), line devices up on the desk or place them freely (G), the CABLES switch show · fade · hide (drag, wheel, click, or C), arrange (A), fit (F) |
 | Ctrl+S / Ctrl+O, or the LCD | save a new preset / pick one from the list |
 | F | fit everything in the window |
-| K | colour each group of jacks by its kind (PLAYBACK, CAPTURE, MONITOR, an app's OUTPUT and INPUT, MIDI), or plain frames |
+| Esc | close a list; leave CUE mode |
+| K | coloured bands behind the group names (PLAYBACK, CAPTURE, MONITOR, an app's OUTPUT and INPUT, MIDI), or plain frames; the jacks keep their coloured rings either way |
 | A | arrange devices by signal flow |
 | Ctrl+Q | quit |
 

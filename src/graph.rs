@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::{Duration, Instant};
 
-use crate::pw::{Avail, Event, Kind, METER_PREFIX, Profile, Props, Route};
+use crate::pw::{Avail, CUE_NODE, Event, Kind, METER_PREFIX, Profile, Props, Route};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Dir {
@@ -53,6 +53,10 @@ pub struct Group {
     pub mix: Option<Mix>,
     /// a card's output or input: the ports it can use (Speakers, Headphones…), in PipeWire's order
     pub ports_to: Vec<PortChoice>,
+    /// one of an app's several streams of a kind (Teams plays on five): its number, from 1, in
+    /// its label too (OUTPUT 1, OUTPUT 2…); 0 for an app's only one, and for everything else.
+    /// Each is a frame of its own with its own controls and meter
+    pub stream: usize,
 }
 
 /// One of the ports a card's output or input can use.
@@ -337,6 +341,28 @@ impl Graph {
         self.objects.get(&id).map(|(_, p)| p)
     }
 
+    /// The nodes a port's sound reaches, following the links and on through every node it enters
+    /// (a sound card passes it on out of its monitor, an effect out of its outputs).
+    pub fn reaches(&self, port: u32) -> HashSet<u32> {
+        let links = self.links();
+        let mut seen: HashSet<u32> = HashSet::new();
+        let mut ports = vec![port];
+        let mut done: HashSet<u32> = HashSet::new();
+        while let Some(p) = ports.pop() {
+            if !done.insert(p) {
+                continue;
+            }
+            for l in links.iter().filter(|l| l.out_port == p) {
+                let Some(n) = self.port_node(l.in_port) else { continue };
+                if seen.insert(n) {
+                    // on out of that node's outputs
+                    ports.extend(self.of(Kind::Port).filter(|(_, pp)| pp.get("node.id").and_then(|v| v.parse::<u32>().ok()) == Some(n) && pp.get("port.direction").is_some_and(|d| d == "out")).map(|(id, _)| id));
+                }
+            }
+        }
+        seen
+    }
+
     /// A node's `node.name`, as PipeWire's defaults name it.
     pub fn node_name(&self, node: u32) -> Option<&str> {
         self.props(node)?.get("node.name").map(|s| s.as_str())
@@ -414,18 +440,17 @@ impl Graph {
                 by_pid.entry(pid).or_default().push(node);
             }
         }
-        let class_of = |n: &u32| self.props(*n).and_then(|p| p.get("media.class")).map_or("", |s| s.as_str());
         let mut paired: HashMap<u32, String> = HashMap::new();
         let mut app_names: HashMap<String, usize> = HashMap::new();
+        // (all of them: Teams plays on five streams and records on one)
         for nodes in by_pid.values() {
-            if let [a, b] = nodes[..]
-                && class_of(&a) != class_of(&b)
-            {
-                let p = self.props(a).expect("node");
+            if nodes.len() >= 2 {
+                let p = self.props(nodes[0]).expect("node");
                 let name = some(p.get("application.name")).or(some(p.get("node.name"))).map_or("?", |s| s.as_str()).to_owned();
                 *app_names.entry(name.clone()).or_default() += 1;
-                paired.insert(a, name.clone());
-                paired.insert(b, name);
+                for n in nodes {
+                    paired.insert(*n, name.clone());
+                }
             }
         }
         for (node, p) in self.of(Kind::Node) {
@@ -500,12 +525,24 @@ impl Graph {
                     .unwrap_or("suspended");
                 let class = first.get("media.class").map_or("", |s| s.as_str());
                 let mut groups: Vec<Group> = nodes.iter().flat_map(|n| self.groups(*n, ports.get(n).map_or(&[][..], |v| v))).collect();
+                // an app's several streams of one kind: numbered, in the order they came
+                if key.starts_with("app:") {
+                    number_streams(&mut groups);
+                }
                 // inputs, then outputs, then monitors: PLAYBACK, CAPTURE, MONITOR
                 groups.sort_by_key(|g| (g.dir == Dir::Out, g.label == "MONITOR"));
                 let mut h = DefaultHasher::new();
                 key.hash(&mut h);
                 Device {
-                    model: if key.starts_with("app:") { "APP · RECORD & PLAY".into() } else { model(dev, first) },
+                    model: if key.starts_with("app:") {
+                        match (groups.iter().any(|g| g.dir == Dir::In), groups.iter().any(|g| g.dir == Dir::Out && g.label != "MONITOR")) {
+                            (true, true) => "APP · RECORD & PLAY".into(),
+                            (true, false) => "APP · RECORDING".into(),
+                            _ => "APP · PLAYBACK".into(),
+                        }
+                    } else {
+                        model(dev, first)
+                    },
                     finish: finish(dev.is_some(), class),
                     color: PALETTE[(h.finish() % PALETTE.len() as u64) as usize],
                     key,
@@ -525,6 +562,22 @@ impl Graph {
 
 }
 
+/// An app's groups of the same label and direction (one per stream), each numbered: OUTPUT 1,
+/// OUTPUT 2… Each keeps its own jacks, controls and meter.
+fn number_streams(groups: &mut [Group]) {
+    let kinds: Vec<(String, Dir)> = groups.iter().map(|g| (g.label.clone(), g.dir)).collect();
+    let mut seen: HashMap<(String, Dir), usize> = HashMap::new();
+    for (g, k) in groups.iter_mut().zip(&kinds) {
+        if kinds.iter().filter(|o| *o == k).count() < 2 {
+            continue;
+        }
+        let n = seen.entry(k.clone()).or_insert(0);
+        *n += 1;
+        g.stream = *n;
+        g.label = format!("{} {n}", k.0);
+    }
+}
+
 /// A name without the wrapper PipeWire's ALSA plugin puts around the programs that use it:
 /// "ALSA plug-in [soundcraft]" is "soundcraft".
 fn plain_name(name: &str) -> String {
@@ -542,7 +595,7 @@ impl Graph {
     fn hidden(&self, node: u32, p: &Props) -> bool {
         let class = p.get("media.class").map_or("", |s| s.as_str());
         p.get("stream.monitor").is_some_and(|m| m == "true")
-            || p.get("node.name").is_some_and(|n| n.starts_with(METER_PREFIX))
+            || p.get("node.name").is_some_and(|n| n.starts_with(METER_PREFIX) || n.starts_with(CUE_NODE))
             || (class.starts_with("Stream/") && (!self.info.contains(&node) || self.born.get(&node).is_some_and(|t| t.elapsed() < YOUNG)))
     }
 
@@ -621,7 +674,7 @@ impl Graph {
                 self.mix.get(&node).map(|(volumes, mute)| Mix { node, volumes: volumes.clone(), mute: *mute, gain, route: None })
             };
             let ports_to = route.map(|(r, _)| self.ports_to(r, dir)).unwrap_or_default();
-            groups.push(Group { label: label.into(), dir, ports: ps, stereo, meter, mix, ports_to });
+            groups.push(Group { label: label.into(), dir, ports: ps, stereo, meter, mix, ports_to, stream: 0 });
         }
         groups
     }
@@ -722,6 +775,56 @@ mod tests {
         assert_eq!(volume_text(1.0), ("100%".into(), "0.00 dB".into()));
         assert_eq!(volume_text(0.85).1, "-4.23 dB");
         assert_eq!(volume_text(0.0).1, "-∞ dB");
+    }
+
+    #[test]
+    fn a_sound_is_followed_through_a_card_and_out_of_its_monitor() {
+        // app (10) → card A (20) playback; A's monitor → card B (30) playback
+        let mut g = Graph::default();
+        let props = |kv: &[(&str, &str)]| -> Props { kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect() };
+        for (id, node, dir) in [(11, 10, "out"), (21, 20, "in"), (22, 20, "out"), (31, 30, "in")] {
+            g.apply(&Event::Added { id, kind: Kind::Port, props: props(&[("node.id", &node.to_string()), ("port.direction", dir)]) });
+        }
+        for (id, o, i) in [(40, 11, 21), (41, 22, 31)] {
+            g.apply(&Event::Added { id, kind: Kind::Link, props: props(&[("link.output.port", &o.to_string()), ("link.input.port", &i.to_string())]) });
+        }
+        let r = g.reaches(11);
+        assert!(r.contains(&20) && r.contains(&30), "{r:?}");
+        assert!(g.reaches(31).is_empty());
+    }
+
+    #[test]
+    fn an_app_with_many_streams_is_one_device_with_a_jack_for_each() {
+        // Teams: five playback streams and one recording stream, all named alike, one process
+        let mut g = Graph::default();
+        let props = |kv: &[(&str, &str)]| -> Props { kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect() };
+        let mut port_id = 100;
+        for (id, class, dir) in [(10, "Stream/Input/Audio", "in"), (11, "Stream/Output/Audio", "out"), (12, "Stream/Output/Audio", "out"), (13, "Stream/Output/Audio", "out"), (14, "Stream/Output/Audio", "out"), (15, "Stream/Output/Audio", "out")] {
+            let p = props(&[("media.class", class), ("node.name", "Teams for Linux"), ("application.name", "Teams for Linux"), ("application.process.id", "3013308")]);
+            g.apply(&Event::Added { id, kind: Kind::Node, props: p.clone() });
+            g.apply(&Event::Info { id, props: p, state: Some("running") });
+            port_id += 1;
+            let name = if dir == "in" { "input_MONO" } else { "output_MONO" };
+            g.apply(&Event::Added { id: port_id, kind: Kind::Port, props: props(&[("node.id", &id.to_string()), ("port.direction", dir), ("port.name", name), ("format.dsp", "32 bit float mono audio"), ("audio.channel", "MONO")]) });
+            g.apply(&Event::Mix { id, volumes: vec![1.0], mute: false });
+        }
+        let devs = g.devices();
+        assert_eq!(devs.len(), 1, "{:?}", devs.iter().map(|d| &d.key).collect::<Vec<_>>());
+        let d = &devs[0];
+        assert_eq!(d.model, "APP · RECORD & PLAY");
+        // each stream a frame of its own, numbered, with its own volume
+        let outs: Vec<(&str, usize, bool)> = d.groups.iter().filter(|g| g.dir == Dir::Out).map(|g| (g.label.as_str(), g.stream, g.mix.is_some())).collect();
+        assert_eq!(outs, [("OUTPUT 1", 1, true), ("OUTPUT 2", 2, true), ("OUTPUT 3", 3, true), ("OUTPUT 4", 4, true), ("OUTPUT 5", 5, true)]);
+        let input = d.groups.iter().find(|g| g.dir == Dir::In).expect("an INPUT");
+        assert_eq!((input.label.as_str(), input.stream), ("INPUT", 0));
+        let jd = crate::ui::face_jacks(d);
+        let labels: Vec<&str> = jd.iter().filter(|j| j.0 == Dir::Out).map(|j| j.1.as_str()).collect();
+        assert_eq!(labels, ["1", "2", "3", "4", "5"]);
+        // at most three frames side by side: the six take two units, in columns
+        let ((_, h), at) = crate::ui::face_layout(d);
+        assert_eq!(h, 256.0);
+        assert_eq!(at.iter().map(|a| a.1).collect::<Vec<_>>(), [0.0, 0.0, 0.0, 128.0, 128.0, 128.0]);
+        assert_eq!((at[0].0, at[1].0, at[2].0), (at[3].0, at[4].0, at[5].0));
     }
 
     #[test]

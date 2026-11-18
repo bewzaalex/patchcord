@@ -16,6 +16,20 @@ pub fn ease(k: f32, dt: f32) -> f32 {
     1.0 - (1.0 - k).powf(dt * 60.0)
 }
 
+/// A device's jacks as (direction, label), for tests elsewhere.
+#[cfg(test)]
+pub fn face_jacks(dev: &crate::graph::Device) -> Vec<(crate::graph::Dir, String)> {
+    face::jacks(dev, &[]).into_iter().map(|j| (j.dir, j.label)).collect()
+}
+
+/// A device's face: its size, and where each group's frame starts (x, how far down its unit).
+#[cfg(test)]
+pub fn face_layout(dev: &crate::graph::Device) -> ((f64, f64), Vec<(f64, f64)>) {
+    let jd = face::jacks(dev, &[]);
+    let geo = face::face_geometry(dev, &jd, &vec![0; jd.len()], None, true);
+    ((geo.w, geo.h), geo.groups.iter().map(|g| (g.0, g.3)).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::ease;
