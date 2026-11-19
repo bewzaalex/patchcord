@@ -86,7 +86,9 @@ fn compose(scene: &Scene, view: View, size: (u32, u32), dpi: f64, held: Option<(
             out.draw_pixmap(0, 0, pm.as_ref(), &paint, Transform::from_row(sx, 0.0, 0.0, sy, px, py), None);
         }
     };
-    if let Some((_, l)) = &scene.rack_bg
+    // the rack's frame is kept off the rack too (see `Scene::spare_ids`): shown only in it
+    if scene.rack
+        && let Some((_, l)) = &scene.rack_bg
         && let Some(pm) = &l.pm
     {
         draw(&mut out, pm, (l.x, l.y, l.w, l.h), 1.0);
@@ -243,8 +245,10 @@ pub fn render(path: &str, opts: &[String]) -> Result<(), String> {
         // the devices fitted between the panel and the status bar
         Some((w, h)) => ((w, h), scene.fit(w as f64, h as f64 - top - panel::STATUS_H * s, top, 2.0 * s, crate::ui::scene::EDGE * s)),
         None => (
-            (((x1 - x0 + 2.0 * m) * s).max(1200.0 * s) as u32, ((y1 - y0 + 2.0 * m + 80.0 + panel::H + panel::STATUS_H) * s) as u32),
-            View { s, x: -(x0 - m) * s, y: top - (y0 - m) * s },
+            (((x1 - x0 + 2.0 * m) * s).max(1520.0 * s) as u32, ((y1 - y0 + 2.0 * m + 80.0 + panel::H + panel::STATUS_H) * s) as u32),
+            // in the middle when the picture is wider than they are (wide enough for the whole
+            // top panel)
+            View { s, x: -(x0 - m) * s + ((1520.0 - (x1 - x0 + 2.0 * m)) * s / 2.0).max(0.0), y: top - (y0 - m) * s },
         ),
     };
     let t = Instant::now();
@@ -307,7 +311,7 @@ pub fn render(path: &str, opts: &[String]) -> Result<(), String> {
 /// Frames a second of the recording.
 const FPS: f64 = 25.0;
 /// The window recorded: its size in pixels, and pixels to the panel's units.
-const SIZE: (u32, u32) = (1800, 1350);
+const SIZE: (u32, u32) = (1980, 1485);
 const DPI: f64 = 1.5;
 /// How near a jack the end in the hand is pulled into it, as in the window.
 const MAGNET: f64 = 34.0;
@@ -333,6 +337,9 @@ struct Rec {
     dragged: Option<(String, (f64, f64))>,
     dir: PathBuf,
     frame: usize,
+    /// ENGINE, fed everything PipeWire says; shown while on
+    eng: ui::engine::Engine,
+    version: String,
 }
 
 impl Rec {
@@ -373,13 +380,40 @@ impl Rec {
         if let Some((key, off)) = self.dragged.clone() {
             self.scene.drag_device(&key, hand.0 - off.0, hand.1 - off.1, DPI / self.view.s);
         }
-        levels(&mut self.scene, &self.conn);
+        self.pump();
+        if self.eng.on {
+            let devices: Vec<&crate::graph::Device> = self.scene.devs.iter().map(|d| &d.dev).chain(self.scene.hidden_devs.iter()).collect();
+            self.eng.build(&self.scene.graph, &devices, &Default::default(), &self.scene.settings);
+            let mut out = compose_engine(&mut self.eng, SIZE, DPI, &self.version, &mut self.panel);
+            return self.save(&mut out);
+        }
         self.scene.tick(dt, None, held, self.dragged.is_some());
         self.scene.prepare(self.raster, (self.frame as f64 * 1000.0 / FPS) as u128);
         self.scene.finish();
         self.panel.state.rack = self.scene.rack;
         let magnet = self.held.as_ref().map(|(seq, _, m)| (*seq, m.as_deref()));
         let mut out = compose(&self.scene, self.view, SIZE, DPI, magnet, &mut self.panel, &self.status);
+        self.save(&mut out)
+    }
+
+    /// What PipeWire said since the last look: all of it to ENGINE, the levels to the scene too
+    /// (its graph stays as it was, so the cords in the picture stay).
+    fn pump(&mut self) {
+        let mut lv = Vec::new();
+        for ev in self.conn.events.try_iter() {
+            self.eng.apply(&ev);
+            if matches!(ev, Event::Levels(_)) {
+                lv.push(ev);
+            }
+        }
+        self.scene.apply(lv);
+        for c in self.eng.outbox.drain(..) {
+            self.conn.send(c);
+        }
+    }
+
+    /// The frame with the pointer on it, saved.
+    fn save(&mut self, out: &mut Pixmap) -> Result<(), String> {
         // the pointer: an arrow, with a ring while its button is down
         if self.down {
             let mut ring = resvg::tiny_skia::Paint::default();
@@ -474,8 +508,27 @@ impl Rec {
             Key::Desk => self.scene.set_rack(false),
             _ => {}
         }
+        // ENGINE on its key, off on the desk's and the rack's
+        let on = key == Key::Engine;
+        if matches!(key, Key::Engine | Key::Desk | Key::Rack) && self.eng.on != on {
+            self.eng.set_on(on);
+            self.panel.state.engine = on;
+            self.pump();
+        }
         // the view follows, as Fit does in the window
         self.view_to = self.fit();
+        Ok(())
+    }
+
+    /// In ENGINE: a click on the node named `name`, which opens its details.
+    fn choose(&mut self, name: &str) -> Result<(), String> {
+        let Some(to) = self.eng.node_point(name) else { return Ok(()) };
+        self.glide(to, 1.0)?;
+        self.down = true;
+        self.eng.press(self.ptr, SIZE, DPI);
+        self.wait(0.12)?;
+        self.eng.release();
+        self.down = false;
         Ok(())
     }
 }
@@ -499,15 +552,30 @@ fn playing_into_new(scene: &Scene) -> Option<(String, String)> {
 /// for the README's animation. Nothing is linked in PipeWire.
 pub fn record(dir: &str) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let (mut scene, conn, _) = live_scene()?;
+    // the scene and ENGINE both hear PipeWire from the start
+    let conn = Connection::start(Arc::new(|| {}));
+    let mut scene = Scene::new();
+    let mut eng = ui::engine::Engine::new();
+    eng.private = true;
+    while !scene.graph.synced {
+        let ev = conn.events.recv_timeout(Duration::from_secs(5)).map_err(|_| "PipeWire did not answer in 5 s")?;
+        eng.apply(&ev);
+        scene.apply([ev]);
+    }
+    let rest: Vec<Event> = conn.events.try_iter().collect();
+    for ev in &rest {
+        eng.apply(ev);
+    }
+    scene.apply(rest);
     start_meters(&mut scene, &conn);
+    let version = scene.version.clone().unwrap_or_default();
     scene.set_rack(false);
     settle(&mut scene, &conn, 6.0, None);
     let cursor = r##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M3 2 L3 19.5 L7.6 15.2 L10.7 22 L13.6 20.7 L10.6 14 L16.8 14 Z" fill="#fff" stroke="#111" stroke-width="1.4" stroke-linejoin="round"/></svg>"##;
     let cursor = rasterize(&usvg::Options::default(), cursor, DPI).ok_or("cursor")?;
     let status = status(&scene, SIZE.0 as f64 / DPI, DPI);
     let panel = new_panel(&scene);
-    let mut rec = Rec { scene, conn, view: View { x: 0.0, y: 0.0, s: 1.0 }, view_to: View { x: 0.0, y: 0.0, s: 1.0 }, raster: 0.0, panel, status, cursor, ptr: (SIZE.0 as f64 * 0.55, SIZE.1 as f64 * 0.7), down: false, held: None, dragged: None, dir: Path::new(dir).to_owned(), frame: 0 };
+    let mut rec = Rec { scene, conn, view: View { x: 0.0, y: 0.0, s: 1.0 }, view_to: View { x: 0.0, y: 0.0, s: 1.0 }, raster: 0.0, panel, status, cursor, ptr: (SIZE.0 as f64 * 0.55, SIZE.1 as f64 * 0.7), down: false, held: None, dragged: None, dir: Path::new(dir).to_owned(), frame: 0, eng, version };
     rec.view = rec.fit();
     rec.view_to = rec.view;
     // faces drawn once, sharp enough for the desk and the rack
@@ -530,9 +598,44 @@ pub fn record(dir: &str) -> Result<(), String> {
     rec.click(Key::Rack)?;
     rec.wait(2.6)?;
     rec.click(Key::Desk)?;
-    rec.wait(2.0)?;
+    rec.wait(1.6)?;
+    // ENGINE: the real graph; a device chosen shows its details
+    rec.click(Key::Engine)?;
+    rec.wait(1.8)?;
+    let chosen = rec.scene.devs.iter().find(|d| d.dev.model.starts_with("APP")).or(rec.scene.devs.first()).map(|d| d.dev.name.clone());
+    if let Some(name) = chosen {
+        rec.choose(&name)?;
+        rec.wait(2.8)?;
+    }
+    rec.click(Key::Desk)?;
+    rec.wait(1.2)?;
+    rec.conn.send(Cmd::Profile(false));
     eprintln!("{dir}: {} frames, {FPS} a second", rec.frame);
     Ok(())
+}
+
+/// ENGINE in a window `size` pixels at `dpi`, all of it drawn, with the top panel and the status
+/// bar.
+fn compose_engine(eng: &mut ui::engine::Engine, (w, h): (u32, u32), dpi: f64, version: &str, panel: &mut Panel) -> Pixmap {
+    let mut out = ui::app::background(w, h);
+    eng.finish((w, h), dpi, version);
+    for (l, x, y, lw, lh) in eng.sprites((w, h), dpi, version) {
+        let Some(pm) = &l.pm else { continue };
+        let (sx, sy) = (lw as f32 / pm.width() as f32, lh as f32 / pm.height() as f32);
+        let paint = PixmapPaint { quality: FilterQuality::Bilinear, ..Default::default() };
+        out.draw_pixmap(0, 0, pm.as_ref(), &paint, Transform::from_row(sx, 0.0, 0.0, sy, x.round() as f32, y.round() as f32), None);
+    }
+    panel.layer(w as f64 / dpi, dpi);
+    for l in panel.layers() {
+        if let Some(pm) = &l.pm {
+            out.draw_pixmap((l.x * dpi).round() as i32, (l.y * dpi).round() as i32, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+        }
+    }
+    let st = panel::status(w as f64 / dpi, &eng.summary(), "click: inspect · drag: pan · wheel: zoom · F: fit · E: back to the desk", dpi);
+    if let Some(pm) = &st.pm {
+        out.draw_pixmap(0, (h as f64 - panel::STATUS_H * dpi).round() as i32, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+    }
+    out
 }
 
 /// `patchcord --render out.png engine [select=NODE] [tab=top|issues|objects|metadata|events]
@@ -544,6 +647,7 @@ fn render_engine(path: &str, opts: &[String]) -> Result<(), String> {
     let conn = Connection::start(Arc::new(|| {}));
     let mut scene = Scene::new();
     let mut eng = Engine::new();
+    eng.private = true;
     let start = Instant::now();
     let mut asked = false;
     while start.elapsed() < Duration::from_millis(2600) {
@@ -581,27 +685,10 @@ fn render_engine(path: &str, opts: &[String]) -> Result<(), String> {
     }
     eng.dirty = true;
     eng.build(&scene.graph, &devices, &Default::default(), &scene.settings);
-    let mut out = ui::app::background(w, h);
     let version = scene.version.clone().unwrap_or_default();
-    eng.finish((w, h), s, &version);
-    for (l, x, y, lw, lh) in eng.sprites((w, h), s, &version) {
-        let Some(pm) = &l.pm else { continue };
-        let (sx, sy) = (lw as f32 / pm.width() as f32, lh as f32 / pm.height() as f32);
-        let paint = PixmapPaint { quality: FilterQuality::Bilinear, ..Default::default() };
-        out.draw_pixmap(0, 0, pm.as_ref(), &paint, Transform::from_row(sx, 0.0, 0.0, sy, x.round() as f32, y.round() as f32), None);
-    }
     let mut panel = new_panel(&scene);
     panel.state.engine = true;
-    panel.layer(w as f64 / s, s);
-    for l in panel.layers() {
-        if let Some(pm) = &l.pm {
-            out.draw_pixmap((l.x * s).round() as i32, (l.y * s).round() as i32, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
-        }
-    }
-    let st = panel::status(w as f64 / s, &eng.summary(), "click: inspect · drag: pan · wheel: zoom · F: fit · E: back to the desk", s);
-    if let Some(pm) = &st.pm {
-        out.draw_pixmap(0, (h as f64 - panel::STATUS_H * s).round() as i32, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
-    }
+    let out = compose_engine(&mut eng, (w, h), s, &version, &mut panel);
     conn.send(Cmd::Profile(false));
     if let Some(r) = opt("report") {
         std::fs::write(r, eng.report(&version)).map_err(|e| e.to_string())?;

@@ -406,6 +406,8 @@ pub struct Engine {
     /// the i cell's card, and whether it is open
     info: Option<(u64, Layer)>,
     info_open: bool,
+    /// MAC addresses masked in names, for pictures others see
+    pub private: bool,
     /// the details and the tables being drawn on the painter's threads: what for, where
     insp_want: Option<(u64, [f64; 4])>,
     bottom_want: Option<(u64, [f64; 4])>,
@@ -483,6 +485,7 @@ impl Engine {
             legend_open: false,
             info: None,
             info_open: false,
+            private: false,
             insp_want: None,
             bottom_want: None,
             strip_want: None,
@@ -852,6 +855,18 @@ impl Engine {
         self.params.retain(|id, _| alive.contains(id));
         self.asked.retain(|id| alive.contains(id));
         self.issues = self.find_issues(graph, devices, settings);
+        // pictures for others to see: no MAC addresses (Bluetooth devices are named by them)
+        if self.private {
+            for n in &mut self.model.nodes {
+                (n.name, n.desc) = (mask_macs(&n.name), mask_macs(&n.desc));
+            }
+            for o in &mut self.objects {
+                (o.2, o.3) = (mask_macs(&o.2), mask_macs(&o.3));
+            }
+            for i in &mut self.issues {
+                (i.title, i.hint) = (mask_macs(&i.title), mask_macs(&i.hint));
+            }
+        }
         if let Some(s) = self.sel
             && !self.exists(s)
         {
@@ -2625,6 +2640,14 @@ impl Engine {
     }
 
     /// The ? key: opens or closes the legend.
+    /// Where in the window (pixels) node `name` (its description or name, or how it starts) has
+    /// its header, once laid out: for the README's animation.
+    pub fn node_point(&self, name: &str) -> Option<(f64, f64)> {
+        let n = self.model.nodes.iter().find(|n| n.desc.starts_with(name) || n.name.starts_with(name))?;
+        let (x, y) = self.lay.pos.get(&n.id)?;
+        Some(((x + 60.0) * self.view.s + self.view.x, (y + 12.0) * self.view.s + self.view.y))
+    }
+
     /// Opens the strip's i card (for pictures without a window).
     pub fn open_info(&mut self) {
         self.info_open = true;
