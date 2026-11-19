@@ -111,6 +111,10 @@ pub struct Device {
 /// The highest volume a knob goes to: 153% (+11 dB), as in pavucontrol.
 pub const VOL_MAX: f64 = 1.53;
 
+/// The knob's zero: -120 dB, not silence, so a meter can still show what plays at it (the knob
+/// reads it, or less, as 0).
+pub const VOL_FLOOR: f32 = 1e-6;
+
 /// An app stream's volume (or, recording, its gain): PipeWire keeps one linear gain per channel;
 /// Patchcord shows them as pavucontrol does, as a volume (the cube root: 100% is 0 dB) and a
 /// balance between L and R.
@@ -128,7 +132,7 @@ pub struct Mix {
 impl Mix {
     /// Each channel's volume on the knob's scale (1 is 100%).
     fn levels(&self) -> Vec<f64> {
-        self.volumes.iter().map(|v| (*v as f64).max(0.0).cbrt()).collect()
+        self.volumes.iter().map(|v| if *v <= VOL_FLOOR * 1.01 { 0.0 } else { (*v as f64).cbrt() }).collect()
     }
 
     /// The volume: the loudest channel.
@@ -155,7 +159,8 @@ impl Mix {
     pub fn volumes_for(&self, volume: f64, balance: f64) -> Vec<f32> {
         let v = volume.clamp(0.0, VOL_MAX);
         let b = balance.clamp(-1.0, 1.0);
-        let lin = |x: f64| x.powi(3) as f32;
+        // never quite silent: the meters undo the volume to show what plays, which a 0 would lose
+        let lin = |x: f64| (x.powi(3) as f32).max(VOL_FLOOR);
         match self.volumes.len() {
             2 => vec![lin(if b > 0.0 { v * (1.0 - b) } else { v }), lin(if b < 0.0 { v * (1.0 + b) } else { v })],
             n => vec![lin(v); n.max(1)],
@@ -263,6 +268,8 @@ pub struct Graph {
     profiles: HashMap<u32, (Vec<Profile>, Option<u32>)>,
     /// each app stream's channel volumes and mute, by node
     mix: HashMap<u32, (Vec<f32>, bool)>,
+    /// the software part of each node's volumes, when it tells
+    soft: HashMap<u32, Vec<f32>>,
     /// each card's ports, and the ones in use (with the card's real volumes), by device
     routes: HashMap<u32, (Vec<Route>, Vec<Route>)>,
     pub synced: bool,
@@ -305,13 +312,18 @@ impl Graph {
                 let new = (all.clone(), active.clone());
                 self.routes.insert(*id, new.clone()) != Some(new)
             }
-            Event::Mix { id, volumes, mute } => {
+            Event::Mix { id, volumes, mute, soft } => {
+                match soft {
+                    Some(s) => self.soft.insert(*id, s.clone()),
+                    None => self.soft.remove(id),
+                };
                 let new = (volumes.clone(), *mute);
                 self.mix.insert(*id, new.clone()) != Some(new)
             }
             Event::Removed(id) => {
                 self.born.remove(id);
                 self.mix.remove(id);
+                self.soft.remove(id);
                 self.routes.remove(id);
                 self.profiles.remove(id);
                 self.info.remove(id);
@@ -327,13 +339,28 @@ impl Graph {
                 let after = (p.get("media.class").cloned(), p.get("node.description").cloned(), p.get("stream.monitor").cloned());
                 new || changed_state || before != after
             }
-            Event::Levels(_) | Event::Setting { .. } | Event::Version(_) => false,
+            Event::Levels(_) | Event::Setting { .. } | Event::Version(_) | Event::Meta { .. } | Event::Profile(_) | Event::Param { .. } => false,
             Event::Synced => {
                 self.synced = true;
                 true
             }
             Event::Error(_) => false,
         }
+    }
+
+    /// Every object PipeWire listed, for ENGINE: (id, kind, properties).
+    pub fn objects(&self) -> impl Iterator<Item = (u32, Kind, &Props)> {
+        self.objects.iter().map(|(id, (k, p))| (*id, *k, p))
+    }
+
+    /// A node's state (running, idle, suspended…) or a link's (active, paused…).
+    pub fn state_of(&self, id: u32) -> Option<&'static str> {
+        self.state.get(&id).copied()
+    }
+
+    /// An object's properties.
+    pub fn props_of(&self, id: u32) -> Option<&Props> {
+        self.props(id)
     }
 
     fn of(&self, kind: Kind) -> impl Iterator<Item = (u32, &Props)> {
@@ -411,6 +438,23 @@ impl Graph {
             .filter_map(|(id, p)| Some(Link { id, out_port: num(p, "link.output.port")?, in_port: num(p, "link.input.port")? }))
             .collect();
         v.sort_by_key(|l| l.id);
+        v
+    }
+
+    /// The part of a node's volumes applied in software (a stream's are all software; a card's may
+    /// be partly in its hardware), as PipeWire last told.
+    pub fn soft(&self, node: u32) -> Option<&Vec<f32>> {
+        self.soft.get(&node)
+    }
+
+    /// A node's monitor ports (a copy of what comes in, before its volume), with their channels.
+    pub fn monitor_ports(&self, node: u32) -> Vec<(u32, String)> {
+        let mut v: Vec<(u32, String)> = self
+            .of(Kind::Port)
+            .filter(|(_, p)| p.get("port.monitor").is_some_and(|m| m == "true") && p.get("node.id").and_then(|n| n.parse::<u32>().ok()) == Some(node))
+            .map(|(id, p)| (id, p.get("audio.channel").cloned().unwrap_or_default()))
+            .collect();
+        v.sort();
         v
     }
 
@@ -840,6 +884,33 @@ mod tests {
     }
 
     #[test]
+    fn the_knobs_zero_is_minus_120_db_and_reads_as_zero() {
+        let m = Mix { node: 1, volumes: vec![1.0, 1.0], mute: false, gain: false, route: None };
+        // fully down, or one side by the balance: -120 dB, not silence
+        assert_eq!(m.volumes_for(0.0, 0.0), vec![VOL_FLOOR; 2]);
+        assert_eq!(m.volumes_for(1.0, 1.0), vec![VOL_FLOOR, 1.0]);
+        let down = Mix { volumes: vec![VOL_FLOOR; 2], ..m.clone() };
+        assert_eq!((down.volume(), down.balance()), (0.0, 0.0));
+        assert_eq!(volume_text(down.volume()).0, "0%");
+        // set to a true 0 elsewhere: also 0
+        assert_eq!(Mix { volumes: vec![0.0], ..m }.volume(), 0.0);
+    }
+
+    #[test]
+    fn a_nodes_monitor_ports_and_soft_volumes_are_known() {
+        let mut g = Graph::default();
+        let props = |kv: &[(&str, &str)]| kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Props>();
+        g.apply(&Event::Added { id: 10, kind: Kind::Node, props: props(&[("media.class", "Stream/Input/Audio")]) });
+        g.apply(&Event::Added { id: 12, kind: Kind::Port, props: props(&[("node.id", "10"), ("port.direction", "out"), ("port.monitor", "true"), ("audio.channel", "MONO")]) });
+        g.apply(&Event::Added { id: 11, kind: Kind::Port, props: props(&[("node.id", "10"), ("port.direction", "in"), ("audio.channel", "MONO")]) });
+        assert_eq!(g.monitor_ports(10), vec![(12, "MONO".to_owned())]);
+        g.apply(&Event::Mix { id: 10, volumes: vec![0.5], mute: false, soft: Some(vec![0.25]) });
+        assert_eq!(g.soft(10), Some(&vec![0.25]));
+        g.apply(&Event::Removed(10));
+        assert_eq!(g.soft(10), None);
+    }
+
+    #[test]
     fn a_sound_is_followed_through_a_card_and_out_of_its_monitor() {
         // app (10) → card A (20) playback; A's monitor → card B (30) playback
         let mut g = Graph::default();
@@ -866,7 +937,7 @@ mod tests {
             g.apply(&Event::Info { id, props: p, state: Some("running") });
             let name = if dir == "in" { "input_MONO" } else { "output_MONO" };
             g.apply(&Event::Added { id: port_id, kind: Kind::Port, props: props(&[("node.id", &id.to_string()), ("port.direction", dir), ("port.name", name), ("format.dsp", "32 bit float mono audio"), ("audio.channel", "MONO")]) });
-            g.apply(&Event::Mix { id, volumes: vec![1.0], mute: false });
+            g.apply(&Event::Mix { id, volumes: vec![1.0], mute: false, soft: None });
         }
         // the recording stream's monitor: a copy of what it records
         g.apply(&Event::Added { id: 199, kind: Kind::Port, props: props(&[("node.id", "10"), ("port.direction", "out"), ("port.name", "monitor_MONO"), ("port.monitor", "true"), ("format.dsp", "32 bit float mono audio"), ("audio.channel", "MONO")]) });
@@ -883,7 +954,7 @@ mod tests {
         assert_eq!((input.label.as_str(), input.stream), ("INPUT", 0));
         let jd = crate::ui::face_jacks(d);
         let labels: Vec<&str> = jd.iter().filter(|j| j.0 == Dir::Out).map(|j| j.1.as_str()).collect();
-        assert_eq!(labels, ["1", "2", "3", "4", "5"]);
+        assert_eq!(labels, ["MONO"; 5], "a jack says what it carries; the number is in its frame's name");
         // balanced: the six take two units of three, in columns; what makes sound first (the
         // outputs, from the top-left), what takes it (the INPUT) at the right end
         let ((_, h), at) = crate::ui::face_layout(d);
@@ -907,7 +978,7 @@ mod tests {
             g.apply(&Event::Info { id, props: p, state: Some("running") });
             let name = if dir == "in" { "input_MONO" } else { "output_MONO" };
             g.apply(&Event::Added { id: 100 + id, kind: Kind::Port, props: props(&[("node.id", &id.to_string()), ("port.direction", dir), ("port.name", name), ("format.dsp", "32 bit float mono audio"), ("audio.channel", "MONO")]) });
-            g.apply(&Event::Mix { id, volumes: vec![1.0], mute: false });
+            g.apply(&Event::Mix { id, volumes: vec![1.0], mute: false, soft: None });
         }
         let d = &g.devices()[0];
         let ((_, h), at) = crate::ui::face_layout(d);
@@ -946,8 +1017,8 @@ mod tests {
         port(&mut g, 12, 10, "out", "output_FR", "FR");
         port(&mut g, 21, 20, "in", "input_FL", "FL");
         port(&mut g, 22, 20, "in", "input_FR", "FR");
-        g.apply(&Event::Mix { id: 10, volumes: vec![1.0, 1.0], mute: false });
-        g.apply(&Event::Mix { id: 20, volumes: vec![0.343, 0.343], mute: true });
+        g.apply(&Event::Mix { id: 10, volumes: vec![1.0, 1.0], mute: false, soft: None });
+        g.apply(&Event::Mix { id: 20, volumes: vec![0.343, 0.343], mute: true, soft: None });
         let devs = g.devices();
         assert_eq!(devs.len(), 1, "{:?}", devs.iter().map(|d| &d.key).collect::<Vec<_>>());
         let d = &devs[0];

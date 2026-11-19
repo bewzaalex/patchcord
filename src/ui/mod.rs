@@ -2,9 +2,13 @@
 
 pub mod app;
 pub mod cord;
+pub mod engine;
 mod face;
 mod gpu;
+mod mesh;
 mod paint;
+mod painter;
+mod prof;
 pub mod panel;
 mod print;
 pub mod scene;

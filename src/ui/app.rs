@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use resvg::tiny_skia::{Color, FillRule, GradientStop, Paint, PathBuilder, Pixmap, Point, RadialGradient, Rect, SpreadMode, Transform};
+use resvg::tiny_skia::{Color, GradientStop, Paint, Pixmap, Point, RadialGradient, Rect, SpreadMode, Transform};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -12,6 +12,7 @@ use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::window::{CursorIcon, Window, WindowId};
 
 use super::cord::Held;
+use super::engine::{Action, Engine};
 use super::ease;
 use super::face::{BalKnob, LCD_CH};
 use super::gpu::{Gpu, Sprite};
@@ -21,8 +22,9 @@ use super::scene::{Hover, Layer, Scene, View, next_id};
 use crate::graph::VOL_MAX;
 use crate::pw::{Cmd, Connection};
 
-/// After zooming, faces are drawn sharp again once the zoom has been still this long.
-const RESCALE_DELAY: Duration = Duration::from_millis(250);
+/// After zooming, faces are drawn sharp again (on the painter's threads) once the zoom has been
+/// still this long.
+const RESCALE_DELAY: Duration = Duration::from_millis(120);
 /// How often a long name on an LCD moves on.
 const MARQUEE: Duration = Duration::from_millis(280);
 
@@ -41,6 +43,8 @@ enum Drag {
     Switch { from: (f64, f64), pos0: u8, moved: bool },
     /// a panel key held down
     Key,
+    /// a press in ENGINE's graph (a click or a pan)
+    Engine,
     /// the cue's LEVEL knob, turned by dragging up and down
     CueLevel { from: f64, v0: f64 },
     /// an app's VOLUME knob, turned by dragging up and down: the pointer's last height and the
@@ -90,8 +94,6 @@ struct Cue {
     badge: Option<(u64, Layer)>,
 }
 
-/// How long a device found from the defaults list glows.
-const FOUND: Duration = Duration::from_millis(1600);
 
 /// A second click this soon, this close, is a double-click.
 const DOUBLE: Duration = Duration::from_millis(350);
@@ -128,11 +130,15 @@ pub struct App {
     raster: f64,
     rescale_at: Option<Instant>,
     bg: Option<(u64, Pixmap)>,
+    /// the background being drawn for a new window size, on a thread of its own
+    bg_job: Option<((u32, u32), std::sync::mpsc::Receiver<Pixmap>)>,
     /// one pixel of the alignment guides' colour, stretched into each line
     guide: (u64, Pixmap),
     last: Instant,
     start: Instant,
     animating: bool,
+    /// the log of slow frames (PATCHCORD_FRAMES)
+    prof: super::prof::Prof,
     next_frame: Instant,
     /// the last press, for double-clicks
     last_press: (Instant, (f64, f64)),
@@ -146,15 +152,13 @@ pub struct App {
     tip: Option<Layer>,
     /// a card's profile list, open under its PROFILE key
     profiles: Option<ProfileList>,
-    /// the glow around the device under the pointer: whose, and what it was drawn for
-    glow: Option<(String, u64, Layer)>,
-    /// a device found from the defaults list: it glows a moment, fading
-    found: Option<(String, Instant, Layer)>,
     cue: Cue,
     settings: Settings,
     presets: Vec<Preset>,
     /// the preset last saved or loaded
     current: Option<usize>,
+    /// the ENGINE screen: PipeWire's real graph
+    engine: Engine,
 }
 
 impl App {
@@ -186,6 +190,7 @@ impl App {
             raster: 0.0,
             rescale_at: None,
             bg: None,
+            bg_job: None,
             guide: (next_id(), {
                 let mut pm = Pixmap::new(1, 1).unwrap();
                 pm.fill(Color::from_rgba8(255, 200, 90, 255));
@@ -194,21 +199,21 @@ impl App {
             last: now,
             start: now,
             animating: true,
+            prof: super::prof::Prof::new(),
             next_frame: now,
             last_press: (now, (0.0, 0.0)),
-            panel: Panel::new(panel::State { rack: false, locked: settings.lock, align: settings.align, cables: settings.cables, lcd: [String::new(), String::new()], defaults: [String::new(), String::new()], cue_led: false, cue_level: 70, hidden: 0, flow: true, pressed: None }),
+            panel: Panel::new(panel::State { rack: false, engine: false, locked: settings.lock, align: settings.align, cables: settings.cables, lcd: [String::new(), String::new()], defaults: [String::new(), String::new()], cue_led: false, cue_level: 70, hidden: 0, flow: true, pressed: None }),
             hint: String::new(),
             status: None,
             notice: None,
             hover_since: now,
             tip: None,
             profiles: None,
-            found: None,
             cue: Cue { level: 0.7, ..Default::default() },
-            glow: None,
             settings,
             presets,
             current,
+            engine: Engine::new(),
         }
     }
 
@@ -449,7 +454,7 @@ impl App {
         self.redraw();
     }
 
-    /// Glides the view to a device and makes it glow for a moment.
+    /// Glides the view to a device.
     fn find_device(&mut self, di: usize) {
         let dpi = self.dpi();
         let (top, bottom) = self.field();
@@ -457,12 +462,14 @@ impl App {
         let s = self.view.s.max(0.8 * dpi);
         let (cx, cy) = (d.x + d.geo.w / 2.0, d.y + d.h() / 2.0);
         self.view_to = Some(View { s, x: self.size.0 as f64 / 2.0 - cx * s, y: (top + bottom) / 2.0 - cy * s });
-        self.found = Some((d.dev.key.clone(), Instant::now(), glow_layer(d.geo.w, d.h(), self.scene.rack, self.raster)));
         self.redraw();
     }
 
     /// What a panel key does.
     fn panel_key(&mut self, key: Key) {
+        if self.engine.on && key.desk_only() {
+            return;
+        }
         match key {
             Key::Undo => {
                 if self.scene.undo() {
@@ -503,11 +510,19 @@ impl App {
                 self.say(if self.scene.flow { "Cord directions: on" } else { "Cord directions: off" });
                 self.save_settings();
             }
+            Key::Fit if self.engine.on => self.engine.fit(self.size, self.dpi()),
             Key::Fit => self.fit(true),
+            Key::Engine => {
+                let on = !self.engine.on;
+                self.set_engine(on);
+            }
             Key::Desk | Key::Rack => {
+                self.set_engine(false);
                 self.scene.set_rack(key == Key::Rack);
                 self.save_settings();
-                self.fit(true);
+                // at once: a glide between screens only gets in the way
+                self.view_to = None;
+                self.fit(false);
             }
             Key::Save => self.open_menu(true),
             Key::Load | Key::Lcd => self.open_menu(false),
@@ -516,6 +531,43 @@ impl App {
             Key::CueLevel => {}
         }
         self.redraw();
+    }
+
+    /// Shows ENGINE (the real graph) or goes back to the desk or rack.
+    fn set_engine(&mut self, on: bool) {
+        if self.engine.on == on {
+            return;
+        }
+        self.engine.set_on(on);
+        self.profiles = None;
+        self.panel.menu = None;
+        self.set_hover(Hover::None);
+        self.tip = None;
+        self.hint.clear();
+        self.send_engine();
+        self.redraw();
+    }
+
+    /// ENGINE's report for a bug ticket, into the home folder.
+    fn save_report(&mut self) {
+        let text = self.engine.report(self.scene.version.as_deref().unwrap_or("?"));
+        let name = format!("patchcord-report-{}.txt", super::engine::local_stamp().1);
+        match crate::dirs::home().map(|d| d.join(name)) {
+            Some(path) => match std::fs::write(&path, text) {
+                Ok(()) => {
+                    let shown = path.to_string_lossy().replace(&std::env::var("HOME").unwrap_or_default(), "~");
+                    self.say(&format!("Report saved: {shown}"));
+                }
+                Err(e) => self.say(&format!("Cannot save the report: {e}")),
+            },
+            None => self.say("Cannot save the report: no home folder"),
+        }
+    }
+
+    fn send_engine(&mut self) {
+        for c in self.engine.outbox.drain(..) {
+            self.conn.send(c);
+        }
     }
 
     /// The panel LCD: the preset, and PipeWire's clock (rate, quantum and the latency they make).
@@ -558,6 +610,7 @@ impl App {
     }
 
     fn frame(&mut self) {
+        self.prof.begin();
         let now = Instant::now();
         let dt = (now - self.last).as_secs_f32().min(0.05);
         self.last = now;
@@ -608,15 +661,20 @@ impl App {
                 }
             }
         }
+        self.prof.mark("view");
         let moving = self.scene.tick(dt, hand, held, matches!(self.drag, Some(Drag::Device { .. })));
+        self.prof.mark("tick");
 
-        // faces are drawn at one scale; after zooming, sharp ones replace the stretched ones
+        // faces are drawn at one scale; after zooming, sharp ones replace the stretched ones. Not
+        // below half the screen's: zoomed out far they are only made smaller, so zooming back in
+        // stretches a picture of some size meanwhile, not a tiny one
+        let target = self.view.s.max(0.5 * self.dpi());
         if self.raster == 0.0 {
-            self.raster = self.view.s;
-        } else if (self.view.s - self.raster).abs() > 1e-3 {
+            self.raster = target;
+        } else if (target - self.raster).abs() > 1e-3 {
             match self.rescale_at {
                 Some(t) if now >= t && self.view_to.is_none() => {
-                    self.raster = self.view.s;
+                    self.raster = target;
                     self.rescale_at = None;
                 }
                 Some(_) => {}
@@ -627,8 +685,26 @@ impl App {
             self.rescale_at = None;
         }
         let faces_waiting = self.scene.prepare(self.raster, (now - self.start).as_millis());
-        if self.bg.as_ref().is_none_or(|(_, pm)| (pm.width(), pm.height()) != self.size) {
+        self.prof.mark("faces");
+        // the background for a new window size: drawn on a thread (the old one stretches meanwhile),
+        // the first one here
+        if let Some((_, rx)) = &self.bg_job
+            && let Ok(pm) = rx.try_recv()
+        {
+            self.bg = Some((next_id(), pm));
+            self.bg_job = None;
+        }
+        if self.bg.is_none() {
             self.bg = Some((next_id(), background(self.size.0, self.size.1)));
+            self.prof.mark("background");
+        } else if self.bg.as_ref().is_some_and(|(_, pm)| (pm.width(), pm.height()) != self.size) && self.bg_job.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let (w, h) = self.size;
+            let _ = std::thread::Builder::new().name("patchcord-background".into()).spawn(move || {
+                let _ = tx.send(background(w, h));
+            });
+            self.bg_job = Some((self.size, rx));
+            self.prof.mark("background");
         }
         // the panel, the status bar and a notice, over the field
         let dpi = self.dpi();
@@ -636,6 +712,7 @@ impl App {
         self.panel.state.cables = self.scene.cables;
         self.panel.state.align = self.scene.align;
         self.panel.state.rack = self.scene.rack;
+        self.panel.state.engine = self.engine.on;
         self.panel.state.lcd = self.lcd();
         self.panel.state.defaults = [true, false].map(|output| self.scene.default_shown(output));
         // the CUE LED: lit in CUE mode, blinking while only probing with Alt
@@ -656,7 +733,9 @@ impl App {
                 self.panel.menu = Some(m);
             }
         }
+        self.prof.mark("panel.state");
         self.cue_sync();
+        self.prof.mark("cue");
         // the open defaults list follows what is the default
         if let Some(Menu::Defaults { .. }) = &self.panel.menu {
             let m = self.defaults_menu();
@@ -664,15 +743,28 @@ impl App {
                 self.panel.menu = Some(m);
             }
         }
+        self.prof.mark("menus");
         self.panel.layer(width, dpi);
+        self.prof.mark("panel");
         self.panel.menu_layer(width, dpi);
-        let left = format!(
-            "PipeWire {} · {} devices · {} links · {} cords",
-            self.scene.version.as_deref().unwrap_or("?"),
-            self.scene.devs.len(),
-            self.scene.graph.links().len(),
-            self.scene.cords.iter().filter(|c| c.live()).count()
-        );
+        self.prof.mark("menu");
+        if self.engine.on {
+            let devices: Vec<&crate::graph::Device> = self.scene.devs.iter().map(|d| &d.dev).chain(self.scene.hidden_devs.iter()).collect();
+            let hidden: std::collections::HashSet<String> = self.scene.hidden_devs.iter().map(|d| d.key.clone()).collect();
+            self.engine.build(&self.scene.graph, &devices, &hidden, &self.scene.settings);
+            self.prof.mark("engine.build");
+        }
+        let left = if self.engine.on {
+            self.engine.summary()
+        } else {
+            format!(
+                "PipeWire {} · {} devices · {} links · {} cords",
+                self.scene.version.as_deref().unwrap_or("?"),
+                self.scene.devs.len(),
+                self.scene.graph.links().len(),
+                self.scene.cords.iter().filter(|c| c.live()).count()
+            )
+        };
         let line = format!("{left}\n{}\n{width}", self.hint);
         if self.status.as_ref().is_none_or(|(l, _)| *l != line) {
             self.status = Some((line, panel::status(width, &left, &self.hint, dpi)));
@@ -687,11 +779,16 @@ impl App {
             }
         }
 
+        self.prof.mark("status");
         self.place_profiles(dpi);
-        self.update_glow();
+        self.prof.mark("profiles");
         let pulse = 0.5 + 0.5 * ((now - self.start).as_secs_f32() * 6.0).sin();
         let cue = self.cue_marks();
-        let cords = self.scene.cord_layer(self.view, self.size, &rings, &cue, pulse);
+        // the rings and cue marks on the CPU; the cords themselves are triangles for the GPU
+        let cords = if self.engine.on { None } else { self.scene.cord_layer(self.view, self.size, &rings, &cue, pulse, false) };
+        self.prof.mark("rings");
+        let mesh = (!self.engine.on).then(|| super::mesh::cords(&self.scene.cords, |c| self.scene.cord_alpha(c), self.view));
+        self.prof.mark("cords");
         let cord_id = next_id();
 
         // the badge beside the pointer while listening, over the field
@@ -703,32 +800,30 @@ impl App {
                 self.cue.badge = Some((raster, panel::cue_badge(self.dpi())));
             }
         }
+        let version = self.scene.version.clone().unwrap_or_else(|| "?".into());
         let Some(sf) = &mut self.win else { return };
         let v = self.view;
         let mut sprites: Vec<Sprite> = Vec::new();
         if let Some((id, pm)) = &self.bg {
-            sprites.push(Sprite { id: *id, pm: Some(pm), x: 0.0, y: 0.0, w: pm.width() as f64, h: pm.height() as f64, alpha: 1.0 });
+            // stretched over the window while one for its new size is drawn
+            sprites.push(Sprite { id: *id, pm: Some(pm), x: 0.0, y: 0.0, w: self.size.0 as f64, h: self.size.1 as f64, alpha: 1.0 });
         }
-        if let Some((_, l)) = &self.scene.rack_bg {
+        let engine_on = self.engine.on;
+        if engine_on {
+            self.prof.mark("badge");
+            for (l, x, y, w, h) in self.engine.sprites(self.size, dpi, &version) {
+                sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: x.round(), y: y.round(), w, h, alpha: 1.0 });
+            }
+            self.prof.mark("engine.pictures");
+        }
+        if !engine_on && let Some((_, l)) = &self.scene.rack_bg {
             sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: l.x * v.s + v.x, y: l.y * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha: 1.0 });
         }
         let targets = match &self.drag {
             Some(Drag::Plug { targets, .. }) => Some(targets.as_slice()),
             _ => None,
         };
-        for (di, d) in self.scene.devs.iter().enumerate() {
-            // the hovered device glows around its edges, under its face
-            if let Some((k, _, l)) = &self.glow
-                && *k == d.dev.key
-            {
-                sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (d.x + l.x) * v.s + v.x, y: (d.y + l.y) * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha: 1.0 });
-            }
-            if let Some((k, at, l)) = &self.found
-                && *k == d.dev.key
-            {
-                let alpha = (1.0 - at.elapsed().as_secs_f32() / FOUND.as_secs_f32()).clamp(0.0, 1.0);
-                sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (d.x + l.x) * v.s + v.x, y: (d.y + l.y) * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha });
-            }
+        for (di, d) in self.scene.devs.iter().enumerate().filter(|_| !engine_on) {
             for l in d.layers() {
                 sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (d.x + l.x) * v.s + v.x, y: (d.y + l.y) * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha: 1.0 });
             }
@@ -750,6 +845,8 @@ impl App {
         if let Some((pm, x, y)) = &cords {
             sprites.push(Sprite { id: cord_id, pm: Some(pm), x: *x as f64, y: *y as f64, w: pm.width() as f64, h: pm.height() as f64, alpha: 1.0 });
         }
+        // the cords, over the faces and the rings, under the notices and the panel
+        let cords_at = sprites.len();
         let (fw, fh) = (self.size.0 as f64, self.size.1 as f64);
         if let Some((_, l)) = &self.notice {
             sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: ((fw - l.w * dpi) / 2.0).round(), y: ((panel::H + 14.0) * dpi).round(), w: l.w * dpi, h: l.h * dpi, alpha: 1.0 });
@@ -761,6 +858,7 @@ impl App {
             sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (l.x * dpi).round(), y: (l.y * dpi).round(), w: l.w * dpi, h: l.h * dpi, alpha: 1.0 });
         }
         if let Some(pl) = &self.profiles
+            && !engine_on
             && let Some(l) = &pl.layer
         {
             sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: pl.at.0, y: pl.at.1, w: l.w * dpi, h: l.h * dpi, alpha: 1.0 });
@@ -777,7 +875,20 @@ impl App {
             let y = if below + h > fh - panel::STATUS_H * dpi { self.cursor.1 - h - 10.0 * dpi } else { below };
             sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: x.round(), y: y.round(), w, h, alpha: 1.0 });
         }
-        sf.gpu.draw(&sprites);
+        self.prof.mark("sprites");
+        // while ENGINE shows, the GPU keeps the desk's pictures: back on the desk they are there
+        let keep: std::collections::HashSet<u64> = if engine_on { self.scene.layer_ids().collect() } else { Default::default() };
+        let [wait, upload, draw] = sf.gpu.draw(&sprites, mesh.as_ref().map(|m| (cords_at, m)), &keep);
+        self.prof.mark("gpu");
+        self.prof.add("gpu.wait", wait);
+        self.prof.add("gpu.upload", upload);
+        self.prof.add("gpu.draw", draw);
+        drop(sprites);
+        if engine_on {
+            for (what, d) in &self.engine.spent {
+                self.prof.add(what, *d);
+            }
+        }
         self.panel.uploaded();
         if let Some((_, l)) = &mut self.scene.rack_bg
             && sf.gpu.has(l.id)
@@ -791,37 +902,25 @@ impl App {
         }
         // the GPU has the pixels now (the jack pictures are kept: they are small, and the GPU lets
         // a texture go in a frame that doesn't draw it)
+        // (big pictures let go: their memory back to the system, see `mem`)
+        let mut freed = self.engine.uploaded(|id| sf.gpu.has(id));
         for d in &mut self.scene.devs {
             for l in d.layers_mut() {
                 if sf.gpu.has(l.id) {
-                    l.pm = None;
+                    freed += l.pm.take().map_or(0, |pm| pm.data().len());
                 }
             }
         }
-        if self.found.as_ref().is_some_and(|(_, at, _)| at.elapsed() > FOUND) {
-            self.found = None;
+        if freed > 4 << 20 {
+            crate::mem::give_back();
+            self.prof.mark("give_back");
         }
-        self.animating = !self.cue_heard().is_empty() || self.found.is_some() || moving || self.view_to.is_some() || self.drag.is_some() || self.rescale_at.is_some() || self.notice.is_some() || faces_waiting || self.scene.noting() || (self.scene.hover != Hover::None && self.tip.is_none() && now - self.hover_since < 2 * TIP_DELAY);
-    }
-
-    /// The glow around the device under the pointer (not while dragging, nor over its switches).
-    fn update_glow(&mut self) {
-        let w = self.world(self.cursor);
-        let key = match &self.scene.hover {
-            Hover::Device(k) if self.drag.is_none() && self.scene.switch_at(w.0, w.1).is_none() && self.scene.hide_key_at(w.0, w.1).is_none() && self.scene.profile_key_at(w.0, w.1).is_none() && self.scene.port_key_at(w.0, w.1).is_none() && !self.scene.mix_control_at(w.0, w.1) => k.clone(),
-            _ => {
-                self.glow = None;
-                return;
-            }
-        };
-        let Some(d) = self.scene.devs.iter().find(|d| d.dev.key == key) else { return };
-        let rack = self.scene.rack;
-        let mut h = std::hash::DefaultHasher::new();
-        std::hash::Hash::hash(&(&key, d.geo.w.to_bits(), d.h().to_bits(), rack, self.raster.to_bits()), &mut h);
-        let sig = std::hash::Hasher::finish(&h);
-        if self.glow.as_ref().is_none_or(|(k, s, _)| *k != key || *s != sig) {
-            self.glow = Some((key, sig, glow_layer(d.geo.w, d.h(), rack, self.raster)));
-        }
+        self.send_engine();
+        self.animating = (self.engine.on && self.engine.settling()) || !self.cue_heard().is_empty() || moving || self.view_to.is_some() || self.drag.is_some() || self.rescale_at.is_some() || self.notice.is_some() || faces_waiting || self.panel.busy() || self.bg_job.is_some() || self.scene.noting() || (self.scene.hover != Hover::None && self.tip.is_none() && now - self.hover_since < 2 * TIP_DELAY);
+        self.prof.mark("rest");
+        let (engine, rack, s, cords, devs) = (self.engine.on, self.scene.rack, self.view.s, self.scene.cords.len(), self.scene.devs.len());
+        let (drag, zoom) = (self.drag.is_some(), self.rescale_at.is_some() || faces_waiting);
+        self.prof.end(self.animating, || format!("{} scale {s:.2} · {devs} devices · {cords} cords{}{}", if engine { "ENGINE" } else if rack { "RACK" } else { "DESK" }, if drag { " · dragging" } else { "" }, if zoom { " · faces at a new scale" } else { "" }));
     }
 
     /// What the pointer is over in the open profile list.
@@ -872,6 +971,24 @@ impl App {
         self.set_hover(Hover::None);
         let w = self.world(self.cursor);
         let (top, bottom) = self.field();
+        // ENGINE takes the clicks between the panel and the status bar
+        if self.engine.on && self.cursor.1 >= top && self.cursor.1 <= bottom && self.panel.menu.is_none() {
+            if button == MouseButton::Left {
+                match self.engine.press(self.cursor, self.size, self.dpi()) {
+                    Some(Action::Report) => self.save_report(),
+                    Some(Action::Desk(key)) => {
+                        self.set_engine(false);
+                        if let Some(di) = self.scene.devs.iter().position(|d| d.dev.key == key) {
+                            self.find_device(di);
+                        }
+                    }
+                    None => self.drag = Some(Drag::Engine),
+                }
+                self.send_engine();
+            }
+            self.redraw();
+            return;
+        }
         // a card's profile list takes the click; it stays open after a choice. A click anywhere
         // else closes it (and does what it does); one on its own PROFILE key only closes it.
         if let Some(pl) = &self.profiles {
@@ -1085,6 +1202,10 @@ impl App {
 
     fn release(&mut self) {
         match self.drag.take() {
+            Some(Drag::Engine) => {
+                self.engine.release();
+                self.send_engine();
+            }
             Some(Drag::Cord { seq }) => {
                 for c in self.scene.cords.iter_mut().filter(|c| c.seq == seq) {
                     c.grab = None;
@@ -1149,6 +1270,11 @@ impl App {
                 self.redraw();
             }
             Some(Drag::Cord { .. }) => self.redraw(),
+            Some(Drag::Engine) => {
+                if self.engine.drag(self.cursor) {
+                    self.redraw();
+                }
+            }
             Some(Drag::Key) => {}
             Some(Drag::CueLevel { from, v0 }) => {
                 let v = (v0 + (from - self.cursor.1) / (120.0 * self.dpi())).clamp(0.0, 1.0);
@@ -1211,6 +1337,20 @@ impl App {
             None => {
                 let (top, bottom) = self.field();
                 let dpi = self.dpi();
+                // ENGINE: no hovering over the desk behind it
+                if self.engine.on && self.cursor.1 >= top {
+                    let hint = if let Some(h) = self.engine.hover(self.cursor, dpi) {
+                        h
+                    } else if self.cursor.1 <= bottom { "click: inspect · drag: pan · wheel: zoom (scroll over the lists) · F: fit · ?: legend · E: back to the desk".to_owned() } else { String::new() };
+                    if hint != self.hint {
+                        self.hint = hint;
+                        self.redraw();
+                    }
+                    if let Some(sf) = &self.win {
+                        sf.window.set_cursor(CursorIcon::Default);
+                    }
+                    return;
+                }
                 // listening: the jack under the pointer is heard while it is there
                 if (self.cue.probing || self.cue.mode) && self.cursor.1 >= top && self.cursor.1 <= bottom && self.profile_hit().is_none() && self.panel.menu.is_none() {
                     let k = self.scene.jack_key_at(w.0, w.1);
@@ -1302,6 +1442,26 @@ impl App {
     }
 
     fn key(&mut self, code: KeyCode, event_loop: &ActiveEventLoop) {
+        // ENGINE has keys of its own; the desk's don't reach the desk behind it
+        if self.engine.on && !self.mods.control_key() && !self.mods.alt_key() {
+            match code {
+                KeyCode::KeyE => self.panel_key(Key::Engine),
+                KeyCode::KeyF | KeyCode::Digit0 => self.panel_key(Key::Fit),
+                KeyCode::KeyR => self.panel_key(Key::Rack),
+                // ? (and / without Shift): the legend
+                KeyCode::Slash => {
+                    self.engine.toggle_legend();
+                    self.redraw();
+                }
+                KeyCode::Escape => {
+                    self.panel.menu = None;
+                    self.engine.deselect();
+                    self.redraw();
+                }
+                _ => {}
+            }
+            return;
+        }
         match code {
             KeyCode::KeyQ if self.mods.control_key() => {
                 self.save_settings();
@@ -1337,6 +1497,7 @@ impl App {
                 self.redraw();
             }
             KeyCode::KeyC => self.panel_key(Key::Cables),
+            KeyCode::KeyE => self.panel_key(Key::Engine),
             KeyCode::KeyR => self.panel_key(if self.scene.rack { Key::Desk } else { Key::Rack }),
             KeyCode::Escape => {
                 self.panel.menu = None;
@@ -1351,35 +1512,21 @@ impl App {
     }
 }
 
-impl ApplicationHandler<()> for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.win.is_some() {
-            return;
-        }
-        let (w, h) = self.settings.window.unwrap_or((1400, 880));
-        let attrs = with_app_id(Window::default_attributes().with_title("Patchcord").with_inner_size(LogicalSize::new(w as f64, h as f64)).with_min_inner_size(LogicalSize::new(480.0, 320.0)));
-        let window = Arc::new(event_loop.create_window(attrs).expect("window"));
-        let gpu = match Gpu::new(window.clone(), event_loop.owned_display_handle()) {
-            Ok(g) => g,
-            Err(e) => {
-                eprintln!("patchcord: {e}");
-                event_loop.exit();
-                return;
-            }
-        };
-        if std::env::var_os("PATCHCORD_DEBUG").is_some() {
-            eprintln!("patchcord: {}", gpu.info);
-        }
-        let s = window.inner_size();
-        self.size = (s.width.max(1), s.height.max(1));
-        self.win = Some(Surface { window, gpu });
-        self.redraw();
-    }
-
-    /// PipeWire has news.
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _: ()) {
+impl App {
+    /// PipeWire has news: what it changed, into the scene and ENGINE.
+    fn news(&mut self) {
         let events: Vec<_> = self.conn.events.try_iter().collect();
+        let mut engine = false;
+        for e in &events {
+            engine |= self.engine.apply(e);
+        }
         let changed = self.scene.apply(events);
+        if changed {
+            self.engine.dirty = true;
+        }
+        if engine || (changed && self.engine.on) {
+            self.redraw();
+        }
         for cmd in self.scene.outbox.drain(..) {
             self.conn.send(cmd);
         }
@@ -1392,7 +1539,8 @@ impl ApplicationHandler<()> for App {
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    /// A window event (all but drawing, which `frame` times itself).
+    fn window_event_now(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
                 self.save_settings();
@@ -1445,6 +1593,9 @@ impl ApplicationHandler<()> for App {
                         }
                         _ => {}
                     }
+                } else if self.cursor.1 <= bottom && self.engine.on {
+                    self.engine.wheel(self.cursor, f, self.size, dpi);
+                    self.redraw();
                 } else if self.cursor.1 <= bottom {
                     // over an app's VOLUME knob, or its BAL knob when out, the wheel turns it
                     let w = self.world(self.cursor);
@@ -1495,7 +1646,48 @@ impl ApplicationHandler<()> for App {
             _ => {}
         }
     }
+}
 
+impl ApplicationHandler<()> for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.win.is_some() {
+            return;
+        }
+        let (w, h) = self.settings.window.unwrap_or((1400, 880));
+        let attrs = with_app_id(Window::default_attributes().with_title("Patchcord").with_inner_size(LogicalSize::new(w as f64, h as f64)).with_min_inner_size(LogicalSize::new(480.0, 320.0)));
+        let window = Arc::new(event_loop.create_window(attrs).expect("window"));
+        let gpu = match Gpu::new(window.clone(), event_loop.owned_display_handle()) {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("patchcord: {e}");
+                event_loop.exit();
+                return;
+            }
+        };
+        if std::env::var_os("PATCHCORD_DEBUG").is_some() {
+            eprintln!("patchcord: {}", gpu.info);
+        }
+        let s = window.inner_size();
+        self.size = (s.width.max(1), s.height.max(1));
+        self.win = Some(Surface { window, gpu });
+        self.redraw();
+    }
+
+    /// PipeWire has news.
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _: ()) {
+        let t = Instant::now();
+        self.news();
+        self.prof.between("pipewire", t.elapsed());
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if matches!(event, WindowEvent::RedrawRequested) {
+            return self.window_event_now(event_loop, id, event);
+        }
+        let t = Instant::now();
+        self.window_event_now(event_loop, id, event);
+        self.prof.between("input", t.elapsed());
+    }
     /// Paces the frames: about 60 a second while something moves, else only to scroll long
     /// names on the LCDs, else nothing at all.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
@@ -1542,23 +1734,6 @@ fn with_app_id(attrs: winit::window::WindowAttributes) -> winit::window::WindowA
     WindowAttributesExtX11::with_name(attrs, APP_ID, APP_ID)
 }
 
-/// The glow around a hovered device `w` wide and `h` high: a thin amber ring along its edge and
-/// a soft halo, as in the mockup.
-fn glow_layer(w: f64, h: f64, rack: bool, scale: f64) -> Layer {
-    let m = 26.0;
-    let (gw, gh) = (w + 2.0 * m, h + 2.0 * m);
-    let r = if rack { 4.0 } else { 13.0 };
-    let svg = format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{gw}" height="{gh}" viewBox="0 0 {gw} {gh}"><defs><filter id="b" x="-20%" y="-50%" width="140%" height="200%"><feGaussianBlur stdDeviation="8"/></filter></defs><rect x="{m}" y="{m}" width="{w}" height="{h}" rx="{r}" fill="none" stroke="#ffaa3c" stroke-opacity=".3" stroke-width="12" filter="url(#b)"/><rect x="{}" y="{}" width="{}" height="{}" rx="{}" fill="none" stroke="#ffbe5a" stroke-opacity=".6" stroke-width="2"/></svg>"##,
-        m - 1.0,
-        m - 1.0,
-        w + 2.0,
-        h + 2.0,
-        r + 1.0
-    );
-    Layer { id: next_id(), pm: super::scene::rasterize(&super::text::svg_options(), &svg, scale), x: -m, y: -m, w: gw, h: gh }
-}
-
 pub fn background(w: u32, h: u32) -> Pixmap {
     let mut pm = Pixmap::new(w.max(1), h.max(1)).expect("background");
     pm.fill(Color::from_rgba8(0x15, 0x16, 0x18, 255));
@@ -1575,20 +1750,21 @@ pub fn background(w: u32, h: u32) -> Pixmap {
     if let (Some(shader), Some(rect)) = (g, Rect::from_xywh(0.0, 0.0, fw, fh)) {
         pm.fill_rect(rect, &Paint { shader, ..Default::default() }, Transform::identity(), None);
     }
-    let mut pb = PathBuilder::new();
-    let mut y = 11.0;
-    while y < fh {
-        let mut x = 11.0;
-        while x < fw {
-            pb.push_circle(x, y, 1.0);
-            x += 22.0;
+    // the dot grid: a dot of radius 1 at (11 + 22i, 11 + 22j) covers the four pixels round that
+    // corner, most of each; white at 7/255 over them, put in straight (a path of thousands of
+    // circles took 100 ms and more on a big window)
+    let a = 7.0 / 255.0 * 0.78;
+    let data = pm.data_mut();
+    for y in (11..h).step_by(22) {
+        for x in (11..w).step_by(22) {
+            for (px, py) in [(x - 1, y - 1), (x, y - 1), (x - 1, y), (x, y)] {
+                let i = ((py * w + px) * 4) as usize;
+                for c in &mut data[i..i + 3] {
+                    *c = (*c as f32 + (255.0 - *c as f32) * a).round() as u8;
+                }
+            }
         }
-        y += 22.0;
-    }
-    if let Some(p) = pb.finish() {
-        let mut paint = Paint { anti_alias: true, ..Default::default() };
-        paint.set_color_rgba8(255, 255, 255, 7);
-        pm.fill_path(&p, &paint, FillRule::Winding, Transform::identity(), None);
     }
     pm
 }
+

@@ -122,7 +122,7 @@ fn compose(scene: &Scene, view: View, size: (u32, u32), dpi: f64, held: Option<(
         (Some((_, magnet)), Some(t)) => t.iter().filter_map(|k| scene.spare(k).map(|p| (p, Some(k.as_str()) == magnet))).collect(),
         _ => Vec::new(),
     };
-    if let Some((pm, x, y)) = scene.cord_layer(view, (w, h), &rings, &[], 1.0) {
+    if let Some((pm, x, y)) = scene.cord_layer(view, (w, h), &rings, &[], 1.0, true) {
         out.draw_pixmap(x, y, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
     }
     panel.layer(w as f64 / dpi, dpi);
@@ -139,7 +139,7 @@ fn compose(scene: &Scene, view: View, size: (u32, u32), dpi: f64, held: Option<(
 }
 
 fn new_panel(scene: &Scene) -> Panel {
-    Panel::new(panel::State { rack: scene.rack, locked: false, align: scene.align, cables: 0, defaults: [scene.default_shown(true), scene.default_shown(false)], cue_led: false, cue_level: 70, lcd: ["NO PRESET".into(), "48 kHz · 1024 · 21.3 ms".into()], hidden: scene.hidden_devs.len(), flow: scene.flow, pressed: None })
+    Panel::new(panel::State { rack: scene.rack, engine: false, locked: false, align: scene.align, cables: 0, defaults: [scene.default_shown(true), scene.default_shown(false)], cue_led: false, cue_level: 70, lcd: ["NO PRESET".into(), "48 kHz · 1024 · 21.3 ms".into()], hidden: scene.hidden_devs.len(), flow: scene.flow, pressed: None })
 }
 
 fn status(scene: &Scene, width: f64, dpi: f64) -> Layer {
@@ -156,6 +156,12 @@ fn status(scene: &Scene, width: f64, dpi: f64) -> Layer {
 /// Bluetooth card's). "only" shows just the devices whose names start with those, arranged by
 /// signal flow; "size" makes the picture W×H pixels, with the devices fitted into it.
 pub fn render(path: &str, opts: &[String]) -> Result<(), String> {
+    if opts.iter().any(|o| o == "engine") && opts.iter().any(|o| o == "specimen") {
+        return render_specimen(path);
+    }
+    if opts.iter().any(|o| o == "engine") {
+        return render_engine(path, opts);
+    }
     let menu = opts.iter().map(String::as_str).find(|o| matches!(*o, "save" | "presets" | "defaults" | "hidden"));
     let opt = |name: &str| opts.iter().find_map(|o| o.strip_prefix(name)?.strip_prefix('='));
     let (mut scene, conn, synced) = live_scene()?;
@@ -243,6 +249,7 @@ pub fn render(path: &str, opts: &[String]) -> Result<(), String> {
     };
     let t = Instant::now();
     scene.prepare(view.s, 0);
+    scene.finish();
     let mut panel = new_panel(&scene);
     let presets = config::load_presets();
     panel.menu = match menu {
@@ -369,6 +376,7 @@ impl Rec {
         levels(&mut self.scene, &self.conn);
         self.scene.tick(dt, None, held, self.dragged.is_some());
         self.scene.prepare(self.raster, (self.frame as f64 * 1000.0 / FPS) as u128);
+        self.scene.finish();
         self.panel.state.rack = self.scene.rack;
         let magnet = self.held.as_ref().map(|(seq, _, m)| (*seq, m.as_deref()));
         let mut out = compose(&self.scene, self.view, SIZE, DPI, magnet, &mut self.panel, &self.status);
@@ -525,4 +533,193 @@ pub fn record(dir: &str) -> Result<(), String> {
     rec.wait(2.0)?;
     eprintln!("{dir}: {} frames, {FPS} a second", rec.frame);
     Ok(())
+}
+
+/// `patchcord --render out.png engine [select=NODE] [tab=top|issues|objects|metadata|events]
+/// [itab=info|props|params|timing] [shut=bottom] [legend] [size=WxH]`: the ENGINE screen of the live graph, after the
+/// profiler has run for two seconds (it only reads: nothing in PipeWire changes).
+fn render_engine(path: &str, opts: &[String]) -> Result<(), String> {
+    use crate::ui::engine::Engine;
+    let opt = |name: &str| opts.iter().find_map(|o| o.strip_prefix(name)?.strip_prefix('='));
+    let conn = Connection::start(Arc::new(|| {}));
+    let mut scene = Scene::new();
+    let mut eng = Engine::new();
+    let start = Instant::now();
+    let mut asked = false;
+    while start.elapsed() < Duration::from_millis(2600) {
+        let Ok(ev) = conn.events.recv_timeout(Duration::from_millis(100)) else { continue };
+        eng.apply(&ev);
+        scene.apply([ev]);
+        if scene.graph.synced && !asked {
+            asked = true;
+            eng.set_on(true);
+            for c in eng.outbox.drain(..) {
+                conn.send(c);
+            }
+        }
+    }
+    let s: f64 = std::env::var("PATCHCORD_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
+    let (w, h) = opt("size").and_then(|v| v.split_once('x')).and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?))).unwrap_or((1700, 1000));
+    let devices: Vec<&crate::graph::Device> = scene.devs.iter().map(|d| &d.dev).chain(scene.hidden_devs.iter()).collect();
+    eng.build(&scene.graph, &devices, &Default::default(), &scene.settings);
+    eng.demo(opt("select"), opt("tab"), opt("itab"), opt("shut"));
+    if opts.iter().any(|o| o == "legend") {
+        eng.toggle_legend();
+    }
+    // the params, if asked for, come back from PipeWire
+    for c in eng.outbox.drain(..) {
+        conn.send(c);
+    }
+    let t = Instant::now();
+    while t.elapsed() < Duration::from_millis(400) {
+        if let Ok(ev) = conn.events.recv_timeout(Duration::from_millis(50)) {
+            eng.apply(&ev);
+        }
+    }
+    eng.dirty = true;
+    eng.build(&scene.graph, &devices, &Default::default(), &scene.settings);
+    let mut out = ui::app::background(w, h);
+    let version = scene.version.clone().unwrap_or_default();
+    eng.finish((w, h), s, &version);
+    for (l, x, y, lw, lh) in eng.sprites((w, h), s, &version) {
+        let Some(pm) = &l.pm else { continue };
+        let (sx, sy) = (lw as f32 / pm.width() as f32, lh as f32 / pm.height() as f32);
+        let paint = PixmapPaint { quality: FilterQuality::Bilinear, ..Default::default() };
+        out.draw_pixmap(0, 0, pm.as_ref(), &paint, Transform::from_row(sx, 0.0, 0.0, sy, x.round() as f32, y.round() as f32), None);
+    }
+    let mut panel = new_panel(&scene);
+    panel.state.engine = true;
+    panel.layer(w as f64 / s, s);
+    for l in panel.layers() {
+        if let Some(pm) = &l.pm {
+            out.draw_pixmap((l.x * s).round() as i32, (l.y * s).round() as i32, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+        }
+    }
+    let st = panel::status(w as f64 / s, &eng.summary(), "click: inspect · drag: pan · wheel: zoom · F: fit · E: back to the desk", s);
+    if let Some(pm) = &st.pm {
+        out.draw_pixmap(0, (h as f64 - panel::STATUS_H * s).round() as i32, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+    }
+    conn.send(Cmd::Profile(false));
+    if let Some(r) = opt("report") {
+        std::fs::write(r, eng.report(&version)).map_err(|e| e.to_string())?;
+    }
+    out.save_png(path).map_err(|e| e.to_string())
+}
+
+/// `--render out.png engine specimen`: every kind of block, link and band ENGINE draws, from a made
+/// up graph (not PipeWire's), with nothing, a node, a port and a link selected: the design's
+/// specimen sheet.
+fn render_specimen(path: &str) -> Result<(), String> {
+    use crate::graph::Graph;
+    use crate::pw::{DriverTiming, Kind, NodeTiming, Props};
+    use crate::ui::engine::Engine;
+    let mut g = Graph::default();
+    let props = |kv: &[(&str, &str)]| kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Props>();
+    let node = |g: &mut Graph, id: u32, name: &str, desc: &str, class: &str, state: &'static str| {
+        let p = props(&[("node.name", name), ("node.description", desc), ("media.class", class)]);
+        g.apply(&Event::Added { id, kind: Kind::Node, props: p.clone() });
+        g.apply(&Event::Info { id, props: p, state: Some(state) });
+    };
+    // (port, node, direction, name, channel, monitor, midi)
+    let ports: &[(u32, u32, &str, &str, &str, bool, bool)] = &[
+        (51, 50, "in", "playback_FL", "FL", false, false),
+        (52, 50, "in", "playback_FR", "FR", false, false),
+        (53, 50, "out", "monitor_FL", "FL", true, false),
+        (54, 50, "out", "monitor_FR", "FR", true, false),
+        (61, 60, "out", "output_FL", "FL", false, false),
+        (62, 60, "out", "output_FR", "FR", false, false),
+        (66, 65, "out", "output_FL", "FL", false, false),
+        (67, 65, "out", "output_FR", "FR", false, false),
+        (71, 70, "in", "input_FL", "FL", false, false),
+        (72, 70, "in", "input_FR", "FR", false, false),
+        (73, 70, "out", "monitor_FL", "FL", true, false),
+        (74, 70, "out", "monitor_FR", "FR", true, false),
+        (81, 80, "out", "output_MONO", "MONO", false, false),
+        (91, 90, "out", "capture_MONO", "MONO", false, false),
+        (96, 95, "in", "input_MONO", "MONO", false, false),
+        (97, 95, "out", "monitor_MONO", "MONO", true, false),
+        (101, 100, "in", "input_MONO", "MONO", false, false),
+        (106, 105, "in", "input_MONO", "MONO", false, false),
+        (111, 110, "in", "playback_FL", "FL", false, false),
+        (112, 110, "in", "playback_FR", "FR", false, false),
+        (116, 115, "out", "output_FL", "FL", false, false),
+        (117, 115, "out", "output_FR", "FR", false, false),
+        (121, 120, "in", "Midi Through Port-0", "", false, true),
+        (122, 120, "out", "Midi Through Port-0", "", false, true),
+        (126, 125, "in", "in", "", false, true),
+        (131, 130, "out", "capture_1", "", false, false),
+    ];
+    node(&mut g, 50, "alsa_output.usb-Focusrite_Scarlett_2i2.analog-stereo", "Scarlett 2i2", "Audio/Sink", "running");
+    node(&mut g, 60, "Firefox", "Firefox", "Stream/Output/Audio", "running");
+    node(&mut g, 65, "fooyin", "fooyin", "Stream/Output/Audio", "running");
+    node(&mut g, 70, "patchcord-meter-1", "Patchcord signal meter", "Stream/Input/Audio", "running");
+    node(&mut g, 80, "Broken app", "Broken app", "Stream/Output/Audio", "running");
+    node(&mut g, 90, "alsa_input.usb-Rode_NT-USB.mono", "RØDE NT-USB", "Audio/Source", "running");
+    node(&mut g, 95, "OBS", "OBS", "Stream/Input/Audio", "running");
+    node(&mut g, 100, "bluez_capture_internal", "Bluetooth internal capture", "Stream/Input/Audio/Internal", "running");
+    node(&mut g, 105, "Recorder", "Recorder", "Stream/Input/Audio", "running");
+    node(&mut g, 110, "alsa_output.pci-0000_01_00.1.hdmi-stereo", "HDMI Output", "Audio/Sink", "suspended");
+    node(&mut g, 115, "spotify", "Spotify", "Stream/Output/Audio", "idle");
+    node(&mut g, 120, "Midi-Bridge", "Midi-Bridge", "Midi/Bridge", "suspended");
+    node(&mut g, 125, "synth", "Synth", "Midi/Bridge", "suspended");
+    node(&mut g, 130, "v4l2_input.webcam", "Webcam", "Video/Source", "suspended");
+    node(&mut g, 140, "Dummy-Driver", "Dummy-Driver", "", "suspended");
+    node(&mut g, 141, "Freewheel-Driver", "Freewheel-Driver", "", "suspended");
+    for &(id, n, dir, name, ch, mon, midi) in ports {
+        let mut kv = vec![("node.id", n.to_string()), ("port.direction", dir.to_owned()), ("port.name", name.to_owned()), ("format.dsp", if midi { "8 bit raw midi".to_owned() } else { "32 bit float mono audio".to_owned() })];
+        if !ch.is_empty() {
+            kv.push(("audio.channel", ch.to_owned()));
+        }
+        if mon {
+            kv.push(("port.monitor", "true".to_owned()));
+        }
+        g.apply(&Event::Added { id, kind: Kind::Port, props: kv.into_iter().map(|(k, v)| (k.to_owned(), v)).collect() });
+    }
+    // (link, out node, out port, in node, in port, passive, state)
+    let links: &[(u32, u32, u32, u32, u32, bool, &'static str)] = &[
+        (200, 60, 61, 50, 51, false, "active"),
+        (201, 60, 62, 50, 52, false, "active"),
+        (202, 65, 66, 50, 51, false, "active"),
+        (203, 65, 67, 50, 52, false, "active"),
+        (204, 50, 53, 70, 71, true, "active"),
+        (205, 50, 54, 70, 72, true, "active"),
+        (206, 80, 81, 50, 51, false, "error"),
+        (207, 90, 91, 95, 96, false, "active"),
+        (208, 90, 91, 100, 101, true, "active"),
+        (209, 90, 91, 105, 106, false, "paused"),
+        (210, 120, 122, 125, 126, false, "active"),
+    ];
+    for &(id, on, op, inn, ip, passive, state) in links {
+        let p = props(&[("link.output.node", &on.to_string()), ("link.output.port", &op.to_string()), ("link.input.node", &inn.to_string()), ("link.input.port", &ip.to_string()), ("link.passive", &passive.to_string())]);
+        g.apply(&Event::Added { id, kind: Kind::Link, props: p.clone() });
+        g.apply(&Event::Info { id, props: p, state: Some(state) });
+    }
+    g.apply(&Event::Synced);
+    // the profiler: two drivers and the nodes they clock; fooyin resampled, with xruns
+    let t = |id: u32, name: &str, busy_us: i64, rate: u32, xruns: i32| {
+        let mut n = NodeTiming::default();
+        (n.id, n.name, n.busy_ns, n.busy_max_ns, n.wait_ns, n.wait_max_ns, n.latency, n.xruns, n.cycles) = (id, name.to_owned(), busy_us * 1000, busy_us * 2600, 40_000, 90_000, (1024, rate), xruns, 23);
+        n
+    };
+    let drivers = vec![
+        DriverTiming { node: t(50, "Scarlett 2i2", 52, 48000, 0), quantum: 1024, rate: 48000, load: 0.06, xruns: 0, end_ns: 420_000, end_max_ns: 1_300_000, followers: vec![t(60, "Firefox", 31, 48000, 0), t(65, "fooyin", 44, 44100, 3), t(70, "patchcord-meter-1", 12, 48000, 0), t(80, "Broken app", 9, 48000, 0)] },
+        DriverTiming { node: t(90, "RØDE NT-USB", 18, 48000, 0), quantum: 512, rate: 48000, load: 0.02, xruns: 0, end_ns: 150_000, end_max_ns: 400_000, followers: vec![t(95, "OBS", 61, 48000, 0), t(100, "bluez_capture_internal", 16, 48000, 0), t(105, "Recorder", 22, 48000, 0)] },
+    ];
+    let mut eng = Engine::new();
+    eng.apply(&Event::Profile(drivers.clone()));
+    eng.apply(&Event::Profile(drivers));
+    let devs = g.devices();
+    let devices: Vec<&crate::graph::Device> = devs.iter().collect();
+    // the HDMI output hidden on the desk
+    let hidden = devs.iter().filter(|d| d.name.contains("HDMI")).map(|d| d.key.clone()).collect();
+    eng.dirty = true;
+    eng.build(&g, &devices, &hidden, &Default::default());
+    let svg = eng.specimen(50, 91, 207);
+    // an .svg: the drawing itself, to work on as a mockup
+    if path.ends_with(".svg") {
+        return std::fs::write(path, svg).map_err(|e| e.to_string());
+    }
+    let s: f64 = std::env::var("PATCHCORD_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.5);
+    let pm = Engine::picture(&svg, s).ok_or("cannot draw the specimen")?;
+    pm.save_png(path).map_err(|e| e.to_string())
 }

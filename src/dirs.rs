@@ -8,6 +8,12 @@ pub fn config() -> Option<PathBuf> {
     base("APPDATA", "Library/Application Support", "XDG_CONFIG_HOME", ".config")
 }
 
+/// Where a report the user is to attach somewhere goes: the home folder (until it asks, see
+/// issue #17).
+pub fn home() -> Option<PathBuf> {
+    std::env::var_os("HOME").filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
 fn base(windows: &str, macos: &str, xdg: &str, home: &str) -> Option<PathBuf> {
     let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
     let base = if cfg!(windows) {

@@ -150,6 +150,120 @@
   #status { flex: none; display: flex; justify-content: space-between; gap: 16px; padding: 5px 14px;
     background: #0e0f10; color: var(--muted); font: 11.5px ui-monospace, "DejaVu Sans Mono", monospace; border-top: 1px solid #000; }
   #status span:last-child { color: #a8abae; }
+  /* ---------- ENGINE: the real PipeWire graph, a technical screen in the same metal ---------- */
+  #engine { flex: 1; display: none; min-height: 0; flex-direction: column; background: #0f1011; color: #c9cbcd;
+    font: 12px/1.45 ui-monospace, "DejaVu Sans Mono", monospace; }
+  body.engine #stage { display: none; }
+  body.engine #engine { display: flex; }
+  body.engine :is(#lock, #align, #cablesKnob, #arrange, #flow, #hide, #cue, #cueKnob) { opacity: .28; pointer-events: none; }
+  #eserver { flex: none; display: flex; gap: 10px; padding: 9px 12px; background: #1a1b1d; border-bottom: 1px solid #000; overflow-x: auto; }
+  #eserver .cell { flex: none; padding: 3px 10px 4px; border-radius: 3px; color: #3a2408; background: linear-gradient(#f7bb62, #e58f2c);
+    box-shadow: 0 0 0 2px #0c0c0d, 0 0 0 3px rgba(255,255,255,.12), inset 0 0 10px rgba(120,50,0,.3); white-space: nowrap; }
+  #eserver .cell b { display: block; font-size: 9px; letter-spacing: 1.2px; opacity: .65; }
+  #eserver .cell span { font-weight: bold; display: flex; align-items: center; gap: 6px; }
+  #eserver .health { margin-left: auto; }
+  #engine i.led { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; background: #4a4c50; flex: none; }
+  #engine i.led.running { background: #5cff7a; box-shadow: 0 0 6px rgba(92,255,122,.8); }
+  #engine i.led.idle, #engine i.led.warn { background: #ffb02e; box-shadow: 0 0 6px rgba(255,176,46,.7); }
+  #engine i.led.err { background: #ff4a32; box-shadow: 0 0 6px rgba(255,74,50,.9); }
+  #engine i.led.info { background: #5fd4ff; box-shadow: 0 0 6px rgba(95,212,255,.6); }
+  #eserver i.led { box-shadow: none !important; border: 1px solid rgba(58,36,8,.5); margin: 0 3px 0 6px; }
+  #emain { flex: 1; display: flex; min-height: 0; }
+  #egwrap { flex: 1; position: relative; min-width: 0; overflow: hidden;
+    background: radial-gradient(circle, #24262a 1px, transparent 1.4px) 0 0 / 22px 22px, #121315; }
+  #egraph { position: absolute; inset: 0; width: 100%; height: 100%; cursor: default; touch-action: none; }
+  #egraph.panning { cursor: grabbing; }
+  #efilters { position: absolute; left: 12px; top: 10px; display: flex; gap: 8px; align-items: center; }
+  #efilters::before { content: "SHOW"; font-size: 9px; letter-spacing: 1.2px; color: var(--muted); margin-right: 2px; }
+  .chip { position: relative; border: 0; border-radius: 4px; padding: 5px 10px 5px 20px; cursor: pointer; font: bold 10px Arial, Helvetica, sans-serif; letter-spacing: .5px;
+    color: #e6e7e8; background: linear-gradient(#3d3e42, #222326); box-shadow: 0 0 0 1px #0b0b0c, inset 0 1px 0 rgba(255,255,255,.15); }
+  .chip i { position: absolute; left: 7px; top: 8px; width: 6px; height: 6px; border-radius: 50%; background: #3a1512; }
+  .chip.on i { background: #ff4a32; box-shadow: 0 0 6px 1px rgba(255,80,50,.85); }
+  #elegend { position: absolute; left: 12px; bottom: 10px; display: flex; gap: 14px; color: var(--muted); font-size: 11px; pointer-events: none;
+    background: rgba(15,16,17,.85); padding: 5px 10px; border-radius: 4px; }
+  #elegend svg { vertical-align: -2px; margin-right: 5px; }
+  /* graph */
+  .band { fill: rgba(255,255,255,.025); stroke: var(--bc); stroke-opacity: .35; stroke-width: 1.2; }
+  .band.off { stroke-dasharray: 5 5; stroke-opacity: .5; fill: rgba(255,255,255,.012); }
+  .bhead { font: bold 12px ui-monospace, "DejaVu Sans Mono", monospace; fill: #c9cbcd; }
+  .bhead .bt { fill: #e58f2c; letter-spacing: 1px; } .bhead .bd { fill: #7d8085; font-weight: normal; }
+  .enode { cursor: pointer; }
+  .enode .nb { fill: #1d1e21; stroke: #34363a; stroke-width: 1; }
+  .enode:hover .nb { stroke: #55585d; }
+  .enode.sel .nb { stroke: #ffd36a; stroke-width: 2; }
+  .enode.suspended, .enode.idle { opacity: .72; }
+  .enode.dim { opacity: .35; }
+  .nled { fill: #4a4c50; } .nled.running { fill: #5cff7a; filter: drop-shadow(0 0 3px #5cff7a); } .nled.idle { fill: #ffb02e; } .nled.err { fill: #ff4a32; filter: drop-shadow(0 0 3px #ff4a32); }
+  .nt { font: bold 12px Arial, Helvetica, sans-serif; fill: #e6e7e8; }
+  .ns { font: 10px ui-monospace, "DejaVu Sans Mono", monospace; fill: #7d8085; }
+  .nbz { font: 10px ui-monospace, "DejaVu Sans Mono", monospace; fill: #5cff7a; }
+  .ntag { font: bold 8.5px Arial, Helvetica, sans-serif; letter-spacing: .5px; fill: #e58f2c; } .ntag.err { fill: #ff6a52; }
+  .pt { font: 10px ui-monospace, "DejaVu Sans Mono", monospace; fill: #a8abae; }
+  .eport:hover .pt, .eport.sel .pt { fill: #ffd36a; }
+  .pd { fill: #2bb0a8; stroke: #0f1011; stroke-width: 1.5; } .pd.midi { fill: #e0574a; } .pd.mon { fill: #0f1011; stroke: #2bb0a8; }
+  .eport.sel .pd { fill: #ffd36a; }
+  .elink { fill: none; stroke: #4b6f69; stroke-width: 1.6; }
+  .elink.active { stroke: #59c7b6; stroke-width: 2; }
+  .elink.passive { stroke: #8c8e91; stroke-dasharray: 3 4; stroke-width: 1.2; }
+  .elink.midi { stroke: #e0574a; }
+  .elink.hl { stroke: #ffd36a; stroke-width: 2.6; }
+  .elink.dim { opacity: .2; }
+  .ehit { fill: none; stroke: transparent; stroke-width: 10; cursor: pointer; }
+  /* inspector */
+  #einsp { flex: none; width: 380px; display: flex; flex-direction: column; min-height: 0; background: #17181a; border-left: 1px solid #000; }
+  .ihead { flex: none; display: flex; align-items: center; gap: 4px; padding: 10px 12px; background: #1f2023; border-bottom: 1px solid #000; }
+  .ihead div { min-width: 0; flex: 1; }
+  .ihead b { display: block; font: bold 13px Arial, Helvetica, sans-serif; color: #e6e7e8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ihead small { color: var(--muted); }
+  .iclose { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 14px; }
+  .itabs, .etabs { flex: none; display: flex; gap: 4px; padding: 6px 10px 0; background: #1a1b1d; border-bottom: 1px solid #000; align-items: flex-end; }
+  .itabs button, .etabs button { border: 0; border-radius: 4px 4px 0 0; padding: 5px 12px; cursor: pointer; font: bold 10px Arial, Helvetica, sans-serif; letter-spacing: .6px;
+    color: #9a9da1; background: #232427; }
+  .itabs button.on, .etabs button.on { color: #e6e7e8; background: #2e3034; box-shadow: inset 0 2px 0 #e58f2c; }
+  .etabs .hint { margin-left: auto; padding: 0 4px 6px; color: var(--muted); font-size: 11px; }
+  .ibody { flex: 1; overflow: auto; padding: 8px 12px 16px; }
+  .ibody h3 { font: bold 10px Arial, Helvetica, sans-serif; letter-spacing: 1px; color: #e58f2c; margin: 14px 0 6px; }
+  .iempty { color: var(--muted); padding: 10px 12px; line-height: 1.55; }
+  .ibody .iempty { padding: 6px 0; }
+  .kv { width: 100%; border-collapse: collapse; }
+  .kv td { padding: 3px 0; vertical-align: top; border-bottom: 1px solid #222326; word-break: break-all; }
+  .kv td:first-child { color: var(--muted); width: 34%; padding-right: 10px; word-break: normal; }
+  .kv.props td:first-child { width: 50%; word-break: break-all; }
+  .ibody a, .irow { cursor: pointer; } .ibody a { color: #5fd4ff; }
+  .irow { display: flex; align-items: center; gap: 2px; padding: 3px 4px; border-radius: 3px; white-space: nowrap; overflow: hidden; }
+  .irow:hover { background: #24262a; }
+  .irow span { margin-left: auto; padding-left: 8px; color: var(--muted); }
+  .irow i.pd { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: #2bb0a8; } .irow i.pd.midi { background: #e0574a; }
+  .desk { line-height: 1.55; } .desk small { color: var(--muted); }
+  .desk button, .ifilter { display: block; margin-top: 8px; }
+  .desk button { border: 0; border-radius: 4px; padding: 5px 10px; cursor: pointer; font: bold 10px Arial, Helvetica, sans-serif; color: #e6e7e8; background: linear-gradient(#45464a, #232427); }
+  .ifilter { width: 100%; box-sizing: border-box; margin: 2px 0 8px; padding: 5px 8px; border: 1px solid #000; border-radius: 3px; background: #0e0f10; color: var(--fg); font: inherit; }
+  .ibody pre { margin: 0; font-size: 11px; color: #a8abae; white-space: pre-wrap; }
+  #ehist { width: 100%; height: 90px; background: #0e0f10; border-radius: 3px; margin: 6px 0 8px; }
+  b.errn { color: #ff6a52; } b.warnn { color: #ffb02e; }
+  /* bottom: TOP, ISSUES, OBJECTS, METADATA, EVENTS */
+  #ebottom { flex: none; height: 250px; display: flex; flex-direction: column; background: #131416; border-top: 1px solid #000; }
+  #ebbody { flex: 1; overflow: auto; }
+  .et { width: 100%; border-collapse: collapse; }
+  .et th { position: sticky; top: 0; background: #1a1b1d; color: var(--muted); font-weight: normal; text-align: left; padding: 4px 10px; }
+  .et td { padding: 2px 10px; white-space: nowrap; border-bottom: 1px solid #1c1d20; }
+  .et tr[data-sel] { cursor: pointer; } .et tr[data-sel]:hover td { background: #1d1f22; } .et tr.sel td { background: #2a2618; }
+  .et.top tr.drv td { color: #e6e7e8; font-weight: bold; border-top: 1px solid #2a2c30; }
+  .et.top td:nth-child(n+2):nth-child(-n+9) { text-align: right; }
+  .et .v { white-space: normal; word-break: break-all; color: #e6e7e8; } .et .mutedc { color: var(--muted); }
+  .bq { display: inline-block; width: 50px; height: 6px; margin-right: 6px; background: #24262a; border-radius: 2px; overflow: hidden; vertical-align: 0; }
+  .bq i { display: block; height: 100%; background: #5cff7a; }
+  .et.ev td:nth-child(2) { color: var(--muted); font-size: 10px; } .et.ev tr.xrun td { color: #ff8a72; }
+  .issue { display: flex; gap: 10px; align-items: flex-start; padding: 8px 14px; border-bottom: 1px solid #1c1d20; }
+  .issue[data-sel] { cursor: pointer; } .issue:hover { background: #1a1b1e; }
+  .issue i.led { margin-top: 4px; } .issue > b { flex: none; width: 92px; font: bold 10px Arial, Helvetica, sans-serif; letter-spacing: .6px; padding-top: 2px; }
+  .issue.err > b { color: #ff6a52; } .issue.warn > b { color: #ffb02e; } .issue.info > b { color: #5fd4ff; }
+  .issue small { color: var(--muted); }
+  .objs { display: flex; min-height: 100%; }
+  .otypes { flex: none; width: 170px; padding: 6px; border-right: 1px solid #000; background: #161719; }
+  .otypes button { display: flex; width: 100%; justify-content: space-between; border: 0; background: none; color: #a8abae; padding: 3px 8px; border-radius: 3px; cursor: pointer; font: inherit; }
+  .otypes button.on { background: #2e3034; color: #e6e7e8; } .otypes span { color: var(--muted); }
+  .objs .et { flex: 1; align-self: flex-start; }
 </style>
 </head>
 <body>
@@ -160,6 +274,7 @@
   <div class="grp"><div class="keys">
     <button class="key" data-mode="desk"><span class="led"></span>DESK</button>
     <button class="key" data-mode="rack"><span class="led"></span>RACK</button>
+    <button class="key" data-mode="engine" title="What PipeWire really has: every node, port and link, drivers, timings, metadata (E)"><span class="led"></span>ENGINE</button>
     <button class="key ico" id="lock" title="Lock devices in place (L)"><span class="led"></span><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></button>
     <button class="key ico on" id="align" title="Line devices up while dragging them on the desk; off: place them freely (G)"><span class="led"></span><svg viewBox="0 0 24 24"><path d="M4 3v18"/><rect x="7.5" y="5" width="12" height="5" rx="1"/><rect x="7.5" y="14" width="7.5" height="5" rx="1"/></svg></button></div><label>LAYOUT</label></div>
   <div class="grp"><svg id="cablesKnob" width="96" height="60" viewBox="-48 -26.5 96 60" style="cursor:pointer;touch-action:none"></svg></div>
@@ -200,6 +315,7 @@
       <tr><td>Double-click</td><td>pull a cord out</td></tr>
       <tr><td>Drag a device</td><td>move it; on the desk it lines up with the others (ALIGN)</td></tr>
       <tr><td>Wheel / empty drag</td><td>zoom / pan</td></tr>
+      <tr><td>ENGINE key or <kbd>E</kbd></td><td>the real PipeWire graph: every node, port and link, which driver clocks what, timings (as pw-top), issues, objects, metadata and events. Click anything to inspect it; ⌖ SHOW ON DESK goes back to its device</td></tr>
       <tr><td><kbd>R</kbd> <kbd>L</kbd> <kbd>G</kbd> <kbd>C</kbd> <kbd>A</kbd> <kbd>F</kbd></td><td>rack/desk · lock · align · cables · arrange · fit</td></tr>
       <tr><td><kbd>W</kbd></td><td>cord directions (the FLOW key): a light runs inside every plugged-in cord from its output to its input, one at a time (as it reaches the jack the next leaves the plug), at a steady pace whatever plays: it shows how things are connected</td></tr>
       <tr><td><kbd>A</kbd></td><td>arrange: devices with cords in columns by signal flow, the unused ones under them, sound cards, apps, MIDI and internal streams each together in rows</td></tr>
@@ -208,6 +324,16 @@
       <tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>O</kbd></td><td>save a new preset / pick one (or click the LCD)</td></tr>
     </table>
   </div>
+</div>
+<div id="engine">
+  <div id="eserver"></div>
+  <div id="emain">
+    <div id="egwrap"><svg id="egraph"><g id="eview"></g></svg><div id="efilters"></div>
+      <div id="elegend"><span><svg width="26" height="8"><path d="M0 4h26" stroke="#59c7b6" stroke-width="2"/></svg>active link</span><span><svg width="26" height="8"><path d="M0 4h26" stroke="#4b6f69" stroke-width="1.6"/></svg>paused</span><span><svg width="26" height="8"><path d="M0 4h26" stroke="#8c8e91" stroke-dasharray="3 4" stroke-width="1.2"/></svg>passive</span><span><i class="led running"></i>running</span><span><i class="led idle"></i>idle</span><span><i class="led"></i>suspended</span><span><i class="led err"></i>xruns</span><span><svg width="10" height="10"><circle cx="5" cy="5" r="3.5" fill="#0f1011" stroke="#2bb0a8" stroke-width="1.5"/></svg>monitor port</span></div>
+    </div>
+    <div id="einsp"></div>
+  </div>
+  <div id="ebottom"><div class="etabs" id="ebtabs"></div><div id="ebbody"></div></div>
 </div>
 <div id="status"><span id="st1"></span><span id="st2"></span></div>
 
@@ -1305,7 +1431,7 @@ function updateInfo() {
   $('#lcd1').textContent = (cur >= 0 ? `PRESET ${String(cur + 1).padStart(2, '0')} · ${store.slots[cur].name}` : 'NO PRESET') + (S.edited ? ' *' : '');
   const cords = cables.filter(live).length, pl = (k, w) => `${k} ${w}${k === 1 ? '' : 's'}`;
   $('#lcd2').textContent = '48 kHz · 256 · 5.3 ms';
-  $('#st1').textContent = `PipeWire 1.4.2 · ${pl(devs.length, 'node')} · ${pl(n, 'link')} · ${pl(cords, 'cord')} · 0 xruns`;
+  $('#st1').textContent = `PipeWire 1.6.9 · ${pl(devs.length, 'node')} · ${pl(n, 'link')} · ${pl(cords, 'cord')} · 0 xruns`;
 }
 
 // ---------------- layout ----------------
@@ -1328,6 +1454,8 @@ function layoutRack(dragged = null) {
   return order;
 }
 function setMode(m) {
+  if (m === 'engine') return showEngine(true);
+  if (ENG.on) showEngine(false);
   S.mode = m;
   S.rackW = Math.max(RACK_MIN, ...devs.map((d) => naturalW(d, true)));
   document.querySelectorAll('[data-mode]').forEach((b) => b.classList.toggle('on', b.dataset.mode === m));
@@ -2294,9 +2422,16 @@ addEventListener('keydown', (e) => {
   if (e.ctrlKey && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if (e.ctrlKey && e.key.toLowerCase() === 's') { e.preventDefault(); openSave(); return; }
   if (e.ctrlKey && e.key.toLowerCase() === 'o') { e.preventDefault(); openLoad(); return; }
-  if (e.key === 'Escape') { closePop(); prof.classList.add('hide'); prof.dataset.dev = ''; closePorts(); dlist.classList.add('hide'); hlist.classList.add('hide'); return; }
+  if (e.key === 'Escape') { if (ENG.on && ENG.sel) engineSelect(null); closePop(); prof.classList.add('hide'); prof.dataset.dev = ''; closePorts(); dlist.classList.add('hide'); hlist.classList.add('hide'); return; }
   if (e.ctrlKey || e.altKey || e.target.closest?.('input')) return;
   const k = e.key.toLowerCase();
+  if (k === 'e') return setMode(ENG.on ? S.mode : 'engine');
+  if (ENG.on) {
+    if (k === 'f' || k === '0') engineFit();
+    else if (k === 'r') setMode('rack');
+    else if (k === '?') $('#help').classList.toggle('hide');
+    return;
+  }
   if (k === 'r') setMode(S.mode === 'rack' ? 'desk' : 'rack');
   else if (k === 'c') setCableMode((S.cableMode + 1) % 3);
   else if (k === 'l') toggleLock();
@@ -2308,6 +2443,673 @@ addEventListener('keydown', (e) => {
   else if (k === 'k') { S.accent = !S.accent; for (const d of devs) renderDevice(d); $('#st2').textContent = `group colours ${S.accent ? 'on' : 'off'} (K)`; }
   else if (k === '?') $('#help').classList.toggle('hide');
 });
+
+// ---------------- ENGINE: PipeWire as it really is ----------------
+// DESK and RACK show devices as Patchcord builds them: a card's sink, source and monitor are one
+// face, an app's streams are frames of one device, Patchcord's meters and WirePlumber's plumbing
+// are left out. ENGINE shows what PipeWire has: every node, port and link, which driver clocks
+// which nodes, the profiler's timings, the metadata, every object, and what looks wrong.
+// Read-only: it inspects, the desk patches. It is built from the desk's own state, so a cord
+// plugged there shows up here as its links (one per channel).
+const ENG = { on: false, sel: null, tab: 'top', itab: 'info', otype: 'Node', view: { x: 40, y: 30, s: .8 }, fitted: false,
+  show: { patchcord: true, midi: true, idle: true, drivers: false }, ids: new Map([['n:Dummy-Driver', 29], ['n:Freewheel-Driver', 30]]), next: 42,
+  meterNo: new Map(), err: new Map(), prof: new Map(), hist: new Map(), gload: new Map(), load: [], events: [], prevL: null, prevS: null,
+  m: null, objs: null, sig: '', t0: Date.now(), lastXrun: new Map() };
+const MAC = 'C0:28:8D:4E:12:9A', MAC_ = MAC.replace(/:/g, '_');
+const eid = (k) => { if (!ENG.ids.has(k)) { ENG.ids.set(k, ENG.next); ENG.next += ENG.ids.size % 5 ? 1 : 3; } return ENG.ids.get(k); };
+// how each app talks to PipeWire: its process, its API, the rate it plays at, the latency it asks for
+const APPS = {
+  cpal: { bin: 'cpal-demo', api: 'pipewire-pulse', pid: 1293852, rate: 48000, lat: 1024, fmt: 'S16LE' },
+  fooyin: { name: 'fooyin', bin: 'fooyin', api: 'pipewire', pid: 4121, rate: 44100, lat: 2048, fmt: 'F32LE', media: 'fooyin' },
+  audacity: { name: 'ALSA plug-in [audacity]', bin: 'audacity', api: 'alsa', pid: 7310, rate: 48000, lat: 256, fmt: 'F32LE' },
+  teams: { name: 'teams-for-linux', bin: 'teams-for-linux', api: 'pipewire-pulse', pid: 5532, rate: 48000, lat: 960, fmt: 'F32LE' },
+  firefox: { name: 'Firefox', bin: 'firefox', api: 'pipewire-pulse', pid: 3307, rate: 48000, lat: 1024, fmt: 'F32LE' },
+};
+const ago = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? `${s} s ago` : `${Math.round(s / 60)} min ago`; };
+const clock = (t) => new Date(t).toTimeString().slice(0, 8);
+const trunc = (t, n) => (t.length > n ? t.slice(0, n - 1) + '…' : t);
+const ms = (q, r) => (q / r * 1000).toFixed(1) + ' ms';
+
+function engineModel() {
+  const nodes = [], L = [], byKey = new Map(), clients = new Map();
+  const client = (name, o = {}) => { if (!clients.has(name)) clients.set(name, { id: eid('c:' + name), name, ...o }); return clients.get(name); };
+  const core = client('pipewire', { bin: 'pipewire', api: 'native', pid: 2003 });
+  const wpx = client('WirePlumber [export]', { bin: 'wireplumber', api: 'native', pid: 2011 });
+  client('WirePlumber', { bin: 'wireplumber', api: 'native', pid: 2011 });
+  client('pipewire-pulse', { bin: 'pipewire', api: 'native', pid: 2012 });
+  client('plasmashell', { bin: 'plasmashell', api: 'pipewire-pulse', pid: 2950 });
+  client('xdg-desktop-portal', { bin: 'xdg-desktop-portal', api: 'native', pid: 2440 });
+  const node = (key, o) => { const n = { id: eid('n:' + key), ins: [], outs: [], rate: 48000, ...o }; nodes.push(n); return n; };
+  const port = (n, dir, name, p, t = 'audio') => {
+    const pt = { id: eid('p:' + n.id + ':' + dir + ':' + name), node: n, dir, name, p, t: p?.t || t,
+      ch: (name.match(/_(FL|FR|MONO|AUX\d+)$/) || [])[1] || (t === 'midi' ? '' : 'MONO'), monitor: /^monitor/.test(name) };
+    (dir === 'in' ? n.ins : n.outs).push(pt);
+    if (p) byKey.set(p.key, pt);
+    return pt;
+  };
+  for (const [d, hidden] of [...devs.map((d) => [d, false]), ...hiddenDevs.map((d) => [d, true])]) {
+    const base = { dev: d, hidden };
+    if (d.profiles) {
+      const bt = d.id === 'jlab', prof = d.profiles[d.profile], api = bt ? 'bluez5' : 'alsa';
+      for (const g of d.groups) {
+        if (g.sink) {
+          const name = bt ? `bluez_output.${MAC_}.${d.profile === 1 ? 0 : 1}` : d.id === 'ryzen' ? 'alsa_output.pci-0000_63_00.6.analog-stereo'
+            : `alsa_output.pci-0000_03_00.1.hdmi-stereo${g.label === 'HDMI 2' ? '-extra1' : ''}`;
+          const n = node(name, { ...base, name, desc: bt ? d.title : `${d.title} ${d.id === 'radeon' ? 'Digital Stereo (HDMI)' : 'Analog Stereo'}`,
+            cls: 'Audio/Sink', kind: 'device', api, driver: true, prio: bt ? 1010 : 1009, client: wpx, labels: [g.label, ...(g.rec ? ['MONITOR'] : [])], g, prof });
+          for (const p of g.ports) port(n, 'in', p.full, p);
+          for (const p of g.rec?.ports || []) port(n, 'out', p.full, p);
+        } else if (g.src) {
+          const name = bt ? `bluez_input.${MAC}` : 'alsa_input.pci-0000_63_00.6.analog-stereo';
+          const n = node(name, { ...base, name, desc: bt ? d.title : `${d.title} Analog Stereo`, cls: 'Audio/Source', kind: 'device', api,
+            driver: !bt, prio: 2009, client: wpx, labels: [g.label], g, prof, virt: bt });
+          for (const p of g.ports) port(n, 'out', p.full, p);
+          if (bt) {
+            // the plumbing behind MIC: the real microphone and WirePlumber's capture stream; inside
+            // its loopback the sound reaches the MIC node above without a link
+            const mic = node(`bluez_input.${MAC}.0`, { ...base, name: `bluez_input.${MAC}.0`, desc: `${d.title} (microphone)`, cls: 'Audio/Source/Internal',
+              kind: 'device', api, driver: true, prio: 2010, client: wpx, sys: 'plumbing', prof });
+            const cap = node(`bluez_capture_internal.${MAC}`, { ...base, name: `bluez_capture_internal.${MAC}`, desc: `${d.title} (capture stream)`,
+              cls: 'Stream/Input/Audio/Internal', kind: 'stream', client: wpx, sys: 'plumbing' });
+            L.push({ id: eid('l:bt'), out: port(mic, 'out', 'capture_MONO'), in: port(cap, 'in', 'input_MONO'), passive: false, client: wpx });
+            n.loop = cap; cap.loop = n;
+          }
+        }
+      }
+    } else if (d.model.includes('MIDI')) {
+      const name = d.id === 'ble' ? 'bluez_midi.server' : d.id === 'bridge' ? 'Midi-Bridge' : 'alsa_seq.14.Midi_Through';
+      const n = node(name, { ...base, name, desc: d.title, cls: 'Midi/Bridge', kind: 'midi', media: 'midi', client: wpx, labels: ['MIDI'] });
+      for (const g of d.groups) for (const p of g.ports) port(n, g.dir, `${g.dir === 'in' ? 'playback' : 'capture'}: ${p.full}`, p, 'midi');
+    } else {
+      const A = APPS[d.id] || { bin: d.id, api: 'pipewire', pid: 3000, rate: 48000, lat: 1024, fmt: 'F32LE' };
+      const app = client(A.bin, { bin: A.bin, api: A.api, pid: A.pid, app: d.title });
+      for (const g of d.groups) {
+        const out = g.dir === 'out', num = (g.label.match(/ (\d+)$/) || [])[1];
+        const n = node(d.id + ':' + g.label, { ...base, name: A.name || d.name, desc: d.title + (num ? ` · stream ${num}` : out ? '' : ' · input'),
+          cls: out ? 'Stream/Output/Audio' : 'Stream/Input/Audio', kind: 'stream', client: app, app: A, rate: A.rate, lat: A.lat, labels: [g.label], g });
+        for (const p of g.ports) port(n, g.dir, p.full.split(':').pop(), p);
+        // a recording stream's monitor: a copy of what it records (left off the face)
+        if (!out && d.appMonitors) port(n, 'out', 'monitor_MONO');
+      }
+    }
+  }
+  for (const k of links) {
+    const [a, b] = k.split('>'), pa = byKey.get(a), pb = byKey.get(b);
+    if (pa && pb) L.push({ id: eid('l:' + k), out: pa, in: pb, passive: false, client: client('patchcord', { bin: 'patchcord', api: 'pipewire', pid: 9001 }) });
+  }
+  // Patchcord's meters: a passive capture stream per measured frame, linked passively, so they
+  // follow whatever runs and wake nothing
+  const pc = client('patchcord', { bin: 'patchcord', api: 'pipewire', pid: 9001, app: 'Patchcord' });
+  for (const d of devs) for (const g of d.groups) {
+    if (g.ports[0].t === 'midi') continue;
+    const src = g.dir === 'out' ? g.ports.map((p) => byKey.get(p.key)).filter(Boolean)
+      : g.sink ? [] : L.filter((l) => l.in.p?.group === g).map((l) => l.out);
+    if (!src.length) continue;
+    const key = `meter:${d.id}:${g.dir}:${g.label}`;
+    if (!ENG.meterNo.has(key)) ENG.meterNo.set(key, ENG.meterNo.size + 1);
+    const name = `patchcord-meter-${ENG.meterNo.get(key)}`;
+    const n = node(key, { name, desc: 'Patchcord signal meter', cls: 'Stream/Input/Audio', kind: 'meter', sys: 'patchcord', client: pc,
+      passive: true, meterOf: { d, g }, labels: [g.label] });
+    const chs = src.map((s) => s.ch), aux = new Set(chs).size !== chs.length;
+    src.forEach((s, i) => L.push({ id: eid(`l:${key}:${s.id}`), out: s, in: port(n, 'in', 'input_' + (aux ? 'AUX' + i : s.ch)), passive: true, client: pc }));
+  }
+  node('Dummy-Driver', { name: 'Dummy-Driver', desc: 'Dummy-Driver', cls: 'Driver', kind: 'driver', sys: 'driver', client: core, driver: true, prio: 200000 });
+  node('Freewheel-Driver', { name: 'Freewheel-Driver', desc: 'Freewheel-Driver', cls: 'Driver', kind: 'driver', sys: 'driver', client: core, driver: true, prio: 190000, freewheel: true });
+
+  // driver groups: nodes joined by links run together, clocked by the driver with the highest
+  // priority among them (a device; the Dummy-Driver when only apps are linked)
+  const par = new Map(nodes.map((n) => [n, n]));
+  const find = (n) => (par.get(n) === n ? n : (par.set(n, find(par.get(n))), par.get(n)));
+  for (const l of L) par.set(find(l.out.node), find(l.in.node));
+  const comps = new Map();
+  for (const n of nodes) { const r = find(n); if (!comps.has(r)) comps.set(r, []); comps.get(r).push(n); }
+  const groups = [], dummy = nodes.find((n) => n.name === 'Dummy-Driver');
+  for (const members of comps.values()) {
+    const active = L.some((l) => !l.passive && members.includes(l.out.node));
+    let drv = members.filter((n) => n.driver && n.kind !== 'driver').sort((a, b) => b.prio - a.prio)[0];
+    if (!drv && active && members.some((n) => n.kind === 'stream')) drv = dummy;
+    const running = !!drv && active;
+    for (const n of members) n.state = running ? 'running' : n.kind === 'device' || n.kind === 'midi' ? 'suspended' : n.name === 'Dummy-Driver' ? 'idle' : n.freewheel ? 'suspended' : 'idle';
+    if (!running) continue;
+    const want = members.filter((n) => n.lat).map((n) => n.lat * 48000 / n.rate);
+    const q = clamp(2 ** Math.floor(Math.log2(want.length ? Math.min(...want) : 1024)), 32, 2048);
+    const gr = { id: drv.id, driver: drv, members: drv === dummy ? [dummy, ...members] : members, rate: 48000, quant: q, running: true,
+      cards: [...new Set(members.filter((n) => n.kind === 'device' && n.dev).map((n) => n.dev))] };
+    if (drv === dummy) dummy.state = 'running';
+    for (const n of gr.members) n.group = gr;
+    groups.push(gr);
+  }
+  for (const l of L) l.state = l.out.node.state === 'running' && l.in.node.state === 'running' ? 'active' : 'paused';
+  for (const n of nodes) {
+    n.links = L.filter((l) => l.out.node === n || l.in.node === n);
+    const dsp = n.ins.length || n.outs.length;
+    n.fmt = n.state !== 'running' ? '' : n.kind === 'device' ? (n.api === 'alsa' ? `S32LE ${dsp} 48000` : `${n.dev.codec || 'CVSD'} ${dsp} 48000`)
+      : n.kind === 'midi' ? '8 bit raw midi' : `${n.app?.fmt || 'F32LE'} ${n.ins.length || n.outs.length} ${n.rate}`;
+  }
+  return { nodes, L, groups, clients: [...clients.values()], byKey };
+}
+
+// the profiler: per cycle, how long each node waited to start and how long it was busy
+function engineProfile(m) {
+  let top = 0;
+  for (const gr of m.groups) {
+    const per = gr.quant / gr.rate * 1e6;
+    let sum = 0;
+    for (const n of gr.members) {
+      const b0 = n.kind === 'meter' ? 4 : n.kind === 'device' ? (n.api === 'bluez5' ? 150 : 42) : n.kind === 'driver' ? 5 : 16;
+      const busy = (b0 + (n.rate !== gr.rate ? 30 : 0)) * (gr.quant / 1024) ** .7 * (.75 + Math.random() * .5);
+      const wait = n === gr.driver ? per * (.01 + Math.random() * .02) : 6 + Math.random() * 28;
+      ENG.prof.set(n.id, { busy, wait, q: gr.quant, rate: gr.rate });
+      const h = ENG.hist.get(n.id) || []; h.push(busy / per); if (h.length > 120) h.shift(); ENG.hist.set(n.id, h);
+      sum += busy;
+    }
+    gr.load = sum / per; ENG.gload.set(gr.id, gr.load);
+    top = Math.max(top, gr.load);
+    // Bluetooth: now and then the radio comes late, the cycle misses its deadline (an xrun)
+    if (gr.driver.api === 'bluez5' && Math.random() < .012) xrun(gr.driver, 'the Bluetooth transport took too long to accept the buffer');
+  }
+  ENG.load.push(top); if (ENG.load.length > 90) ENG.load.shift();
+}
+function xrun(n, why) {
+  ENG.err.set(n.id, (ENG.err.get(n.id) || 0) + 1); ENG.lastXrun.set(n.id, Date.now());
+  ev('xrun', `node ${n.id} ${n.name}: xrun #${ENG.err.get(n.id)} · ${why}`, n.id);
+}
+function ev(kind, text, id) {
+  ENG.events.unshift({ t: Date.now(), kind, text, id });
+  if (ENG.events.length > 200) ENG.events.pop();
+}
+// what changed since the last look: links made and removed, nodes starting and stopping
+function engineDiff(m) {
+  const ls = new Map(m.L.map((l) => [l.id, l])), st = new Map(m.nodes.map((n) => [n.id, n]));
+  if (ENG.prevL) {
+    for (const [id, l] of ls) if (!ENG.prevL.has(id)) ev('link', `link ${id} created: ${l.out.node.name}:${l.out.name} → ${l.in.node.name}:${l.in.name}${l.passive ? ' (passive)' : ''}`, l.out.node.id);
+    for (const [id, t] of ENG.prevL) if (!ls.has(id)) ev('link', `link ${id} destroyed: ${t}`);
+    for (const [id, n] of st) {
+      const was = ENG.prevS.get(id);
+      if (!was) ev('node', `node ${id} ${n.name} added (${n.cls})`, id);
+      else if (was !== n.state) ev('state', `node ${id} ${n.name}: ${was} → ${n.state}`, id);
+    }
+    for (const [id] of ENG.prevS) if (!st.has(id)) ev('node', `node ${id} removed`);
+  }
+  ENG.prevL = new Map(m.L.map((l) => [l.id, `${l.out.node.name}:${l.out.name} → ${l.in.node.name}:${l.in.name}`]));
+  ENG.prevS = new Map(m.nodes.map((n) => [n.id, n.state]));
+}
+// what looks wrong, or worth knowing, worst first
+function engineIssues(m) {
+  const out = [], run = m.nodes.filter((n) => n.state === 'running');
+  for (const n of m.nodes) {
+    const e = ENG.err.get(n.id);
+    if (e) out.push({ lv: 'err', tag: 'XRUNS', id: n.id, title: `${n.desc}: ${e} xrun${e > 1 ? 's' : ''}, the last ${ago(Date.now() - ENG.lastXrun.get(n.id))}`,
+      hint: `A cycle missed its deadline and you heard a click. Its group runs at quantum ${n.group?.quant || '—'}: Bluetooth is happier at 1024 or more (clock.force-quantum), or look for a node with a high B/Q in TOP.` });
+  }
+  for (const n of run) if (n.kind === 'stream' && n.rate !== n.group.rate)
+    out.push({ lv: 'warn', tag: 'RESAMPLING', id: n.id, title: `${n.desc} plays at ${n.rate} Hz, its driver runs at ${n.group.rate} Hz`,
+      hint: `PipeWire converts it on the fly (a little CPU, not bit-perfect). Add ${n.rate} to clock.allowed-rates and the clock follows the music.` });
+  const lone = new Map();
+  for (const n of m.nodes) if (n.kind === 'stream' && !n.sys && !n.links.some((l) => !l.passive)) { const k = n.dev?.title || n.name; lone.set(k, [...(lone.get(k) || []), n]); }
+  for (const [k, ns] of lone) out.push({ lv: 'warn', tag: 'NO LINKS', id: ns[0].id, title: `${k}: ${ns.length} stream${ns.length > 1 ? 's' : ''} linked to nothing`,
+    hint: `${ns.filter((n) => n.cls.includes('Output')).length} play nowhere, ${ns.filter((n) => n.cls.includes('Input')).length} record silence. Usually a paused app; if not, its target is gone.` });
+  for (const gr of m.groups) if (gr.cards.length > 1)
+    out.push({ lv: 'info', tag: 'ONE CLOCK', id: gr.driver.id, title: `${gr.cards.map((d) => d.title).join(' and ')} run on one clock: ${gr.driver.desc}'s`,
+      hint: 'Two sound cards never tick exactly together: the followers are resampled a tiny bit all the time to stay in step. Normal, but it costs CPU.' });
+  const asked = new Set();
+  for (const gr of m.groups) {
+    const asks = gr.members.filter((n) => n.lat && n.lat * 48000 / n.rate <= gr.quant * 1.01 && gr.quant < 1024 && !asked.has(n.dev));
+    asks.forEach((n) => asked.add(n.dev));
+    if (asks.length) out.push({ lv: 'info', tag: 'QUANTUM', id: asks[0].id, title: `${asks[0].dev?.title || asks[0].desc} asks for ${asks[0].lat} samples: ${gr.driver.desc} runs at quantum ${gr.quant} (${ms(gr.quant, gr.rate)})`,
+      hint: 'Lower latency for the whole group, and more wake-ups per second. Fine for recording.' });
+  }
+  for (const d of [...devs, ...hiddenDevs]) if (d.profiles && d.profiles[d.profile].short === 'OFF')
+    out.push({ lv: 'info', tag: 'PROFILE OFF', title: `${d.title}: profile Off, so it has no nodes`, hint: 'PROFILE on its face (DESK) turns it on.' });
+  const mt = m.nodes.filter((n) => n.kind === 'meter'), busy = mt.reduce((s, n) => s + (ENG.prof.get(n.id)?.busy || 0), 0);
+  if (mt.length) out.push({ lv: 'info', tag: 'PATCHCORD', id: mt[0].id, title: `Patchcord measures with ${mt.length} meter nodes: ${busy.toFixed(0)} µs per cycle`,
+    hint: 'Passive nodes and links: they follow what runs and wake nothing. They close with Patchcord.' });
+  return out;
+}
+// everything else PipeWire lists: the core, modules, factories, clients, devices, metadata
+function engineObjects(m) {
+  const o = [];
+  const add = (type, id, name, info, props) => o.push({ type, id, name, info, props: { 'object.id': id, ...props } });
+  add('Core', 0, 'pipewire-0', 'PipeWire 1.6.9', { 'core.name': 'pipewire-0', 'core.version': '1.6.9', 'core.daemon': true, 'application.process.binary': 'pipewire',
+    'default.clock.rate': 48000, 'default.clock.allowed-rates': '[ 48000 ]', 'default.clock.quantum': 1024, 'default.clock.min-quantum': 32, 'default.clock.max-quantum': 2048,
+    'default.clock.quantum-limit': 8192, 'default.clock.quantum-floor': 4, 'clock.power-of-two-quantum': true, 'link.max-buffers': 16, 'mem.allow-mlock': true, 'log.level': 2, 'cpu.max-align': 64 });
+  ['rt', 'protocol-native', 'profiler', 'metadata', 'spa-device-factory', 'spa-node-factory', 'client-node', 'client-device', 'portal', 'access', 'adapter', 'link-factory', 'session-manager']
+    .forEach((n, i) => add('Module', 1 + i, `libpipewire-module-${n}`, '', { 'module.name': `libpipewire-module-${n}`, 'module.version': '1.6.9' }));
+  ['support.node.driver', 'spa-node-factory', 'spa-device-factory', 'client-node', 'client-device', 'metadata', 'adapter', 'link-factory', 'api.alsa.pcm.device', 'api.alsa.seq.bridge', 'api.bluez5.enum.dbus', 'api.v4l2.device', 'api.libcamera.enum.manager']
+    .forEach((n, i) => add('Factory', 14 + i, n, '', { 'factory.name': n, 'module.id': 1 + (i % 13) }));
+  for (const c of m.clients) add('Client', c.id, c.name, c.api, { 'application.name': c.app || c.name, 'application.process.binary': c.bin, 'application.process.id': c.pid, 'client.api': c.api, 'pipewire.protocol': 'protocol-native', 'pipewire.access': c.bin === 'pipewire' ? 'unrestricted' : 'default' });
+  const cards = [['ryzen', 'alsa_card.pci-0000_63_00.6', 'alsa', 'HD-Audio Generic'], ['radeon', 'alsa_card.pci-0000_03_00.1', 'alsa', 'HDA ATI HDMI'], ['jlab', `bluez_card.${MAC_}`, 'bluez5', 'JLab GO Work 2']];
+  for (const [id, name, api, nick] of cards) {
+    const d = [...devs, ...hiddenDevs].find((x) => x.id === id);
+    if (!d) continue;
+    const p = d.profiles[d.profile];
+    add('Device', eid('d:' + name), name, `profile ${p.name}`, { 'device.name': name, 'device.description': d.title, 'device.nick': nick, 'device.api': api, 'device.bus': api === 'alsa' ? 'pci' : 'bluetooth',
+      'device.form-factor': api === 'alsa' ? 'internal' : 'headset', 'media.class': 'Audio/Device', 'device.profile': p.name, ...(api === 'bluez5' ? { 'api.bluez5.address': MAC, 'api.bluez5.codec': (d.codec || '').toLowerCase(), 'device.icon-name': 'audio-headset-bluetooth' } : { 'api.alsa.card': id === 'ryzen' ? 1 : 0, 'alsa.driver_name': 'snd_hda_intel' }) });
+  }
+  add('Device', eid('d:alsa_card.midi'), 'alsa_card.seq', 'ALSA sequencer', { 'device.name': 'alsa_card.seq', 'device.api': 'alsa', 'media.class': 'Midi/Device' });
+  for (const n of m.nodes) add('Node', n.id, n.name, n.cls, nodeProps(n));
+  for (const n of m.nodes) for (const p of [...n.ins, ...n.outs]) add('Port', p.id, `${n.name}:${p.name}`, p.dir === 'in' ? 'input' : 'output', portProps(p));
+  for (const l of m.L) add('Link', l.id, `${l.out.node.name}:${l.out.name} → ${l.in.node.name}:${l.in.name}`, l.state + (l.passive ? ' · passive' : ''), linkProps(l));
+  [[31, 'settings'], [33, 'schema-sm-settings'], [34, 'persistent-sm-settings'], [35, 'sm-settings'], [36, 'sm-objects'], [37, 'default-profile'], [38, 'default'], [39, 'filters'], [40, 'route-settings']]
+    .forEach(([id, n]) => add('Metadata', id, n, `${engineMeta(m).filter((r) => r[0] === n).length} keys`, { 'metadata.name': n }));
+  add('Profiler', 41, 'profiler', '', { 'profiler.name': 'profiler' });
+  add('SecurityContext', 13, 'security-context', '', {});
+  return o;
+}
+// the metadata: name, subject, key, type, value
+function engineMeta(m) {
+  const nameOf = (k) => { const [id, label] = k.split(':'); return m.nodes.find((n) => n.dev?.id === id && n.labels?.includes(label))?.name || '—'; };
+  const so = nameOf(S.defOut), si = nameOf(S.defIn), J = 'Spa:String:JSON';
+  return [
+    ['settings', 0, 'log.level', '', '2'], ['settings', 0, 'clock.rate', '', '48000'], ['settings', 0, 'clock.allowed-rates', '', '[ 48000 ]'],
+    ['settings', 0, 'clock.quantum', '', '1024'], ['settings', 0, 'clock.min-quantum', '', '32'], ['settings', 0, 'clock.max-quantum', '', '2048'],
+    ['settings', 0, 'clock.force-quantum', '', '0'], ['settings', 0, 'clock.force-rate', '', '0'],
+    ['default', 0, 'default.audio.sink', J, `{"name":"${so}"}`], ['default', 0, 'default.audio.source', J, `{"name":"${si}"}`],
+    ['default', 0, 'default.configured.audio.sink', J, `{"name":"${so}"}`], ['default', 0, 'default.configured.audio.source', J, `{"name":"${si}"}`],
+    ['sm-settings', 0, 'bluetooth.autoswitch-to-headset-profile', 'Spa:String:JSON', 'true'], ['sm-settings', 0, 'bluetooth.use-persistent-storage', '', 'true'],
+    ['sm-settings', 0, 'device.restore-profile', '', 'true'], ['sm-settings', 0, 'device.restore-routes', '', 'true'],
+    ['sm-settings', 0, 'linking.follow-default-target', '', 'true'], ['sm-settings', 0, 'node.stream.restore-props', '', 'true'],
+    ['sm-settings', 0, 'node.stream.restore-target', '', 'true'], ['sm-settings', 0, 'node.features.audio.monitor-ports', '', 'true'],
+    ['schema-sm-settings', 0, 'bluetooth.autoswitch-to-headset-profile', J, '{"type":"bool","default":true,"description":"Always show microphone for Bluetooth headsets"}'],
+    ['schema-sm-settings', 0, 'linking.follow-default-target', J, '{"type":"bool","default":true,"description":"Streams connected to the default device follow when the default changes"}'],
+    ['route-settings', eid('d:alsa_card.pci-0000_63_00.6'), 'restore.route.analog-output-speaker', J, '{"volume":0.6,"mute":false,"channels":["FL","FR"]}'],
+    ['default-profile', eid('d:alsa_card.pci-0000_63_00.6'), 'default.profile', J, '{"name":"output:analog-stereo+input:analog-stereo"}'],
+  ];
+}
+// what PipeWire tells about a node, as pw-dump shows it
+function nodeProps(n) {
+  const ch = Math.max(n.ins.filter((p) => !p.monitor).length, n.outs.filter((p) => !p.monitor).length, 1);
+  const pos = [...n.ins, ...n.outs].filter((p) => !p.monitor).map((p) => p.ch).slice(0, ch).join(',');
+  const p = { 'object.serial': n.id + 412, 'client.id': n.client.id, 'factory.id': n.kind === 'device' ? 20 : 17, 'node.name': n.name, 'node.description': n.desc, 'media.class': n.cls };
+  if (n.kind === 'device') Object.assign(p, {
+    'device.id': eid('d:' + (n.api === 'alsa' ? (n.name.includes('03_00') ? 'alsa_card.pci-0000_03_00.1' : 'alsa_card.pci-0000_63_00.6') : `bluez_card.${MAC_}`)),
+    'device.api': n.api, 'device.class': 'sound', 'priority.driver': n.prio, 'priority.session': n.prio, 'node.driver': n.driver, 'node.pause-on-idle': false,
+    'audio.channels': ch, 'audio.position': pos, 'factory.name': n.api === 'alsa' ? `api.alsa.pcm.${n.cls === 'Audio/Sink' ? 'sink' : 'source'}` : `api.bluez5.${n.dev.profile === 1 ? 'sco' : 'a2dp'}.${n.cls === 'Audio/Sink' ? 'sink' : 'source'}`,
+    'object.path': `${n.api}:pcm:${n.name.includes('03_00') ? 0 : 1}:front:${n.cls === 'Audio/Sink' ? 'playback' : 'capture'}`,
+    ...(n.api === 'alsa' ? { 'api.alsa.path': n.name.includes('hdmi') ? 'hdmi:0' : 'front:1', 'api.alsa.pcm.card': n.name.includes('03_00') ? 0 : 1, 'alsa.card_name': n.name.includes('03_00') ? 'HDA ATI HDMI' : 'HD-Audio Generic',
+      'alsa.driver_name': 'snd_hda_intel', 'api.alsa.period-size': 1024, 'api.alsa.headroom': 0, 'card.profile.device': 6, 'device.profile.name': n.name.split('.').pop() }
+      : { 'api.bluez5.address': MAC, 'api.bluez5.codec': (n.dev.codec || 'cvsd').toLowerCase(), 'api.bluez5.profile': n.dev.profile === 1 ? 'headset-head-unit' : 'a2dp-sink',
+        'bluez5.loopback': !!n.virt, ...(n.loop ? { 'node.link-group': `bluez-input-${MAC_}` } : {}) }),
+  });
+  if (n.kind === 'stream') Object.assign(p, n.sys ? { 'node.link-group': `bluez-input-${MAC_}`, 'node.passive': false, 'stream.dont-remix': true, 'media.type': 'Audio' } : {
+    'application.name': n.dev.title, 'application.process.binary': n.app.bin, 'application.process.id': n.app.pid, 'client.api': n.app.api,
+    'media.type': 'Audio', 'media.category': n.cls.includes('Output') ? 'Playback' : 'Capture', 'media.name': n.app.media || (n.dev.id === 'teams' ? (n.cls.includes('Output') ? 'Playback' : 'Record') : 'AudioStream'),
+    'node.rate': `1/${n.rate}`, 'node.latency': `${n.lat}/${n.rate}`, 'node.autoconnect': true, 'stream.is-live': true, 'port.group': 'stream.0',
+    ...(n.app.api === 'pipewire-pulse' ? { 'pulse.server.type': 'unix', 'pulse.attr.maxlength': 4194304, 'pulse.corked': !n.links.some((l) => !l.passive) } : {}),
+    ...(n.app.api === 'alsa' ? { 'alsa.card': 0, 'alsa.name': 'audacity' } : {}),
+  });
+  if (n.kind === 'meter') Object.assign(p, { 'application.name': 'patchcord', 'application.process.binary': 'patchcord', 'client.api': 'pipewire', 'media.type': 'Audio',
+    'media.category': 'Capture', 'media.role': 'Production', 'stream.monitor': true, 'node.passive': true, 'node.dont-reconnect': true, 'node.autoconnect': false });
+  if (n.kind === 'midi') Object.assign(p, { 'factory.name': n.name === 'bluez_midi.server' ? 'api.bluez5.midi.node' : 'api.alsa.seq.bridge', 'media.type': 'Midi', 'node.driver': false });
+  if (n.kind === 'driver') Object.assign(p, { 'factory.name': 'support.node.driver', 'node.group': n.freewheel ? 'pipewire.freewheel' : 'pipewire.dummy', 'priority.driver': n.prio, 'node.driver': true, ...(n.freewheel ? { 'node.freewheel': true } : {}) });
+  return p;
+}
+function nodeParams(n) {
+  const ch = [...n.ins, ...n.outs].filter((p) => !p.monitor), pos = ch.map((p) => p.ch), g = n.g, v = g && g.vol !== undefined ? +(g.vol ** 3).toFixed(4) : 1;
+  const prm = {};
+  if (n.media === 'midi' || n.kind === 'midi') return { PortConfig: { direction: n.ins.length ? 'Input' : 'Output', mode: 'none' }, Props: {} };
+  prm.EnumFormat = [{ mediaType: 'audio', mediaSubtype: 'raw', format: n.kind === 'device' && n.api === 'alsa' ? { default: 'S32LE', alt1: 'S16LE', alt2: 'S24_32LE' } : 'F32P', rate: n.kind === 'device' ? { default: 48000, alt1: 44100, alt2: 96000 } : n.rate, channels: pos.length, position: pos }];
+  if (n.state === 'running') prm.Format = { mediaType: 'audio', mediaSubtype: 'raw', format: 'F32P', rate: n.group.rate, channels: pos.length, position: pos };
+  prm.Props = { volume: 1, mute: !!g?.mute, channelVolumes: pos.map(() => v), volumeBase: 1, volumeStep: 0.000015, channelMap: pos, softMute: !!g?.mute, softVolumes: pos.map(() => v),
+    monitorMute: false, monitorVolumes: pos.map(() => 1), latencyOffsetNsec: Math.round((g?.routes?.[g.route]?.lat || 0) * 1e6) };
+  prm.PortConfig = { direction: n.ins.length ? 'Input' : 'Output', mode: 'dsp', monitor: n.cls === 'Audio/Sink', control: false, format: { mediaType: 'audio', mediaSubtype: 'raw', format: 'F32P', rate: 48000, channels: pos.length, position: pos } };
+  const q = n.group?.quant || 0;
+  prm.Latency = [{ direction: 'Input', minQuantum: 1, maxQuantum: 1, minRate: 0, maxRate: 0, minNs: 0, maxNs: 0 }, { direction: 'Output', minQuantum: n.kind === 'device' ? 1 : 0, maxQuantum: n.kind === 'device' ? 1 : 0, minRate: n.kind === 'device' ? 256 : 0, maxRate: n.kind === 'device' ? 256 : 0, minNs: 0, maxNs: 0 }];
+  prm.ProcessLatency = { quantum: 0, rate: n.kind === 'device' && n.api === 'bluez5' ? 4096 : 0, ns: 0 };
+  if (n.kind === 'device' && q) prm.IO = { Clock: { rate: `1/${n.group.rate}`, duration: q, delay: n.api === 'bluez5' ? 4096 : 256 } };
+  return prm;
+}
+function portProps(p) {
+  const n = p.node, i = (p.dir === 'in' ? n.ins : n.outs).indexOf(p);
+  return { 'port.id': i, 'port.name': p.name, 'port.alias': `${n.desc}:${p.name}`, 'port.direction': p.dir, 'node.id': n.id, 'object.path': `${n.name}:${p.dir === 'in' ? 'playback' : p.monitor ? 'monitor' : 'capture'}_${i}`,
+    'format.dsp': p.t === 'midi' ? '8 bit raw midi' : '32 bit float mono audio', ...(p.t === 'midi' ? {} : { 'audio.channel': p.ch }),
+    ...(p.monitor ? { 'port.monitor': true } : {}), ...(n.kind === 'device' && !p.monitor ? { 'port.physical': true, 'port.terminal': true } : {}) };
+}
+function linkProps(l) {
+  return { 'link.output.node': l.out.node.id, 'link.output.port': l.out.id, 'link.input.node': l.in.node.id, 'link.input.port': l.in.id, 'factory.id': 21,
+    'client.id': l.client.id, 'link.passive': l.passive, 'object.linger': false, 'link.state': l.state, 'link.format': l.out.t === 'midi' ? '8 bit raw midi' : '32 bit float mono audio' };
+}
+
+// ---------------- ENGINE: drawing ----------------
+const NW = 244, NH0 = 40, PR = 15, COLW = NW + 120, NGAP = 14, BPAD = 26, BHEAD = 36;
+const nodeH = (n) => NH0 + Math.max(n.ins.length, n.outs.length, 1) * PR + 8;
+const ESHOW = [['patchcord', 'PATCHCORD', "Patchcord's own nodes: its passive meters"], ['midi', 'MIDI', 'MIDI nodes'],
+  ['idle', 'NOT RUNNING', 'nodes no driver clocks now: suspended devices, idle streams'], ['drivers', 'DRIVERS', 'the Dummy and Freewheel drivers: clocks of the graph itself']];
+const visible = (n) => (ENG.show.patchcord || n.kind !== 'meter') && (ENG.show.drivers || n.kind !== 'driver') && (ENG.show.midi || n.kind !== 'midi') && (ENG.show.idle || n.state === 'running');
+const ENODE_ORDER = { device: 0, midi: 1, stream: 2, meter: 3, driver: 4 };
+// a band: its nodes in blocks (nodes joined by links), each block in columns by signal flow;
+// the blocks packed in columns so the band stays about as tall as it is wide
+function engineBlock(nodes, ls) {
+  const col = new Map(nodes.map((n) => [n, 0]));
+  for (let it = 0; it < nodes.length; it++) for (const l of ls) if (l.in.node.kind !== 'meter' && col.get(l.in.node) <= col.get(l.out.node)) col.set(l.in.node, col.get(l.out.node) + 1);
+  const mx = Math.max(-1, ...nodes.filter((n) => n.kind !== 'meter').map((n) => col.get(n)));
+  for (const n of nodes) if (n.kind === 'meter') col.set(n, mx + 1);
+  const cols = [];
+  for (const [n, c] of col) (cols[c] = cols[c] || []).push(n);
+  const used = cols.filter(Boolean), idx = new Map();
+  used.forEach((c, ci) => {
+    // ordered as the column before it, so links cross less
+    const bary = (n) => { const ps = ls.filter((l) => l.in.node === n && idx.has(l.out.node)).map((l) => idx.get(l.out.node)); return ps.length ? ps.reduce((a, v) => a + v, 0) / ps.length : 1e3 + ENODE_ORDER[n.kind]; };
+    c.sort((a, b) => ci ? bary(a) - bary(b) : ENODE_ORDER[a.kind] - ENODE_ORDER[b.kind] || a.desc.localeCompare(b.desc));
+    c.forEach((n, i) => idx.set(n, i));
+  });
+  const place = [];
+  let h = 0;
+  used.forEach((c, ci) => {
+    let y = 0;
+    for (const n of c) { place.push([n, ci * COLW, y]); y += nodeH(n) + NGAP; }
+    h = Math.max(h, y - NGAP);
+  });
+  return { place, w: used.length * COLW - (COLW - NW), h, key: ENODE_ORDER[nodes[0].kind] + (nodes[0].dev?.title || nodes[0].desc) };
+}
+function engineLayout(m) {
+  const bands = m.groups.slice().sort((a, b) => b.members.length - a.members.length).map((g) => ({ g, nodes: g.members.filter(visible) }));
+  bands.push({ idle: true, nodes: m.nodes.filter((n) => n.state !== 'running' && n.kind !== 'driver' && visible(n)) });
+  bands.push({ drivers: true, nodes: m.nodes.filter((n) => n.kind === 'driver' && n.state !== 'running' && visible(n)) });
+  const pos = new Map(), out = [];
+  let y = 0, W = 0;
+  for (const b of bands) {
+    if (!b.nodes.length) continue;
+    const set = new Set(b.nodes), ls = m.L.filter((l) => set.has(l.out.node) && set.has(l.in.node) && l.out.node !== l.in.node);
+    const par = new Map(b.nodes.map((n) => [n, n]));
+    const find = (n) => (par.get(n) === n ? n : (par.set(n, find(par.get(n))), par.get(n)));
+    for (const l of ls) par.set(find(l.out.node), find(l.in.node));
+    const comps = new Map();
+    for (const n of b.nodes) { const r = find(n); if (!comps.has(r)) comps.set(r, []); comps.get(r).push(n); }
+    const blocks = [...comps.values()].map((c) => engineBlock(c, ls.filter((l) => c.includes(l.out.node)))).sort((a, c) => a.key.localeCompare(c.key));
+    const cap = Math.max(380, ...blocks.map((k) => k.h));
+    let x = BPAD, cy = 0, cw = 0, h = 0;
+    for (const k of blocks) {
+      if (cy && cy + k.h > cap) { x += cw + 70; cy = 0; cw = 0; }
+      for (const [n, dx, dy] of k.place) pos.set(n, { x: x + dx, y: y + BHEAD + cy + dy });
+      cy += k.h + NGAP * 2; cw = Math.max(cw, k.w); h = Math.max(h, cy - NGAP * 2);
+    }
+    const w = x + cw + BPAD;
+    out.push({ ...b, y, h: BHEAD + h + 14, w });
+    W = Math.max(W, w);
+    y += BHEAD + h + 14 + 26;
+  }
+  for (const b of out) b.w = W;
+  return { bands: out, pos, W, H: y };
+}
+const portXY = (lay, p) => {
+  const q = lay.pos.get(p.node), list = p.dir === 'in' ? p.node.ins : p.node.outs;
+  return q && { x: q.x + (p.dir === 'in' ? 0 : NW), y: q.y + NH0 + list.indexOf(p) * PR + PR / 2 + 2 };
+};
+function engineDraw() {
+  const m = ENG.m, lay = ENG.lay = engineLayout(m), s = [], sel = ENG.sel;
+  const selNode = sel?.t === 'Node' ? sel.id : sel?.t === 'Port' ? m.nodes.find((n) => [...n.ins, ...n.outs].some((p) => p.id === sel.id))?.id : null;
+  // what the selection touches stays bright: the selected node's neighbours, a link's two ends
+  const near = new Set();
+  for (const l of m.L) if ((selNode && (l.out.node.id === selNode || l.in.node.id === selNode)) || (sel?.t === 'Link' && sel.id === l.id)) { near.add(l.out.node.id); near.add(l.in.node.id); }
+  for (const b of lay.bands) {
+    const col = b.g ? (b.g.driver.dev?.color || '#8c8e91') : '#3a3c40';
+    const head = b.g ? `<tspan class="bt">DRIVER</tspan>  ${esc(b.g.driver.desc)}  <tspan class="bd">#${b.g.driver.id} · ${b.g.rate} Hz · QUANT ${b.g.quant} · ${ms(b.g.quant, b.g.rate)} · </tspan><tspan class="bd" id="eload-${b.g.id}">DSP ${((ENG.gload.get(b.g.id) || 0) * 100).toFixed(1)}%</tspan>`
+      : b.idle ? '<tspan class="bt">NOT RUNNING</tspan>  <tspan class="bd">no driver clocks these now: suspended devices, idle streams. They use no CPU</tspan>'
+      : '<tspan class="bt">GRAPH DRIVERS</tspan>  <tspan class="bd">clocks PipeWire keeps for nodes without a device, and for freewheeling (export)</tspan>';
+    s.push(`<rect class="band${b.g ? '' : ' off'}" x="0" y="${b.y}" width="${b.w}" height="${b.h}" rx="10" style="--bc:${col}"/>`,
+      `<rect x="0" y="${b.y}" width="5" height="${b.h}" rx="2" fill="${col}" opacity="${b.g ? .9 : .4}"/>`,
+      `<text class="bhead" x="${BPAD}" y="${b.y + 22}">${head}</text>`);
+  }
+  for (const l of m.L) {
+    const a = portXY(lay, l.out), b = portXY(lay, l.in);
+    if (!a || !b) continue;
+    const dx = Math.max(50, Math.abs(b.x - a.x) / 2), d = `M${a.x},${a.y} C${a.x + dx},${a.y} ${b.x - dx},${b.y} ${b.x},${b.y}`;
+    const hl = sel && ((sel.t === 'Link' && sel.id === l.id) || (selNode && (l.out.node.id === selNode || l.in.node.id === selNode)) || (sel.t === 'Port' && (l.out.id === sel.id || l.in.id === sel.id)));
+    const cls = `elink ${l.state}${l.passive ? ' passive' : ''}${l.out.t === 'midi' ? ' midi' : ''}${hl ? ' hl' : sel ? ' dim' : ''}`;
+    s.push(`<path class="${cls}" d="${d}"/><path class="ehit" d="${d}" data-sel="Link:${l.id}"><title>link ${l.id}: ${esc(l.out.node.name)}:${esc(l.out.name)} → ${esc(l.in.node.name)}:${esc(l.in.name)}${l.passive ? ' (passive)' : ''}</title></path>`);
+  }
+  for (const n of m.nodes) {
+    const q = lay.pos.get(n);
+    if (!q) continue;
+    const h = nodeH(n), col = n.kind === 'meter' ? '#8c8e91' : n.kind === 'driver' ? '#55585d' : n.sys ? '#6a5a8a' : n.dev?.color || '#8c8e91';
+    const prof = ENG.prof.get(n.id), on = sel && selNode === n.id, err = ENG.err.get(n.id);
+    const tags = [n.hidden && 'HIDDEN ON DESK', n.sys === 'plumbing' && 'SYSTEM', n.kind === 'meter' && 'PATCHCORD', n === n.group?.driver && 'DRIVER', n.state === 'running' && n.kind === 'stream' && n.rate !== n.group.rate && `${n.rate}→${n.group.rate}`].filter(Boolean);
+    s.push(`<g class="enode ${n.state}${on ? ' sel' : ''}${sel && sel.t !== 'Obj' && !on && !near.has(n.id) && (selNode || sel.t === 'Link') ? ' dim' : ''}" transform="translate(${q.x},${q.y})" data-sel="Node:${n.id}">`,
+      `<title>${esc(n.name)}\n${n.cls} · node ${n.id} · ${n.state}</title>`,
+      `<rect class="nb" width="${NW}" height="${h}" rx="6"/><rect width="${NW}" height="4" rx="2" fill="${col}"/>`,
+      `<circle class="nled ${err ? 'err' : n.state}" cx="12" cy="17" r="4"/>`,
+      `<text class="nt" x="22" y="21">${esc(trunc(n.desc, 27))}</text>`,
+      `<text class="ns" x="12" y="34">${n.id} · ${esc(trunc(n.cls, 26))}</text>`,
+      `<text class="nbz" x="${NW - 10}" y="21" text-anchor="end" id="ebz-${n.id}">${prof && n.state === 'running' ? prof.busy.toFixed(0) + 'µs' : ''}</text>`);
+    if (tags.length) s.push(`<text class="ntag${err ? ' err' : ''}" x="${NW - 10}" y="34" text-anchor="end">${esc(tags.join(' · '))}</text>`);
+    const half = n.ins.length && n.outs.length ? 17 : 34;
+    n.ins.forEach((p, i) => {
+      const y = NH0 + i * PR + PR / 2 + 2, ps = sel?.t === 'Port' && sel.id === p.id;
+      s.push(`<g data-sel="Port:${p.id}" class="eport${ps ? ' sel' : ''}"><circle cx="0" cy="${y}" r="4" class="pd ${p.t}${p.monitor ? ' mon' : ''}"/><text class="pt" x="10" y="${y + 3.5}">${esc(trunc(p.name, half))}</text></g>`);
+    });
+    n.outs.forEach((p, i) => {
+      const y = NH0 + i * PR + PR / 2 + 2, ps = sel?.t === 'Port' && sel.id === p.id;
+      s.push(`<g data-sel="Port:${p.id}" class="eport${ps ? ' sel' : ''}"><circle cx="${NW}" cy="${y}" r="4" class="pd ${p.t}${p.monitor ? ' mon' : ''}"/><text class="pt" x="${NW - 10}" y="${y + 3.5}" text-anchor="end">${esc(trunc(p.name, half))}</text></g>`);
+    });
+    s.push('</g>');
+  }
+  $('#eview').innerHTML = s.join('');
+  engineView();
+}
+const engineView = () => { const v = ENG.view; $('#eview').setAttribute('transform', `translate(${v.x},${v.y}) scale(${v.s})`); };
+function engineFit() {
+  const r = $('#egwrap').getBoundingClientRect(), lay = ENG.lay;
+  if (!lay || !r.width) return;
+  const s = clamp(Math.min((r.width - 60) / lay.W, (r.height - 90) / lay.H), .25, 1.1);
+  ENG.view = { x: (r.width - lay.W * s) / 2, y: 56, s };
+  engineView();
+}
+// numbers that change every tick, without redrawing the graph
+function engineLive() {
+  for (const n of ENG.m.nodes) { const t = document.getElementById('ebz-' + n.id), p = ENG.prof.get(n.id); if (t) t.textContent = p && n.state === 'running' ? p.busy.toFixed(0) + 'µs' : ''; }
+  for (const g of ENG.m.groups) { const t = document.getElementById('eload-' + g.id); if (t) t.textContent = `DSP ${((g.load || 0) * 100).toFixed(1)}%`; }
+}
+
+function engineServer(m, issues) {
+  const xr = [...ENG.err.values()].reduce((a, b) => a + b, 0), nPorts = m.nodes.reduce((s, n) => s + n.ins.length + n.outs.length, 0);
+  const objs = ENG.objs.length, load = ENG.load.at(-1) || 0;
+  const top = Math.max(.01, ...ENG.load) * 1.2, spark = ENG.load.map((v, i) => `${i * 2},${21 - v / top * 19}`).join(' ');
+  const cnt = (lv) => issues.filter((i) => i.lv === lv).length;
+  const cell = (b, v, t = '') => `<div class="cell" title="${t}"><b>${b}</b><span>${v}</span></div>`;
+  $('#eserver').innerHTML = cell('SERVER', 'pipewire-0 · 1.6.9', 'PipeWire, the sound server') + cell('SESSION', 'WirePlumber 0.5.15', 'the session manager: what links where, profiles, defaults, what is remembered')
+    + cell('CLOCK', '48000 Hz', 'clock.rate; allowed: 48000') + cell('QUANTUM', '1024 · 32–2048', 'clock.quantum, min and max: samples per cycle. Each driver group picks its own within these')
+    + cell('DRIVERS', `${m.groups.length} running`, 'groups of nodes clocked together')
+    + `<div class="cell" title="the busiest group's DSP load: of each cycle's time, how much its nodes took"><b>DSP LOAD</b><span>${(load * 100).toFixed(1)}% <svg width="180" height="22" viewBox="0 0 180 22"><polyline points="${spark}" fill="none" stroke="#3a2408" stroke-width="1.4"/></svg></span></div>`
+    + cell('XRUNS', xr, 'cycles that missed their deadline since PipeWire started: what you hear as a click')
+    + cell('OBJECTS', `${objs} · ${m.nodes.length} nodes · ${nPorts} ports · ${m.L.length} links`, 'everything PipeWire lists')
+    + `<div class="cell health" title="see ISSUES below"><b>HEALTH</b><span><i class="led err"></i>${cnt('err')} <i class="led warn"></i>${cnt('warn')} <i class="led info"></i>${cnt('info')}</span></div>`;
+}
+
+function engineBottom(m, issues) {
+  const tabs = [['top', 'TOP'], ['issues', `ISSUES ${issues.length}`], ['objects', 'OBJECTS'], ['metadata', 'METADATA'], ['events', 'EVENTS']];
+  $('#ebtabs').innerHTML = tabs.map(([k, t]) => `<button data-tab="${k}" class="${ENG.tab === k ? 'on' : ''}">${t}</button>`).join('')
+    + `<span class="hint">${{ top: 'as pw-top: each driver and the nodes it clocks, timings of the last cycle', issues: 'what looks wrong or is worth knowing, worst first', objects: 'every object PipeWire lists', metadata: 'shared settings: defaults, clock, WirePlumber', events: 'what happened while Patchcord was open' }[ENG.tab]}</span>`;
+  const b = $('#ebbody'), top = b.scrollTop, row = (id, cells, cls = '') => `<tr data-sel="${id}" class="${cls}${ENG.sel && id === `${ENG.sel.t}:${ENG.sel.id}` ? ' sel' : ''}">${cells.map((c) => `<td>${c}</td>`).join('')}</tr>`;
+  if (ENG.tab === 'top') {
+    const r = [];
+    const line = (n, lead) => {
+      const p = ENG.prof.get(n.id), run = n.state === 'running' && p, per = run ? p.q / p.rate * 1e6 : 0, e = ENG.err.get(n.id) || 0;
+      const bq = run ? p.busy / per : 0;
+      return row(`Node:${n.id}`, [run ? 'R' : n.state === 'idle' ? 'I' : 'S', n.id, run && lead ? p.q : run ? p.q : 0, run && lead ? p.rate : n.state === 'running' ? n.rate : 0,
+        run ? p.wait.toFixed(1) + 'µs' : '---', run ? p.busy.toFixed(1) + 'µs' : '---', run ? (p.wait / per).toFixed(2) : '---',
+        run ? `<span class="bq"><i style="width:${Math.min(100, bq * 400)}%"></i></span>${bq.toFixed(2)}` : '---', e ? `<b class="errn">${e}</b>` : 0, n.fmt || '', (lead ? '' : ' + ') + esc(n.name)], lead ? 'drv' : '');
+    };
+    for (const g of m.groups) { r.push(line(g.driver, true)); for (const n of g.members) if (n !== g.driver) r.push(line(n, false)); }
+    for (const n of m.nodes) if (n.state !== 'running') r.push(line(n, true));
+    b.innerHTML = `<table class="et top"><tr><th>S</th><th>ID</th><th>QUANT</th><th>RATE</th><th>WAIT</th><th>BUSY</th><th>W/Q</th><th>B/Q</th><th>ERR</th><th>FORMAT</th><th>NAME</th></tr>${r.join('')}</table>`;
+  } else if (ENG.tab === 'issues') {
+    b.innerHTML = issues.length ? issues.map((i) => `<div class="issue ${i.lv}" ${i.id ? `data-sel="Node:${i.id}"` : ''}><i class="led ${i.lv}"></i><b>${i.tag}</b><div><div>${esc(i.title)}</div><small>${esc(i.hint)}</small></div></div>`).join('')
+      : '<div class="iempty">Nothing to worry about.</div>';
+  } else if (ENG.tab === 'objects') {
+    const types = ['Core', 'Module', 'Factory', 'Client', 'Device', 'Node', 'Port', 'Link', 'Metadata', 'Profiler', 'SecurityContext'];
+    const list = ENG.objs.filter((o) => o.type === ENG.otype).sort((a, c) => a.id - c.id);
+    b.innerHTML = `<div class="objs"><div class="otypes">${types.map((t) => `<button data-otype="${t}" class="${t === ENG.otype ? 'on' : ''}">${t}<span>${ENG.objs.filter((o) => o.type === t).length}</span></button>`).join('')}</div>`
+      + `<table class="et">${list.map((o) => row(`${o.type}:${o.id}`, [o.id, esc(o.name), esc(o.info || '')])).join('')}</table></div>`;
+  } else if (ENG.tab === 'metadata') {
+    b.innerHTML = `<table class="et"><tr><th>METADATA</th><th>SUBJECT</th><th>KEY</th><th>TYPE</th><th>VALUE</th></tr>${engineMeta(m).map((r) => `<tr><td>${r[0]}</td><td>${r[1]}</td><td>${esc(r[2])}</td><td>${r[3]}</td><td class="v">${esc(r[4])}</td></tr>`).join('')}`
+      + '<tr><td>filters</td><td colspan="4" class="mutedc">empty: no smart filters (an EQ placed in front of a device would be listed here)</td></tr><tr><td>sm-objects</td><td colspan="4" class="mutedc">empty: nothing loaded into WirePlumber on request</td></tr></table>';
+  } else {
+    b.innerHTML = `<table class="et ev">${ENG.events.map((e) => `<tr ${e.id ? `data-sel="Node:${e.id}"` : ''} class="${e.kind}"><td>${clock(e.t)}</td><td>${e.kind.toUpperCase()}</td><td>${esc(e.text)}</td></tr>`).join('')}</table>`;
+  }
+  b.scrollTop = top;
+}
+
+function engineFind(s) {
+  if (!s) return null;
+  const m = ENG.m;
+  if (s.t === 'Node') { const n = m.nodes.find((x) => x.id === s.id); return n && { kind: 'Node', o: n }; }
+  if (s.t === 'Port') { for (const n of m.nodes) for (const p of [...n.ins, ...n.outs]) if (p.id === s.id) return { kind: 'Port', o: p }; return null; }
+  if (s.t === 'Link') { const l = m.L.find((x) => x.id === s.id); return l && { kind: 'Link', o: l }; }
+  const o = ENG.objs.find((x) => x.type === s.t && x.id === s.id);
+  return o && { kind: 'Obj', o };
+}
+function engineInspect() {
+  const el = $('#einsp'), f = engineFind(ENG.sel);
+  if (document.activeElement?.closest?.('#einsp')) return;
+  const keep = el.querySelector('.ibody')?.scrollTop || 0;
+  if (!f) {
+    ENG.sel = null;
+    el.innerHTML = '<div class="ihead"><div><b>INSPECTOR</b><small>nothing selected</small></div></div><div class="iempty">Click a node, a port or a link in the graph, or a row below, to see all PipeWire knows about it: its properties, its params, its timings, and where it lives on the desk.<br><br>'
+      + 'The desk and the rack show devices as Patchcord builds them. Here is the graph PipeWire really has: one node per sink, source and stream, one link per channel, Patchcord\'s own meters, WirePlumber\'s plumbing.</div>';
+    return;
+  }
+  const kv = (rows) => `<table class="kv">${rows.filter(Boolean).map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</table>`;
+  const props = (p) => `<input class="ifilter" placeholder="filter properties" spellcheck="false"><table class="kv props">${Object.entries(p).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(typeof v === 'string' ? `"${v}"` : String(v))}</td></tr>`).join('')}</table>`;
+  const ref = (t, id, txt) => `<a data-sel="${t}:${id}">${esc(txt)}</a>`;
+  let head, tabs, body;
+  if (f.kind === 'Node') {
+    const n = f.o, g = n.group, p = ENG.prof.get(n.id), e = ENG.err.get(n.id) || 0;
+    head = [n.desc, `node ${n.id} · ${n.cls}`, e ? 'err' : n.state];
+    tabs = ['info', 'props', 'params', 'timing'];
+    if (!tabs.includes(ENG.itab)) ENG.itab = 'info';
+    if (ENG.itab === 'info') {
+      const desk = n.kind === 'meter' ? `Patchcord's own meter for <b>${esc(n.meterOf.d.title)} · ${esc(n.meterOf.g.label)}</b>: the LEDs in that frame. Passive: it follows what runs and wakes nothing. Not on the desk.`
+        : n.sys === 'plumbing' ? `WirePlumber's plumbing behind <b>MIC</b> on ${esc(n.dev.title)}: inside its loopback the sound reaches ${ref('Node', n.loop.id, n.loop.name)} without a link. Not on the desk (HIDDEN lists it under SYSTEM).`
+        : n.kind === 'driver' ? 'A clock of PipeWire itself, for nodes without a device. Not on the desk.'
+        : n.dev ? `<b>${esc(n.dev.title)}</b> · ${n.labels.map(esc).join(' + ')}${n.hidden ? ' · <i>hidden on the desk</i>' : ''}<br><small>${n.kind === 'device' ? (n.labels.length > 1 ? 'The desk shows this sink and its monitor as one frame, and the card\'s other nodes in the same device.' : 'One frame of the card\'s device on the desk.') : n.kind === 'stream' ? 'One stream of the app: a frame of its device on the desk.' : 'A MIDI device on the desk.'}</small>`
+        : '—';
+      body = kv([['STATE', `<i class="led ${e ? 'err' : n.state}"></i>${n.state}${e ? ` · <b class="errn">${e} xruns</b>` : ''}`], ['NAME', esc(n.name)], ['CLASS', n.cls],
+        ['CLIENT', ref('Client', n.client.id, `${n.client.name} (${n.client.id})`)],
+        ['DRIVER', g ? (g.driver === n ? `<b>this node</b> clocks ${g.members.length - 1} other${g.members.length === 2 ? '' : 's'}` : ref('Node', g.driver.id, `${g.driver.desc} (${g.driver.id})`)) : '— (not running)'],
+        g && ['CLOCK', `${g.rate} Hz · quantum ${g.quant} · ${ms(g.quant, g.rate)}`],
+        n.rate !== 48000 && ['OWN RATE', `${n.rate} Hz${g ? ' <b class="warnn">resampled</b>' : ''}`],
+        n.lat && ['ASKS FOR', `${n.lat} samples (node.latency)`],
+        n.fmt && ['FORMAT', n.fmt], p && g && ['TIMING', `wait ${p.wait.toFixed(1)} µs · busy ${p.busy.toFixed(1)} µs`]])
+        + `<h3>ON THE DESK</h3><div class="desk">${desk}${n.dev && !n.hidden ? `<button data-desk="${n.dev.id}">⌖ SHOW ON DESK</button>` : ''}</div>`
+        + `<h3>PORTS ${n.ins.length} IN · ${n.outs.length} OUT</h3>${[...n.ins, ...n.outs].map((pt) => `<div class="irow" data-sel="Port:${pt.id}"><i class="pd ${pt.t}"></i>${pt.dir === 'in' ? 'IN ' : 'OUT'} ${esc(pt.name)}<span>${ENG.m.L.filter((l) => l.out === pt || l.in === pt).length} links</span></div>`).join('')}`
+        + `<h3>LINKS ${n.links.length}</h3>${n.links.map((l) => `<div class="irow" data-sel="Link:${l.id}"><i class="led ${l.state === 'active' ? 'running' : 'idle'}"></i>${l.out.node === n ? '→ ' + esc(l.in.node.desc) + ':' + esc(l.in.name) : '← ' + esc(l.out.node.desc) + ':' + esc(l.out.name)}<span>${l.passive ? 'passive' : l.state}</span></div>`).join('') || '<div class="iempty">none</div>'}`;
+    } else if (ENG.itab === 'props') body = props(nodeProps(n));
+    else if (ENG.itab === 'params') body = `<pre>${esc(JSON.stringify(nodeParams(n), null, 2))}</pre>`;
+    else body = `<canvas id="ehist" width="640" height="180"></canvas>` + kv([['WAIT', p && g ? p.wait.toFixed(1) + ' µs' : '---'], ['BUSY', p && g ? p.busy.toFixed(1) + ' µs' : '---'],
+      ['B/Q', p && g ? (p.busy / (p.q / p.rate * 1e6)).toFixed(3) : '---'], ['CYCLE', g ? `${(g.quant / g.rate * 1e6).toFixed(0)} µs (quantum ${g.quant} at ${g.rate} Hz)` : '---'], ['XRUNS', e]])
+      + '<div class="iempty">BUSY: how long the node took in the last cycle. B/Q: of the time the cycle had (the quantum). The driver group\'s nodes together must stay under 1.0, or the cycle is late: an xrun, a click.</div>';
+  } else if (f.kind === 'Port') {
+    const p = f.o, ls = ENG.m.L.filter((l) => l.out === p || l.in === p);
+    head = [`${p.node.desc}: ${p.name}`, `port ${p.id} · ${p.dir === 'in' ? 'input' : 'output'}`, p.node.state];
+    tabs = ['info', 'props']; if (!tabs.includes(ENG.itab)) ENG.itab = 'info';
+    body = ENG.itab === 'props' ? props(portProps(p)) : kv([['NODE', ref('Node', p.node.id, `${p.node.desc} (${p.node.id})`)], ['DIRECTION', p.dir === 'in' ? 'input (takes sound)' : 'output (makes sound)'],
+      ['CHANNEL', p.ch || '—'], ['FORMAT', p.t === 'midi' ? '8 bit raw midi' : '32 bit float mono audio'], p.monitor && ['MONITOR', 'yes: a copy of what the sink plays'],
+      p.p && ['ON THE DESK', `${esc(p.p.dev.title)} · ${esc(p.p.group.label)} · ${esc(p.p.n)} jack`]])
+      + `<h3>LINKS ${ls.length}</h3>${ls.map((l) => `<div class="irow" data-sel="Link:${l.id}"><i class="led ${l.state === 'active' ? 'running' : 'idle'}"></i>${l.out === p ? '→ ' + esc(l.in.node.desc) + ':' + esc(l.in.name) : '← ' + esc(l.out.node.desc) + ':' + esc(l.out.name)}<span>${l.passive ? 'passive' : l.state}</span></div>`).join('') || '<div class="iempty">none: a free jack on the desk</div>'}`;
+  } else if (f.kind === 'Link') {
+    const l = f.o;
+    head = [`link ${l.id}`, `${l.out.node.desc} → ${l.in.node.desc}`, l.state === 'active' ? 'running' : 'idle'];
+    tabs = ['info', 'props']; if (!tabs.includes(ENG.itab)) ENG.itab = 'info';
+    body = ENG.itab === 'props' ? props(linkProps(l)) : kv([['FROM', ref('Port', l.out.id, `${l.out.node.desc}:${l.out.name}`)], ['TO', ref('Port', l.in.id, `${l.in.node.desc}:${l.in.name}`)],
+      ['STATE', `<i class="led ${l.state === 'active' ? 'running' : 'idle'}"></i>${l.state}`], ['PASSIVE', l.passive ? 'yes: it does not keep the nodes running' : 'no: it wakes and runs both nodes'],
+      ['MADE BY', ref('Client', l.client.id, l.client.name)], ['FORMAT', l.out.t === 'midi' ? '8 bit raw midi' : '32 bit float mono audio']])
+      + `<div class="iempty">${l.passive ? 'Patchcord\'s meter links are passive: when nothing else plays, the device can suspend.' : 'One link carries one channel: a stereo cord on the desk is two links here.'}</div>`;
+  } else {
+    const o = f.o;
+    head = [o.name, `${o.type.toLowerCase()} ${o.id}`, 'running'];
+    tabs = ['props']; ENG.itab = 'props';
+    body = props(o.props);
+  }
+  el.innerHTML = `<div class="ihead"><i class="led ${head[2]}"></i><div><b>${esc(head[0])}</b><small>${esc(head[1])}</small></div><button class="iclose" title="Close (Esc)">✕</button></div>`
+    + `<div class="itabs">${tabs.map((t) => `<button data-itab="${t}" class="${t === ENG.itab ? 'on' : ''}">${t.toUpperCase()}</button>`).join('')}</div><div class="ibody">${body}</div>`;
+  el.querySelector('.ibody').scrollTop = keep;
+  if (ENG.itab === 'timing') engineHist(f.o);
+}
+function engineHist(n) {
+  const c = $('#ehist'); if (!c) return;
+  const g = c.getContext('2d'), h = ENG.hist.get(n.id) || [], W = c.width, H = c.height, top = Math.max(.1, ...h) * 1.2;
+  g.clearRect(0, 0, W, H);
+  g.strokeStyle = '#2a2c30'; g.lineWidth = 1;
+  for (let i = 1; i < 4; i++) { g.beginPath(); g.moveTo(0, H * i / 4); g.lineTo(W, H * i / 4); g.stroke(); }
+  g.fillStyle = 'rgba(92,255,122,.18)'; g.strokeStyle = '#5cff7a'; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(0, H);
+  h.forEach((v, i) => g.lineTo(i / 119 * W, H - v / top * H));
+  g.lineTo((h.length - 1) / 119 * W, H); g.closePath(); g.fill();
+  g.beginPath(); h.forEach((v, i) => (i ? g.lineTo : g.moveTo).call(g, i / 119 * W, H - v / top * H)); g.stroke();
+  g.fillStyle = '#7d8085'; g.font = '20px ui-monospace, monospace'; g.fillText(`B/Q · last minute · top ${top.toFixed(3)}`, 10, 24);
+}
+
+function engineTick() {
+  const mm = ENG.m = engineModel();
+  engineDiff(mm);
+  engineProfile(mm);
+  if (!ENG.on) return;
+  ENG.objs = engineObjects(mm);
+  const issues = engineIssues(mm);
+  engineServer(mm, issues);
+  const sig = JSON.stringify([mm.nodes.map((n) => [n.id, n.state, !!ENG.err.get(n.id)]), mm.L.map((l) => [l.id, l.state]), ENG.show, ENG.sel]);
+  if (sig !== ENG.sig) { ENG.sig = sig; engineDraw(); if (!ENG.fitted) { ENG.fitted = true; engineFit(); } } else engineLive();
+  engineBottom(mm, issues);
+  engineInspect();
+  const nPorts = mm.nodes.reduce((s, n) => s + n.ins.length + n.outs.length, 0);
+  $('#st1').textContent = `ENGINE · what PipeWire really has · ${mm.nodes.length} nodes · ${nPorts} ports · ${mm.L.length} links · read-only`;
+  $('#st2').textContent = 'click: inspect · drag: pan · wheel: zoom · F: fit · E: back to the desk';
+}
+function engineSelect(s) {
+  if (!s) { ENG.sel = null; } else { const [t, id] = s.split(':'); ENG.sel = { t, id: +id }; if (t !== 'Node' && ENG.itab === 'timing') ENG.itab = 'info'; }
+  engineTick();
+}
+function showEngine(on) {
+  ENG.on = on;
+  document.body.classList.toggle('engine', on);
+  document.querySelectorAll('[data-mode]').forEach((b) => b.classList.toggle('on', on ? b.dataset.mode === 'engine' : b.dataset.mode === S.mode));
+  $('#efilters').innerHTML = ESHOW.map(([k, t, tt]) => `<button class="chip${ENG.show[k] ? ' on' : ''}" data-show="${k}" title="${tt}"><i></i>${t}</button>`).join('');
+  if (on) { ENG.sig = ''; engineTick(); }
+  else { resize(); updateInfo(); }
+}
+// seen before the user opened ENGINE: what PipeWire did since Patchcord started
+ev('node', 'Patchcord connected to pipewire-0 (PipeWire 1.6.9, WirePlumber 0.5.15)');
+setInterval(engineTick, 500);
+$('#efilters').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-show]'); if (!b) return;
+  ENG.show[b.dataset.show] = !ENG.show[b.dataset.show]; b.classList.toggle('on', ENG.show[b.dataset.show]);
+  engineTick(); engineFit();
+});
+$('#ebottom').addEventListener('click', (e) => {
+  const t = e.target.closest('[data-tab]'); if (t) { ENG.tab = t.dataset.tab; return engineTick(); }
+  const o = e.target.closest('[data-otype]'); if (o) { ENG.otype = o.dataset.otype; return engineTick(); }
+  const r = e.target.closest('[data-sel]'); if (r) engineSelect(r.dataset.sel);
+});
+$('#einsp').addEventListener('click', (e) => {
+  if (e.target.closest('.iclose')) return engineSelect(null);
+  const t = e.target.closest('[data-itab]'); if (t) { ENG.itab = t.dataset.itab; return engineInspect(); }
+  const d = e.target.closest('[data-desk]');
+  if (d) { const dv = devs.find((x) => x.id === d.dataset.desk); setMode(S.mode); if (dv) findDevice(dv); return; }
+  const r = e.target.closest('[data-sel]'); if (r) engineSelect(r.dataset.sel);
+});
+$('#einsp').addEventListener('input', (e) => {
+  if (!e.target.classList.contains('ifilter')) return;
+  const q = e.target.value.toLowerCase();
+  for (const tr of $('#einsp').querySelectorAll('.props tr')) tr.style.display = tr.textContent.toLowerCase().includes(q) ? '' : 'none';
+});
+{
+  const svg = $('#egraph');
+  let pan = null;
+  svg.addEventListener('pointerdown', (e) => { pan = { x: e.clientX, y: e.clientY, vx: ENG.view.x, vy: ENG.view.y, moved: false, sel: e.target.closest('[data-sel]')?.dataset.sel }; svg.setPointerCapture(e.pointerId); });
+  svg.addEventListener('pointermove', (e) => {
+    if (!pan) return;
+    if (Math.hypot(e.clientX - pan.x, e.clientY - pan.y) > 4) pan.moved = true;
+    if (pan.moved) { ENG.view.x = pan.vx + e.clientX - pan.x; ENG.view.y = pan.vy + e.clientY - pan.y; engineView(); svg.classList.add('panning'); }
+  });
+  svg.addEventListener('pointerup', () => { if (pan && !pan.moved) engineSelect(pan.sel || null); pan = null; svg.classList.remove('panning'); });
+  svg.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const r = svg.getBoundingClientRect(), v = ENG.view, k = Math.exp(-e.deltaY * .0015), s = clamp(v.s * k, .2, 2.5);
+    const px = e.clientX - r.left, py = e.clientY - r.top;
+    v.x = px - (px - v.x) * s / v.s; v.y = py - (py - v.y) * s / v.s; v.s = s; engineView();
+  }, { passive: false });
+}
 
 // ---------------- main loop ----------------
 function resize() {

@@ -17,6 +17,11 @@ const ITER: usize = 20;
 const STIFF: f32 = 0.35;
 /// physics steps per second
 pub const RATE: f32 = 120.0;
+/// putting a cord at rest: steps, and the velocity kept per step (much less than swinging)
+const REST_STEPS: usize = 200;
+const REST_DAMP: f32 = 0.9;
+/// how far a jack moves in one frame to count as a jump (not a device gliding along)
+const JUMP: f32 = 12.0;
 
 #[derive(Clone, Copy, Default, Debug)]
 pub struct P {
@@ -86,6 +91,9 @@ pub struct Cord {
     /// the signal it carries (0…1, eased) and where its light is on the way across (0…1)
     pub flow: f32,
     pub flow_at: f32,
+    /// to be put at rest where it hangs before it is next drawn (just plugged in, or its jacks
+    /// jumped): it shows in its place, without swinging into it
+    settle: bool,
 }
 
 /// The hand holding a cord's end: where, and the kind of jack it is about to go into (a cord
@@ -145,6 +153,7 @@ impl Cord {
             span: 0.0,
             flow: 0.0,
             flow_at: 0.0,
+            settle: true,
         }
     }
 
@@ -152,6 +161,8 @@ impl Cord {
     /// no length and quickly grows to its own as the hand moves away.
     pub fn fresh(seq: u64, slot: u64, jack: String, kind: JackKind, at: (f32, f32), color: [u8; 3], output: bool) -> Self {
         let mut c = Cord::new(seq, (slot, slot), (jack.clone(), kind, at), (jack, kind, at), color);
+        // it comes out of the jack in the hand: that is to be seen
+        c.settle = false;
         c.len = 0.0;
         let held = if output { &mut c.b } else { &mut c.a };
         held.jack = None;
@@ -205,6 +216,7 @@ impl Cord {
         // how far each end in a jack moved with its device this frame, and where the ends and the
         // length were before
         let mut carried = [(0.0f32, 0.0f32); 2];
+        let mut jumped = false;
         let before = ((self.a.x, self.a.y), (self.b.x, self.b.y), self.len);
         for (end_b, e) in [(false, &mut self.a), (true, &mut self.b)] {
             if e.held
@@ -222,16 +234,13 @@ impl Cord {
                 && !dying
                 && let Some((x, y)) = slot_pos(j, e.rank)
             {
-                // ends in a jack glide when their mult closes up or opens
+                // a device in the hand carries its cords along, swinging; a jack that jumps (its mult
+                // closed up or opened, the desk became the rack) takes its cords to rest at once
                 let was = (e.x, e.y, e.placed);
-                if !e.placed || snap {
-                    (e.x, e.y, e.placed) = (x, y, true);
-                } else {
-                    let k = ease(0.3, dt);
-                    e.x += (x - e.x) * k;
-                    e.y += (y - e.y) * k;
-                }
-                if was.2 {
+                (e.x, e.y, e.placed) = (x, y, true);
+                if was.2 && !snap && (x - was.0).abs() + (y - was.1).abs() > JUMP {
+                    jumped = true;
+                } else if was.2 {
                     carried[end_b as usize] = (e.x - was.0, e.y - was.1);
                 }
             }
@@ -251,6 +260,14 @@ impl Cord {
             // it into a loop.
             let t = target_len(self.a.x - self.b.x, self.a.y - self.b.y);
             self.len += (t - self.len) * ease(0.2, dt);
+        }
+        // just plugged in, or its jacks jumped: straight to rest, in its own length
+        if (self.settle || jumped) && self.a.seated() && self.b.seated() && !dying {
+            self.settle = false;
+            self.len = target_len(self.a.x - self.b.x, self.a.y - self.b.y);
+            self.span = ((self.a.x - self.b.x).powi(2) + (self.a.y - self.b.y).powi(2)).sqrt();
+            self.rest();
+            carried = [(0.0, 0.0); 2];
         }
         // A device that moves carries its cords along: each point moves as much as the curve the
         // cord hangs in moves there (see `hang`), its last position too. So a cord goes along in
@@ -284,12 +301,31 @@ impl Cord {
         }
     }
 
+    /// Hangs the cord where it comes to rest between its ends: from the curve it is about to hang
+    /// in (see `hang`), swung out heavily damped, then still.
+    fn rest(&mut self) {
+        let (a, b) = ((self.a.x, self.a.y), (self.b.x, self.b.y));
+        for (p, (x, y)) in self.pts.iter_mut().zip(hang(a, b, self.len)) {
+            *p = P::at(x, y);
+        }
+        for _ in 0..REST_STEPS {
+            self.step_damped(1.0 / RATE, None, REST_DAMP);
+        }
+        for p in &mut self.pts {
+            (p.px, p.py) = (p.x, p.y);
+        }
+    }
+
     fn step(&mut self, dt: f32, hand: Option<(f32, f32)>) {
+        self.step_damped(dt, hand, DAMP);
+    }
+
+    fn step_damped(&mut self, dt: f32, hand: Option<(f32, f32)>, damp: f32) {
         let n = N;
         let g = GRAV * dt * dt;
         let seg = self.len / (n - 1) as f32;
         for p in &mut self.pts {
-            let (vx, vy) = ((p.x - p.px) * DAMP, (p.y - p.py) * DAMP);
+            let (vx, vy) = ((p.x - p.px) * damp, (p.y - p.py) * damp);
             (p.px, p.py) = (p.x, p.y);
             p.x += vx;
             p.y += vy + g;
@@ -468,6 +504,29 @@ mod tests {
             let c = settle((700.0, 400.0), jb, path);
             let deg = turning(&c);
             assert!(deg < 300.0, "after its device moved along {path:?} the cord turns {deg:.0}° along its length: a loop");
+        }
+    }
+
+    /// A cord shows in its place at rest: plugged in, or after its jack jumped, it doesn't swing.
+    #[test]
+    fn a_cord_appears_at_rest() {
+        let ja = std::cell::Cell::new((400.0f32, 300.0f32));
+        let jb = (900.0, 420.0);
+        let slot = |k: &str, _n: usize| Some(if k == "a" { ja.get() } else { jb });
+        let mut c = Cord::new(1, (1, 2), ("a".into(), JackKind::Stereo, ja.get()), ("b".into(), JackKind::Stereo, jb), [0, 200, 0]);
+        for jump in [None, Some((150.0, 500.0))] {
+            if let Some(to) = jump {
+                ja.set(to);
+            }
+            c.frame(1.0 / 60.0, 2, &slot, None, None, false);
+            let first: Vec<(f32, f32)> = c.pts.iter().map(|p| (p.x, p.y)).collect();
+            for _ in 0..30 {
+                c.frame(1.0 / 60.0, 2, &slot, None, None, false);
+            }
+            let drift = c.pts.iter().zip(&first).map(|(p, f)| (p.x - f.0).abs() + (p.y - f.1).abs()).fold(0.0f32, f32::max);
+            assert!(drift < 2.0, "a cord {} moves {drift:.1} in the half second after", if jump.is_some() { "whose jack jumped" } else { "just plugged in" });
+            assert!(turning(&c) < 300.0, "and it rests without a loop");
+            assert!(!c.moving(), "and counts as still, so it is drawn once, not every frame");
         }
     }
 

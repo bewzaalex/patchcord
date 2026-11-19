@@ -1,8 +1,10 @@
 //! Puts the picture on screen with the GPU (wgpu: Vulkan, or OpenGL as a fallback). From Kadence.
 //!
-//! The parts are pictures rasterized on the CPU (device faces, LCDs, the cords). Each becomes a
-//! texture, uploaded once, and every frame draws them as rectangles in order. While zooming, the
-//! old pictures are drawn larger or smaller until sharp ones replace them.
+//! The parts are pictures rasterized on the CPU (device faces, LCDs). Each becomes a texture,
+//! uploaded once, and every frame draws them as rectangles in order. While zooming, the old
+//! pictures are drawn larger or smaller until sharp ones replace them. The cords are triangles
+//! (see `mesh`), drawn every frame among the pictures: sharp at any zoom, and nothing to
+//! rasterize when they move.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -11,6 +13,8 @@ use winit::event_loop::OwnedDisplayHandle;
 use winit::window::Window;
 
 use resvg::tiny_skia::Pixmap;
+
+use super::mesh::{self, Mesh};
 
 /// A picture to draw, and where: (x, y, w, h) in window pixels.
 pub struct Sprite<'a> {
@@ -44,6 +48,19 @@ struct V { @builtin(position) pos: vec4f, @location(0) uv: vec2f, @location(1) a
 /// Floats per vertex: position in clip space, texture position, opacity.
 const VERTEX: usize = 5;
 
+/// The cords: coverage from the distance to the stroke's centre line (or a spot's middle), so
+/// edges are smooth without multisampling; colours are premultiplied.
+const MESH_SHADER: &str = r#"
+struct V { @builtin(position) pos: vec4f, @location(0) e: vec2f, @location(1) c: vec4f, @location(2) hs: vec2f }
+@vertex fn vs(@location(0) p: vec2f, @location(1) e: vec2f, @location(2) c: vec4f, @location(3) hs: vec2f) -> V {
+    return V(vec4f(p, 0.0, 1.0), e, c, hs);
+}
+@fragment fn fs(v: V) -> @location(0) vec4f {
+    let cover = clamp((v.hs.x - length(v.e)) / max(v.hs.y, 0.001) + 0.5, 0.0, 1.0);
+    return v.c * cover;
+}
+"#;
+
 struct Texture {
     bind: wgpu::BindGroup,
 }
@@ -54,8 +71,12 @@ pub struct Gpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: wgpu::RenderPipeline,
+    /// the cords: blended over what is below, and their lights added to it
+    mesh_over: wgpu::RenderPipeline,
+    mesh_add: wgpu::RenderPipeline,
     sampler: wgpu::Sampler,
     vertices: wgpu::Buffer,
+    mesh_vertices: wgpu::Buffer,
     /// the layers' textures, by layer id
     textures: HashMap<u64, Texture>,
     clear: wgpu::Color,
@@ -137,6 +158,37 @@ impl Gpu {
             multiview_mask: None,
             cache: None,
         });
+        let mesh_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(MESH_SHADER.into()) });
+        let mesh_pipeline = |blend: wgpu::BlendState| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: None,
+                layout: None,
+                vertex: wgpu::VertexState {
+                    module: &mesh_shader,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: (mesh::VERTEX * 4) as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x2],
+                    })],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &mesh_shader,
+                    entry_point: Some("fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState { format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })],
+                }),
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let add = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
+        let mesh_over = mesh_pipeline(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
+        let mesh_add = mesh_pipeline(wgpu::BlendState { color: add, alpha: add });
         // smooth when a picture is drawn at another size (while resizing); exact at its own size
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Linear,
@@ -144,14 +196,18 @@ impl Gpu {
             ..Default::default()
         });
         let vertices = vertex_buffer(&device, 64);
+        let mesh_vertices = buffer(&device, 1 << 20);
         Ok(Gpu {
             surface,
             config,
             device,
             queue,
             pipeline,
+            mesh_over,
+            mesh_add,
             sampler,
             vertices,
+            mesh_vertices,
             textures: HashMap::new(),
             clear: if alpha.is_some() { wgpu::Color::TRANSPARENT } else { BG },
             info,
@@ -163,31 +219,42 @@ impl Gpu {
         self.surface.configure(&self.device, &self.config);
     }
 
-    /// Draws the sprites in order. Textures of layers not among them are freed.
-    pub fn draw(&mut self, sprites: &[Sprite]) {
-        self.textures.retain(|id, _| sprites.iter().any(|s| s.id == *id));
+    /// Draws the sprites in order, and the cords (`mesh`, in window pixels) just before the
+    /// sprite at index `at`. Textures of layers not among them, nor in `keep`, are freed.
+    /// Returns how long it waited for the frame, uploaded pictures, and drew (for `prof`).
+    pub fn draw(&mut self, sprites: &[Sprite], mesh: Option<(usize, &Mesh)>, keep: &std::collections::HashSet<u64>) -> [std::time::Duration; 3] {
+        let t0 = std::time::Instant::now();
+        // the frame first: with no frame to draw into (the window hidden, minimized or on another
+        // desktop) nothing is uploaded, since only a submit lets the GPU take uploads in and free
+        // what was let go; what it has let go meanwhile is freed now
+        let frame = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                self.surface.configure(&self.device, &self.config);
+                let _ = self.device.poll(wgpu::PollType::Poll);
+                return [t0.elapsed(), Default::default(), Default::default()];
+            }
+            _ => {
+                let _ = self.device.poll(wgpu::PollType::Poll);
+                return [t0.elapsed(), Default::default(), Default::default()];
+            }
+        };
+        let t1 = std::time::Instant::now();
+        self.textures.retain(|id, _| keep.contains(id) || sprites.iter().any(|s| s.id == *id));
         for s in sprites {
             if let (false, Some(pm)) = (self.textures.contains_key(&s.id), s.pm) {
                 let t = self.upload(pm);
                 self.textures.insert(s.id, t);
             }
         }
-        // a layer whose pixels were freed before they reached the GPU can't be drawn
-        let sprites: Vec<&Sprite> = sprites.iter().filter(|s| self.textures.contains_key(&s.id)).collect();
-
-        let frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                self.surface.configure(&self.device, &self.config);
-                return;
-            }
-            _ => return,
-        };
-        // two triangles per sprite
+        let t2 = std::time::Instant::now();
+        // two triangles per sprite (a layer whose pixels were freed before they reached the GPU
+        // can't be drawn); `drawn` keeps each one's place in the order
         let (w, h) = (self.config.width as f64, self.config.height as f64);
         let clip = |x: f64, y: f64| [(x / w * 2.0 - 1.0) as f32, (1.0 - y / h * 2.0) as f32];
-        let mut v: Vec<f32> = Vec::with_capacity(sprites.len() * 6 * VERTEX);
-        for s in &sprites {
+        let drawn: Vec<(usize, &Sprite)> = sprites.iter().enumerate().filter(|(_, s)| self.textures.contains_key(&s.id)).collect();
+        let mut v: Vec<f32> = Vec::with_capacity(drawn.len() * 6 * VERTEX);
+        for (_, s) in &drawn {
             let c = [clip(s.x, s.y), clip(s.x + s.w, s.y), clip(s.x + s.w, s.y + s.h), clip(s.x, s.y + s.h)];
             let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
             for i in [0, 1, 2, 0, 2, 3] {
@@ -195,11 +262,28 @@ impl Gpu {
             }
         }
         if self.vertices.size() < (v.len() * 4) as u64 {
-            self.vertices = vertex_buffer(&self.device, sprites.len() * 2);
+            self.vertices = vertex_buffer(&self.device, drawn.len() * 2);
         }
-        // SAFETY: f32 has no padding, and every byte pattern is a valid u8
-        let bytes = unsafe { std::slice::from_raw_parts(v.as_ptr().cast::<u8>(), v.len() * 4) };
-        self.queue.write_buffer(&self.vertices, 0, bytes);
+        self.queue.write_buffer(&self.vertices, 0, floats(&v));
+        // the cords: their places to clip space, normal ones first, then the lights
+        let (at, counts) = match mesh.filter(|(_, m)| !m.is_empty()) {
+            Some((at, m)) => {
+                let mut mv: Vec<f32> = Vec::with_capacity(m.normal.len() + m.glow.len());
+                for src in [&m.normal, &m.glow] {
+                    for vx in src.chunks_exact(mesh::VERTEX) {
+                        let c = clip(vx[0] as f64, vx[1] as f64);
+                        mv.extend_from_slice(&c);
+                        mv.extend_from_slice(&vx[2..]);
+                    }
+                }
+                if self.mesh_vertices.size() < (mv.len() * 4) as u64 {
+                    self.mesh_vertices = buffer(&self.device, (mv.len() * 4).next_power_of_two());
+                }
+                self.queue.write_buffer(&self.mesh_vertices, 0, floats(&mv));
+                (at, Some(((m.normal.len() / mesh::VERTEX) as u32, (m.glow.len() / mesh::VERTEX) as u32)))
+            }
+            None => (usize::MAX, None),
+        };
 
         let view = frame.texture.create_view(&Default::default());
         let mut enc = self.device.create_command_encoder(&Default::default());
@@ -213,15 +297,38 @@ impl Gpu {
                 })],
                 ..Default::default()
             });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_vertex_buffer(0, self.vertices.slice(..));
-            for (i, s) in sprites.iter().enumerate() {
+            let mut cords_done = counts.is_none();
+            for (i, (si, s)) in drawn.iter().enumerate() {
+                if !cords_done && *si >= at {
+                    cords_done = true;
+                    self.draw_mesh(&mut pass, counts);
+                }
+                pass.set_pipeline(&self.pipeline);
+                pass.set_vertex_buffer(0, self.vertices.slice(..));
                 pass.set_bind_group(0, &self.textures[&s.id].bind, &[]);
                 pass.draw(i as u32 * 6..i as u32 * 6 + 6, 0..1);
+            }
+            if !cords_done {
+                self.draw_mesh(&mut pass, counts);
             }
         }
         self.queue.submit([enc.finish()]);
         self.queue.present(frame);
+        [t1 - t0, t2 - t1, t2.elapsed()]
+    }
+
+    /// The cords' triangles: `counts` vertices blended over, then added (the lights).
+    fn draw_mesh(&self, pass: &mut wgpu::RenderPass, counts: Option<(u32, u32)>) {
+        let Some((normal, glow)) = counts else { return };
+        pass.set_vertex_buffer(0, self.mesh_vertices.slice(..));
+        if normal > 0 {
+            pass.set_pipeline(&self.mesh_over);
+            pass.draw(0..normal, 0..1);
+        }
+        if glow > 0 {
+            pass.set_pipeline(&self.mesh_add);
+            pass.draw(normal..normal + glow, 0..1);
+        }
     }
 
     fn upload(&self, pm: &Pixmap) -> Texture {
@@ -276,10 +383,14 @@ fn adapter(display: Box<OwnedDisplayHandle>, window: &Arc<Window>, backends: wgp
 }
 
 fn vertex_buffer(device: &wgpu::Device, quads: usize) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: (quads * 6 * VERTEX * 4) as u64,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
+    buffer(device, quads * 6 * VERTEX * 4)
+}
+
+fn buffer(device: &wgpu::Device, bytes: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor { label: None, size: bytes as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
+}
+
+fn floats(v: &[f32]) -> &[u8] {
+    // SAFETY: f32 has no padding, and every byte pattern is a valid u8
+    unsafe { std::slice::from_raw_parts(v.as_ptr().cast::<u8>(), std::mem::size_of_val(v)) }
 }

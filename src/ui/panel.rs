@@ -22,6 +22,8 @@ pub enum Key {
     Load,
     Desk,
     Rack,
+    /// the real PipeWire graph
+    Engine,
     Lock,
     Align,
     /// the cords switch: the knob, or one of its printed positions
@@ -42,6 +44,11 @@ pub enum Key {
 }
 
 impl Key {
+    /// A key for the desk and the rack only, off in ENGINE.
+    pub fn desk_only(self) -> bool {
+        matches!(self, Key::Lock | Key::Align | Key::Cables | Key::CablesAt(_) | Key::Arrange | Key::Flow | Key::Hidden | Key::Cue | Key::CueLevel)
+    }
+
     /// What it does, for the status bar.
     pub fn hint(self) -> &'static str {
         match self {
@@ -51,6 +58,7 @@ impl Key {
             Key::Load => "Load a preset (Ctrl+O)",
             Key::Desk => "Devices anywhere on a desk",
             Key::Rack => "Devices in a 19\" rack (R)",
+            Key::Engine => "What PipeWire really has: every node, port and link, drivers, timings, issues (E)",
             Key::Lock => "Lock devices in place (L)",
             Key::Align => "Line devices up while dragging them on the desk; off: place them freely (G)",
             Key::Cables => "Cords: show · fade · hide: drag, turn the wheel or click (C)",
@@ -73,6 +81,8 @@ impl Key {
 #[derive(Clone, PartialEq, Hash)]
 pub struct State {
     pub rack: bool,
+    /// ENGINE is shown: the desk's keys are off
+    pub engine: bool,
     pub locked: bool,
     /// devices dragged on the desk stick to each other's edges and centres
     pub align: bool,
@@ -97,6 +107,10 @@ pub struct Panel {
     /// hit areas, in logical pixels
     rects: Vec<(Key, [f64; 4])>,
     layer: Option<(u64, Layer)>,
+    /// the panel being drawn on the painter's threads (the old one shows meanwhile): what for, its
+    /// width
+    want: Option<(u64, f64)>,
+    inbox: super::painter::Inbox,
     /// the drop-down under the LCD, while open
     pub menu: Option<Menu>,
     menu_rects: Vec<(MenuHit, [f64; 4])>,
@@ -338,7 +352,7 @@ fn esc(t: &str) -> String {
 
 impl Panel {
     pub fn new(state: State) -> Self {
-        Panel { state, rects: Vec::new(), layer: None, menu: None, menu_rects: Vec::new(), menu_layer: None }
+        Panel { state, rects: Vec::new(), layer: None, want: None, inbox: Default::default(), menu: None, menu_rects: Vec::new(), menu_layer: None }
     }
 
     /// Where a key is (x, y, w, h), once the panel has been drawn.
@@ -353,16 +367,36 @@ impl Panel {
 
     /// The panel as a layer `width` logical pixels wide, drawn at `dpi`.
     pub fn layer(&mut self, width: f64, dpi: f64) -> &Layer {
+        for done in self.inbox.take() {
+            if let Some((sig, w)) = self.want
+                && sig == done.sig
+            {
+                self.layer = Some((sig, Layer { id: next_id(), pm: done.pm, x: 0.0, y: 0.0, w, h: H + SHADOW }));
+                self.want = None;
+            }
+        }
         let mut h = std::hash::DefaultHasher::new();
         std::hash::Hash::hash(&(&self.state, width.to_bits(), dpi.to_bits()), &mut h);
         let sig = std::hash::Hasher::finish(&h);
-        if self.layer.as_ref().is_none_or(|(s, _)| *s != sig) {
+        if self.layer.as_ref().is_none_or(|(s, _)| *s != sig) && self.want.map(|w| w.0) != Some(sig) {
+            // where the keys are, at once; their picture on the painter's threads (the first one
+            // here: there is nothing to show meanwhile)
             let (svg, rects) = self.svg(width);
             self.rects = rects;
-            let pm = rasterize(&text::svg_options(), &svg, dpi);
-            self.layer = Some((sig, Layer { id: next_id(), pm, x: 0.0, y: 0.0, w: width, h: H + SHADOW }));
+            if self.layer.is_none() {
+                let pm = rasterize(&text::svg_options(), &svg, dpi);
+                self.layer = Some((sig, Layer { id: next_id(), pm, x: 0.0, y: 0.0, w: width, h: H + SHADOW }));
+            } else {
+                self.want = Some((sig, width));
+                self.inbox.ask(super::painter::key("panel", 0u8), sig, svg, dpi);
+            }
         }
         &self.layer.as_ref().unwrap().1
+    }
+
+    /// The panel is being drawn again.
+    pub fn busy(&self) -> bool {
+        self.inbox.busy()
     }
 
     /// The layer's pixels went to the GPU.
@@ -465,7 +499,7 @@ impl Panel {
             *x += 22.0;
         };
         group(&mut o, &mut rects, &mut x, &[(Key::Undo, None, None), (Key::Redo, None, None), (Key::Save, None, None), (Key::Load, None, None)], "EDIT");
-        group(&mut o, &mut rects, &mut x, &[(Key::Desk, Some("DESK"), Some(!st.rack)), (Key::Rack, Some("RACK"), Some(st.rack)), (Key::Lock, None, Some(st.locked)), (Key::Align, None, Some(st.align))], "LAYOUT");
+        group(&mut o, &mut rects, &mut x, &[(Key::Desk, Some("DESK"), Some(!st.rack && !st.engine)), (Key::Rack, Some("RACK"), Some(st.rack && !st.engine)), (Key::Engine, Some("ENGINE"), Some(st.engine)), (Key::Lock, None, Some(st.locked)), (Key::Align, None, Some(st.align))], "LAYOUT");
         // the cords switch: three click positions with their names printed around it
         let (kx, ky) = (x + 44.0, KNOB_Y);
         let mut ticks = String::new();
@@ -572,6 +606,14 @@ impl Panel {
             }
         }
 
+        // in ENGINE the desk's keys are off: greyed over with the panel's paint
+        if st.engine {
+            for (k, [rx, ry, rw, rh]) in &rects {
+                if k.desk_only() {
+                    let _ = write!(o, r##"<rect x="{rx}" y="{ry}" width="{rw}" height="{rh}" rx="5" fill="#8c8e91" opacity=".7"/>"##);
+                }
+            }
+        }
         let svg = format!(
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{th}" viewBox="0 0 {w} {th}" font-family="Noto Sans" font-weight="bold">
 <defs>
@@ -583,7 +625,6 @@ impl Panel {
 <linearGradient id="btnGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#303134"/><stop offset="0.6" stop-color="#1d1e20"/><stop offset="1" stop-color="#131314"/></linearGradient>
 <linearGradient id="capEdge" x1="0" y1="0" x2="0.3" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.28"/><stop offset="0.45" stop-color="#fff" stop-opacity="0.04"/><stop offset="1" stop-color="#000" stop-opacity="0.5"/></linearGradient>
 <linearGradient id="capTop" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.13"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
-<filter id="blur1" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="1"/></filter>
 <radialGradient id="gKnob" cx=".38" cy=".3" r=".8"><stop offset="0" stop-color="#5a5b5f"/><stop offset="1" stop-color="#151618"/></radialGradient>
 <linearGradient id="gPanelLcd" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f7bb62"/><stop offset="1" stop-color="#e58f2c"/></linearGradient>
 </defs>
@@ -759,11 +800,14 @@ fn key_svg(x: f64, w: f64, pressed: bool) -> String {
     } else {
         (String::new(), 0.75, 1.0)
     };
+    // its shadow: soft at the edge from two plain shapes (a blur filter costs ~4 ms a key)
+    let soft = format!(r##"<rect x="{}" y="{}" width="{}" height="{}" rx="5" fill="#000" opacity="{}"/>"##, x + 0.2, y + 1.4, w + 2.0, h + 2.0, shadow * 0.45);
     let _ = write!(
         o,
-        r##"<g{tr}><rect x="{}" y="{}" width="{w}" height="{h}" rx="4" fill="#000" opacity="{shadow}" filter="url(#blur1)"/><rect x="{x}" y="{y}" width="{w}" height="{h}" rx="4" fill="url(#btnGrad)" stroke="#070708" stroke-width="1"/><g opacity="{sheen}"><rect x="{}" y="{}" width="{}" height="{}" rx="3.4" fill="none" stroke="url(#capEdge)" stroke-width="1.4"/><rect x="{}" y="{}" width="{}" height="{}" rx="2.5" fill="url(#capTop)"/></g>"##,
+        r##"<g{tr}>{soft}<rect x="{}" y="{}" width="{w}" height="{h}" rx="4" fill="#000" opacity="{}"/><rect x="{x}" y="{y}" width="{w}" height="{h}" rx="4" fill="url(#btnGrad)" stroke="#070708" stroke-width="1"/><g opacity="{sheen}"><rect x="{}" y="{}" width="{}" height="{}" rx="3.4" fill="none" stroke="url(#capEdge)" stroke-width="1.4"/><rect x="{}" y="{}" width="{}" height="{}" rx="2.5" fill="url(#capTop)"/></g>"##,
         x + 1.2,
         y + 2.4,
+        shadow * 0.6,
         x + 0.8,
         y + 0.8,
         w - 1.6,
@@ -856,3 +900,4 @@ pub fn notice(msg: &str, dpi: f64) -> Layer {
     );
     Layer { id: next_id(), pm: rasterize(&text::svg_options(), &svg, dpi), x: 0.0, y: 0.0, w, h: 34.0 }
 }
+

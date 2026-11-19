@@ -34,6 +34,9 @@ pub enum Kind {
     Link,
     /// a program connected to PipeWire: which process its streams belong to
     Client,
+    /// everything else PipeWire lists (the core, modules, factories, metadata, the profiler…),
+    /// for the ENGINE screen; its interface is in its props as `object.type`
+    Other,
 }
 
 /// Whether a card's profile can work now (an HDMI output with nothing plugged in can't).
@@ -77,6 +80,87 @@ pub struct Route {
 /// An output port listened to: its node, the port, and its channel (0 left, 1 right, None both).
 pub type CueSource = (u32, u32, Option<usize>);
 
+/// One node's cycles over the last half second, as the profiler reports them (what pw-top
+/// shows, but every cycle counted, not only the last): how long it waited to start after it was
+/// signalled and how long it was busy, on average and at worst; its own quantum and rate; its
+/// xruns.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NodeTiming {
+    pub id: u32,
+    pub name: String,
+    pub wait_ns: i64,
+    pub busy_ns: i64,
+    pub wait_max_ns: i64,
+    pub busy_max_ns: i64,
+    /// the latency it runs at: quantum / rate
+    pub latency: (u32, u32),
+    pub xruns: i32,
+    /// cycles counted (while summing, wait and busy are totals)
+    pub cycles: u32,
+    /// when it was signalled and finished, in the last cycle (to find when the graph finished)
+    signal_ns: i64,
+    finish_ns: i64,
+}
+
+/// A driver's cycles over the last half second: its clock (quantum and rate), the DSP load, when
+/// the whole graph had finished (from the start of the cycle, on average and at worst: how close
+/// it comes to the deadline, the period), and the nodes it clocks.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DriverTiming {
+    pub node: NodeTiming,
+    pub quantum: u64,
+    pub rate: u32,
+    /// CPU load of the cycle, 0…1 (the profiler's fast average)
+    pub load: f32,
+    pub xruns: i32,
+    pub end_ns: i64,
+    pub end_max_ns: i64,
+    pub followers: Vec<NodeTiming>,
+}
+
+impl NodeTiming {
+    /// Adds a cycle (its values as totals and peaks).
+    fn add(&mut self, n: &NodeTiming) {
+        self.wait_ns += n.wait_ns;
+        self.busy_ns += n.busy_ns;
+        self.wait_max_ns = self.wait_max_ns.max(n.wait_ns);
+        self.busy_max_ns = self.busy_max_ns.max(n.busy_ns);
+        self.cycles += 1;
+        (self.name, self.latency, self.xruns) = (n.name.clone(), n.latency, n.xruns);
+    }
+
+    /// Totals into averages.
+    fn averaged(&self) -> NodeTiming {
+        let k = self.cycles.max(1) as i64;
+        NodeTiming { wait_ns: self.wait_ns / k, busy_ns: self.busy_ns / k, ..self.clone() }
+    }
+}
+
+impl DriverTiming {
+    /// Adds a cycle of the same driver.
+    fn add(&mut self, d: &DriverTiming) {
+        self.node.add(&d.node);
+        for f in &d.followers {
+            match self.followers.iter_mut().find(|x| x.id == f.id) {
+                Some(x) => x.add(f),
+                None => self.followers.push(f.clone()),
+            }
+        }
+        self.end_ns += d.end_ns;
+        self.end_max_ns = self.end_max_ns.max(d.end_ns);
+        (self.quantum, self.rate, self.load, self.xruns) = (d.quantum, d.rate, d.load, d.xruns);
+    }
+
+    fn averaged(&self) -> DriverTiming {
+        DriverTiming {
+            node: self.node.averaged(),
+            end_ns: self.end_ns / self.node.cycles.max(1) as i64,
+            followers: self.followers.iter().map(NodeTiming::averaged).collect(),
+            ..self.clone()
+        }
+    }
+}
+
 /// From PipeWire to the app.
 pub enum Event {
     Added { id: u32, kind: Kind, props: Props },
@@ -89,13 +173,24 @@ pub enum Event {
     Routes { id: u32, all: Vec<Route>, active: Vec<Route> },
     /// An app stream's volume (playing) or gain (recording): each channel's, linear as PipeWire
     /// keeps them, and its mute.
-    Mix { id: u32, volumes: Vec<f32>, mute: bool },
+    /// `soft`: the part of the volumes applied in software (the rest is the hardware's), when
+    /// the node tells.
+    Mix { id: u32, volumes: Vec<f32>, mute: bool, soft: Option<Vec<f32>> },
     /// Peak level of each meter's channels since the last report, 0…1.
     Levels(Vec<(u32, Vec<f32>)>),
     /// A value of PipeWire's "settings" metadata (clock.rate, clock.quantum…).
     Setting { key: String, value: String },
     /// The PipeWire version.
     Version(String),
+    /// A value of one of the metadata (`settings`, `default`, `sm-settings`…), for ENGINE: the
+    /// metadata's id, the subject, the key (None: all of that subject's are cleared), its type
+    /// and its value (None: removed).
+    Meta { id: u32, subject: u32, key: Option<String>, ty: Option<String>, value: Option<String> },
+    /// Each driver's last cycle, twice a second while the profiler runs (ENGINE is open).
+    Profile(Vec<DriverTiming>),
+    /// One of a node's params, asked for by ENGINE's inspector: its kind (Format, Props…), its
+    /// index and the pod as text.
+    Param { id: u32, kind: String, index: u32, text: String },
     /// Everything that existed when we connected has been reported.
     Synced,
     Error(String),
@@ -121,6 +216,10 @@ pub enum Cmd {
     /// default output, at `level` (linear). No sources: nothing is heard, and the cue goes unless
     /// `keep` (CUE mode is on: it stays for the next jack).
     Cue { sources: Vec<CueSource>, level: f32, keep: bool },
+    /// Run the profiler (ENGINE is open) or stop it: it costs a little on every cycle.
+    Profile(bool),
+    /// Read a node's params (formats, props, latency…) for ENGINE's inspector.
+    Params(u32),
     Quit,
 }
 
@@ -216,6 +315,7 @@ fn profile_param(index: u32) -> Option<Vec<u8>> {
 const PROP_MUTE: u32 = 0x10004;
 const PROP_CHANNEL_VOLUMES: u32 = 0x10008;
 const PROP_LATENCY_OFFSET: u32 = 0x1000e;
+const PROP_SOFT_VOLUMES: u32 = 0x10010;
 
 // keys of a route object (spa/param/route.h)
 const ROUTE_INDEX: u32 = 1;
@@ -286,18 +386,19 @@ fn route_param(index: u32, device: i32, volumes: Option<Vec<f32>>, mute: Option<
 }
 
 /// A node's volumes and mute, from its props param (None when it has no channel volumes).
-fn mix_of(pod: &spa::pod::Pod) -> Option<(Vec<f32>, bool)> {
+fn mix_of(pod: &spa::pod::Pod) -> Option<(Vec<f32>, bool, Option<Vec<f32>>)> {
     use spa::pod::{Value, ValueArray};
     let (_, Value::Object(obj)) = spa::pod::deserialize::PodDeserializer::deserialize_any_from(pod.as_bytes()).ok()? else { return None };
-    let (mut vols, mut mute) = (None, false);
+    let (mut vols, mut mute, mut soft) = (None, false, None);
     for prop in obj.properties {
         match (prop.key, prop.value) {
             (PROP_CHANNEL_VOLUMES, Value::ValueArray(ValueArray::Float(v))) if !v.is_empty() => vols = Some(v),
             (PROP_MUTE, Value::Bool(m)) => mute = m,
+            (PROP_SOFT_VOLUMES, Value::ValueArray(ValueArray::Float(v))) if !v.is_empty() => soft = Some(v),
             _ => {}
         }
     }
-    Some((vols?, mute))
+    Some((vols?, mute, soft))
 }
 
 /// The props param that sets a node's channel volumes and mute.
@@ -438,6 +539,10 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
     // the "default" metadata, to set the default output and input
     let default_md: Rc<std::cell::Cell<Option<u32>>> = Default::default();
     let cue: Rc<RefCell<Cue>> = Default::default();
+    // the profiler (bound while ENGINE is open) and the nodes whose params ENGINE asked for
+    let profiler_id: Rc<std::cell::Cell<Option<u32>>> = Default::default();
+    let profiler: Rc<RefCell<Option<Profiler>>> = Default::default();
+    let inspect: Rc<RefCell<std::collections::HashSet<u32>>> = Default::default();
 
     let _registry_listener = registry
         .add_listener_local()
@@ -450,29 +555,35 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
             let core = core.clone();
             let default_md = default_md.clone();
             let cue = cue.clone();
+            let profiler_id = profiler_id.clone();
+            let inspect = inspect.clone();
             move |g| {
-                // the "settings" metadata (the clock rate and quantum) and the "default" one (the
-                // default output and input)
+                // every metadata, for ENGINE; the "settings" one (the clock rate and quantum) and
+                // the "default" one (the default output and input) for the panel too
                 let md_name = g.props.and_then(|p| p.get("metadata.name"));
                 if g.type_ == ObjectType::Metadata
-                    && matches!(md_name, Some("settings" | "default"))
                     && let Ok(md) = registry.bind::<pw::metadata::Metadata, _>(g)
                 {
                     if md_name == Some("default") {
                         default_md.set(Some(g.id));
                     }
+                    let setting = matches!(md_name, Some("settings" | "default"));
                     let ev = events.clone();
+                    let mid = g.id;
                     let l = md
                         .add_listener_local()
-                        .property(move |_, key, _, value| {
-                            if let Some(key) = key {
+                        .property(move |subject, key, ty, value| {
+                            if setting && let Some(key) = key {
                                 ev.send(Event::Setting { key: key.to_owned(), value: value.unwrap_or("").to_owned() });
                             }
+                            ev.send(Event::Meta { id: mid, subject, key: key.map(str::to_owned), ty: ty.map(str::to_owned), value: value.map(str::to_owned) });
                             0
                         })
                         .register();
                     bound.borrow_mut().insert(g.id, (Box::new(md), Box::new(l)));
-                    return;
+                }
+                if g.type_ == ObjectType::Profiler {
+                    profiler_id.set(Some(g.id));
                 }
                 let kind = match g.type_ {
                     ObjectType::Device => Kind::Device,
@@ -480,9 +591,12 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                     ObjectType::Port => Kind::Port,
                     ObjectType::Link => Kind::Link,
                     ObjectType::Client => Kind::Client,
-                    _ => return,
+                    _ => Kind::Other,
                 };
-                let props = g.props.map(props_of).unwrap_or_default();
+                let mut props = g.props.map(props_of).unwrap_or_default();
+                if kind == Kind::Other {
+                    props.insert("object.type".into(), g.type_.to_str().to_owned());
+                }
                 let id = g.id;
                 match kind {
                     Kind::Node => {
@@ -501,13 +615,21 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                             let app = props.get("media.class").is_some_and(|c| matches!(c.as_str(), "Stream/Output/Audio" | "Stream/Input/Audio" | "Audio/Sink" | "Audio/Source"));
                             let mev = events.clone();
                             let stale = stale.clone();
+                            let inspect = inspect.clone();
                             let l = node
                                 .add_listener_local()
-                                .param(move |_, kind, _, _, pod| {
+                                .param(move |_, kind, index, _, pod| {
                                     if kind == spa::param::ParamType::Props
-                                        && let Some((volumes, mute)) = pod.and_then(mix_of)
+                                        && let Some((volumes, mute, soft)) = pod.and_then(mix_of)
                                     {
-                                        mev.send(Event::Mix { id, volumes, mute });
+                                        mev.send(Event::Mix { id, volumes, mute, soft });
+                                    }
+                                    // the inspector asked for this node's params
+                                    if let Some(pod) = pod
+                                        && inspect.borrow().contains(&id)
+                                    {
+                                        let kind = format!("{kind:?}").trim_start_matches("ParamType::").to_owned();
+                                        mev.send(Event::Param { id, kind, index, text: pod_text(pod) });
                                     }
                                 })
                                 .info(move |info| {
@@ -640,7 +762,29 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                             }
                         }
                     }
-                    Kind::Link | Kind::Client => {}
+                    Kind::Link => {
+                        // its state (active, paused…) and full properties (passive or not), for ENGINE
+                        if let Ok(link) = registry.bind::<pw::link::Link, _>(g) {
+                            let ev = events.clone();
+                            let l = link
+                                .add_listener_local()
+                                .info(move |info| {
+                                    let state = match info.state() {
+                                        pw::link::LinkState::Active => "active",
+                                        pw::link::LinkState::Paused => "paused",
+                                        pw::link::LinkState::Allocating => "allocating",
+                                        pw::link::LinkState::Negotiating => "negotiating",
+                                        pw::link::LinkState::Init => "init",
+                                        pw::link::LinkState::Unlinked => "unlinked",
+                                        pw::link::LinkState::Error(_) => "error",
+                                    };
+                                    ev.send(Event::Info { id, props: info.props().map(props_of).unwrap_or_default(), state: Some(state) });
+                                })
+                                .register();
+                            bound.borrow_mut().insert(id, (Box::new(link), Box::new(l)));
+                        }
+                    }
+                    Kind::Client | Kind::Other => {}
                 }
                 events.send(Event::Added { id, kind, props });
             }
@@ -717,12 +861,28 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
     // meter levels go out 25 times a second, while there is something to show; devices whose
     // profiles changed are asked for them again
     let quiet = Rc::new(RefCell::new(true));
+    let ticks = std::cell::Cell::new(0u32);
     let timer = mainloop.loop_().add_timer({
         let meters = meters.clone();
         let events = events.clone();
         let stale = stale.clone();
         let bound = bound.clone();
+        let profiler = profiler.clone();
         move |_| {
+            // each driver's cycles of the last half second, averaged, with their peaks (drivers
+            // that stopped reporting are left out); then counting starts again
+            ticks.set(ticks.get().wrapping_add(1));
+            if ticks.get().is_multiple_of(12)
+                && let Some(p) = profiler.borrow().as_ref()
+            {
+                let now = std::time::Instant::now();
+                let mut l = p.latest.borrow_mut();
+                l.retain(|_, (t, _, _)| now.duration_since(*t) < Duration::from_millis(1500));
+                events.send(Event::Profile(l.values().map(|(_, d, _)| d.averaged()).collect()));
+                for (_, _, open) in l.values_mut() {
+                    *open = false;
+                }
+            }
             for id in std::mem::take(&mut *stale.borrow_mut()) {
                 let b = bound.borrow();
                 let Some((proxy, _)) = b.get(&id) else { continue };
@@ -763,6 +923,10 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
         let default_md = default_md.clone();
         let cue = cue.clone();
         let context = context.clone();
+        let profiler = profiler.clone();
+        let profiler_id = profiler_id.clone();
+        let inspect = inspect.clone();
+        let profiler_module = std::cell::Cell::new(false);
         move |cmd| match cmd {
             Cmd::Link { out_node, out_port, in_node, in_port } => {
                 let props = pw::properties::properties! {
@@ -853,11 +1017,304 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                 }
                 c.reconcile(&core);
             }
+            Cmd::Profile(on) => {
+                let mut p = profiler.borrow_mut();
+                if !on {
+                    *p = None;
+                } else if p.is_none()
+                    && let Some(id) = profiler_id.get()
+                {
+                    // the profiler's protocol comes with its module, loaded into our context
+                    // once (as pw-top does)
+                    if !profiler_module.get() {
+                        let name = std::ffi::CString::new("libpipewire-module-profiler").expect("name");
+                        // SAFETY: the context is alive and the name outlives the call
+                        let m = unsafe { pw::sys::pw_context_load_module(context.as_raw_ptr(), name.as_ptr(), std::ptr::null(), std::ptr::null_mut()) };
+                        profiler_module.set(!m.is_null());
+                    }
+                    *p = Profiler::bind(&registry, id);
+                    if p.is_none() {
+                        events.send(Event::Error("cannot start the profiler".into()));
+                    }
+                }
+            }
+            Cmd::Params(id) => {
+                inspect.borrow_mut().insert(id);
+                let b = bound.borrow();
+                if let Some(n) = b.get(&id).and_then(|(n, _)| n.downcast_ref::<pw::node::Node>()) {
+                    use spa::param::ParamType as P;
+                    for kind in [P::EnumFormat, P::Format, P::Props, P::PortConfig, P::Latency, P::ProcessLatency] {
+                        n.enum_params(0, Some(kind), 0, u32::MAX);
+                    }
+                }
+            }
             Cmd::Quit => mainloop.quit(),
         }
     });
 
     mainloop.run();
+}
+
+/// PipeWire's profiler, bound while ENGINE is open: each driver's last cycle, as pw-top shows it.
+/// pipewire-rs has no binding for it, so it is bound and listened to through the C interface.
+struct Profiler {
+    proxy: *mut pw::sys::pw_proxy,
+    _hook: Box<spa::sys::spa_hook>,
+    _events: Box<pw::sys::pw_profiler_events>,
+    /// each driver's latest cycle and when it came, by driver
+    latest: Box<ProfileLatest>,
+}
+
+/// Each driver's cycles since the last report: when the last came, their sum, and whether the
+/// sum is still being added to (false: the next cycle starts a new one).
+type ProfileLatest = RefCell<BTreeMap<u32, (std::time::Instant, DriverTiming, bool)>>;
+
+impl Profiler {
+    fn bind(registry: &pw::registry::RegistryRc, id: u32) -> Option<Self> {
+        // SAFETY: the registry is alive on this thread; the hook, the events and the data the
+        // listener is given are boxed, so they stay put, and live as long as the proxy (Drop
+        // destroys the proxy first)
+        unsafe {
+            let ty: *const std::os::raw::c_char = pw::sys::PW_TYPE_INTERFACE_Profiler.as_ptr().cast();
+            let raw: *mut pw::sys::pw_registry = registry.as_raw_ptr();
+            let proxy: *mut pw::sys::pw_proxy = spa::spa_interface_call_method!(raw, pw::sys::pw_registry_methods, bind, id, ty, pw::sys::PW_VERSION_PROFILER, 0).cast();
+            if proxy.is_null() {
+                return None;
+            }
+            let mut hook: Box<spa::sys::spa_hook> = Box::new(std::mem::zeroed());
+            let events = Box::new(pw::sys::pw_profiler_events { version: pw::sys::PW_VERSION_PROFILER_EVENTS, profile: Some(on_profile) });
+            let latest: Box<ProfileLatest> = Box::default();
+            let hook_ptr: *mut spa::sys::spa_hook = &mut *hook;
+            let data: *const ProfileLatest = &*latest;
+            spa::spa_interface_call_method!(proxy, pw::sys::pw_profiler_methods, add_listener, hook_ptr.cast(), &*events, data.cast_mut().cast());
+            Some(Profiler { proxy, _hook: hook, _events: events, latest })
+        }
+    }
+}
+
+impl Drop for Profiler {
+    fn drop(&mut self) {
+        // SAFETY: bound by `bind` on this thread, destroyed once; its listener goes with it
+        unsafe { pw::sys::pw_proxy_destroy(self.proxy) };
+    }
+}
+
+unsafe extern "C" fn on_profile(data: *mut std::os::raw::c_void, pod: *const spa::sys::spa_pod) {
+    if data.is_null() || pod.is_null() {
+        return;
+    }
+    // SAFETY: `data` is the profiler's boxed `latest`, alive while the proxy is; the pod is valid
+    // for the call
+    let (latest, pod) = unsafe { (&*(data as *const ProfileLatest), spa::pod::Pod::from_raw(pod)) };
+    let now = std::time::Instant::now();
+    if let Ok(mut l) = latest.try_borrow_mut() {
+        for d in timings_of(pod) {
+            match l.get_mut(&d.node.id) {
+                Some((t, sum, open)) if *open => {
+                    sum.add(&d);
+                    *t = now;
+                }
+                _ => {
+                    let mut sum = DriverTiming { node: NodeTiming { id: d.node.id, ..Default::default() }, end_ns: 0, end_max_ns: 0, followers: Vec::new(), ..d.clone() };
+                    sum.add(&d);
+                    l.insert(d.node.id, (now, sum, true));
+                }
+            }
+        }
+    }
+}
+
+/// A profile: a struct of objects, one per driver: its info (load, xruns), its clock (quantum,
+/// rate), its own block and its followers' (see spa/param/profiler.h).
+fn timings_of(pod: &spa::pod::Pod) -> Vec<DriverTiming> {
+    use spa::pod::Value;
+    let Ok((_, v)) = spa::pod::deserialize::PodDeserializer::deserialize_any_from(pod.as_bytes()) else { return Vec::new() };
+    let objects = match v {
+        Value::Struct(items) => items,
+        o @ Value::Object(_) => vec![o],
+        _ => return Vec::new(),
+    };
+    let int = |v: Option<&Value>| match v {
+        Some(Value::Int(i)) => *i as i64,
+        Some(Value::Long(l)) => *l,
+        _ => 0,
+    };
+    let block = |f: &[Value]| {
+        let (signal, awake, finish) = (int(f.get(3)), int(f.get(4)), int(f.get(5)));
+        let latency = match f.get(7) {
+            Some(Value::Fraction(r)) => (r.num, r.denom),
+            _ => (0, 0),
+        };
+        NodeTiming {
+            id: int(f.first()) as u32,
+            name: match f.get(1) {
+                Some(Value::String(s)) => s.clone(),
+                _ => String::new(),
+            },
+            wait_ns: if signal > 0 && awake >= signal { awake - signal } else { 0 },
+            busy_ns: if awake > 0 && finish >= awake { finish - awake } else { 0 },
+            latency,
+            xruns: int(f.get(8)) as i32,
+            signal_ns: signal,
+            finish_ns: finish,
+            ..Default::default()
+        }
+    };
+    let mut out = Vec::new();
+    for o in objects {
+        let Value::Object(o) = o else { continue };
+        let mut d = DriverTiming::default();
+        let mut driver = false;
+        for p in o.properties {
+            let Value::Struct(f) = p.value else { continue };
+            match p.key {
+                spa::sys::SPA_PROFILER_info => {
+                    d.load = match f.get(1) {
+                        Some(Value::Float(x)) => *x,
+                        Some(Value::Double(x)) => *x as f32,
+                        _ => 0.0,
+                    };
+                    d.xruns = int(f.get(4)) as i32;
+                }
+                spa::sys::SPA_PROFILER_clock => {
+                    if let Some(Value::Fraction(r)) = f.get(4) {
+                        d.rate = r.denom;
+                    }
+                    d.quantum = int(f.get(6)).max(0) as u64;
+                }
+                spa::sys::SPA_PROFILER_driverBlock => {
+                    d.node = block(&f);
+                    driver = true;
+                }
+                spa::sys::SPA_PROFILER_followerBlock => d.followers.push(block(&f)),
+                _ => {}
+            }
+        }
+        if driver {
+            // when the last of its nodes finished, from the start of the cycle
+            let start = d.node.signal_ns;
+            d.end_ns = std::iter::once(&d.node).chain(&d.followers).filter(|n| start > 0 && n.finish_ns >= start).map(|n| n.finish_ns - start).max().unwrap_or(0);
+            out.push(d);
+        }
+    }
+    out
+}
+
+/// A param as text, the way pw-dump shows it: the object's keys by name (rate, channels,
+/// channelVolumes…), enumerated values by name (audio, raw, F32P), one key a line.
+fn pod_text(pod: &spa::pod::Pod) -> String {
+    match spa::pod::deserialize::PodDeserializer::deserialize_any_from(pod.as_bytes()) {
+        Ok((_, v)) => value_text(&v, std::ptr::null(), 0),
+        Err(_) => "(cannot read)".into(),
+    }
+}
+
+/// The short name of `id` in a SPA type table, if it has one.
+fn type_name(table: *const spa::sys::spa_type_info, id: u32) -> Option<String> {
+    if table.is_null() {
+        return None;
+    }
+    // SAFETY: the tables are libspa's static ones, ending in a zeroed entry
+    unsafe {
+        let n = spa::sys::spa_debug_type_find_short_name(table, id);
+        (!n.is_null()).then(|| std::ffi::CStr::from_ptr(n).to_string_lossy().into_owned())
+    }
+}
+
+/// A channel position's id from its short name (MONO, FL, RR…), from libspa's table.
+fn channel_id(name: &str) -> Option<u32> {
+    // SAFETY: libspa's static table, ending in an entry without a name
+    unsafe {
+        let mut t = spa::sys::spa_type_audio_channel;
+        while !t.is_null() && !(*t).name.is_null() {
+            let n = spa::sys::spa_debug_type_short_name((*t).name);
+            if !n.is_null() && std::ffi::CStr::from_ptr(n).to_str().is_ok_and(|n| n == name) {
+                return Some((*t).type_);
+            }
+            t = t.add(1);
+        }
+    }
+    None
+}
+
+/// `enums`: the table an Id value is named from (the property's own values).
+fn value_text(v: &spa::pod::Value, enums: *const spa::sys::spa_type_info, depth: usize) -> String {
+    use spa::pod::Value;
+    let pad = "  ".repeat(depth + 1);
+    match v {
+        Value::Object(o) => {
+            // SAFETY: libspa's static type tables
+            let props_table = unsafe {
+                let t = spa::sys::spa_debug_type_find(spa::sys::spa_types, o.type_);
+                if t.is_null() { std::ptr::null() } else { (*t).values }
+            };
+            let mut s = String::from("{\n");
+            for p in &o.properties {
+                // SAFETY: as above
+                let (name, values) = unsafe {
+                    let t = if props_table.is_null() { std::ptr::null() } else { spa::sys::spa_debug_type_find(props_table, p.key) };
+                    if t.is_null() {
+                        (p.key.to_string(), std::ptr::null())
+                    } else {
+                        let n = spa::sys::spa_debug_type_short_name((*t).name);
+                        (if n.is_null() { p.key.to_string() } else { std::ffi::CStr::from_ptr(n).to_string_lossy().into_owned() }, (*t).values)
+                    }
+                };
+                // channel positions are arrays of ids: named from the channel table
+                // SAFETY: libspa's static table
+                let values = if name == "position" || name == "channelMap" { unsafe { spa::sys::spa_type_audio_channel } } else { values };
+                s += &format!("{pad}{name}: {}\n", value_text(&p.value, values, depth + 1));
+            }
+            s + &"  ".repeat(depth) + "}"
+        }
+        Value::Struct(items) => format!("[ {} ]", items.iter().map(|i| value_text(i, std::ptr::null(), depth + 1)).collect::<Vec<_>>().join(", ")),
+        Value::Id(id) => type_name(enums, id.0).unwrap_or_else(|| id.0.to_string()),
+        Value::String(t) => format!("\"{t}\""),
+        Value::Bool(b) => b.to_string(),
+        Value::Int(i) => i.to_string(),
+        Value::Long(l) => l.to_string(),
+        Value::Float(f) => format!("{f}"),
+        Value::Double(f) => format!("{f}"),
+        Value::Fraction(f) => format!("{}/{}", f.num, f.denom),
+        Value::Rectangle(r) => format!("{}x{}", r.width, r.height),
+        Value::ValueArray(spa::pod::ValueArray::Id(ids)) => format!("[ {} ]", ids.iter().map(|i| type_name(enums, i.0).unwrap_or_else(|| i.0.to_string())).collect::<Vec<_>>().join(", ")),
+        Value::ValueArray(a) => format!("{a:?}").split_once('(').map_or_else(|| format!("{a:?}"), |(_, r)| r.trim_end_matches(')').to_owned()),
+        Value::Choice(c) => choice_text(c, enums),
+        other => format!("{other:?}"),
+    }
+}
+
+/// A choice (what a format may be): its default, then the alternatives.
+fn choice_text(c: &spa::pod::ChoiceValue, enums: *const spa::sys::spa_type_info) -> String {
+    use spa::pod::ChoiceValue as C;
+    use spa::utils::ChoiceEnum as E;
+    fn list<T: std::fmt::Display + spa::pod::CanonicalFixedSizedPod>(e: &E<T>) -> String {
+        match e {
+            E::None(v) => v.to_string(),
+            E::Range { default, min, max } => format!("{default} ({min}…{max})"),
+            E::Step { default, min, max, step } => format!("{default} ({min}…{max} by {step})"),
+            E::Enum { default, alternatives } => format!("{default} (one of {})", alternatives.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ")),
+            E::Flags { default, flags } => format!("{default} (flags {})", flags.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ")),
+        }
+    }
+    let id = |i: &spa::utils::Id| type_name(enums, i.0).unwrap_or_else(|| i.0.to_string());
+    match c {
+        C::Int(ch) => list(&ch.1),
+        C::Long(ch) => list(&ch.1),
+        C::Float(ch) => list(&ch.1),
+        C::Double(ch) => list(&ch.1),
+        C::Id(ch) => match &ch.1 {
+            E::None(v) => id(v),
+            E::Enum { default, alternatives } => format!("{} (one of {})", id(default), alternatives.iter().map(id).collect::<Vec<_>>().join(", ")),
+            other => format!("{other:?}"),
+        },
+        C::Fraction(ch) => match &ch.1 {
+            E::None(v) => format!("{}/{}", v.num, v.denom),
+            E::Range { default, min, max } => format!("{}/{} ({}/{}…{}/{})", default.num, default.denom, min.num, min.denom, max.num, max.denom),
+            other => format!("{other:?}"),
+        },
+        other => format!("{other:?}"),
+    }
 }
 
 /// A passive capture stream with one channel per measured port, not connected to anything:
@@ -904,13 +1361,8 @@ fn meter(core: &pw::core::CoreRc, id: u32, channels: &[String]) -> Result<MeterS
     info.set_channels(n as u32);
     let mut pos = [0u32; 64];
     for (i, c) in channels.iter().enumerate().take(64) {
-        // SPA channel positions: MONO 2, FL 3, FR 4, AUX0 4096…
-        pos[i] = match c.as_str() {
-            "MONO" => 2,
-            "FL" => 3,
-            "FR" => 4,
-            _ => 4096 + i as u32,
-        };
+        // SPA channel positions by name (MONO 2, FL 3, FR 4…); AUX0 4096… for the rest
+        pos[i] = channel_id(c).unwrap_or(4096 + i as u32);
     }
     info.set_position(pos);
     let obj = spa::pod::Object { type_: spa::utils::SpaTypes::ObjectParamFormat.as_raw(), id: spa::param::ParamType::EnumFormat.as_raw(), properties: info.into() };
@@ -925,6 +1377,11 @@ mod tests {
     use super::*;
 
     #[test]
+    fn channels_are_named_from_libspa() {
+        assert_eq!([channel_id("MONO"), channel_id("FL"), channel_id("FR"), channel_id("nope")], [Some(2), Some(3), Some(4), None]);
+    }
+
+    #[test]
     fn a_route_sent_reads_back_the_same() {
         let bytes = route_param(2, 3, Some(vec![0.25, 0.5]), Some(true), Some(-20_000_000)).expect("serialized");
         let r = route_of(spa::pod::Pod::from_bytes(&bytes).expect("a pod")).expect("a route");
@@ -935,6 +1392,6 @@ mod tests {
     fn a_volume_sent_reads_back_the_same() {
         let bytes = mix_param(vec![0.6141, 0.1327], true).expect("serialized");
         let pod = spa::pod::Pod::from_bytes(&bytes).expect("a pod");
-        assert_eq!(mix_of(pod), Some((vec![0.6141, 0.1327], true)));
+        assert_eq!(mix_of(pod), Some((vec![0.6141, 0.1327], true, None)));
     }
 }

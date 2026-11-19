@@ -3,6 +3,7 @@
 mod config;
 mod dirs;
 mod graph;
+mod mem;
 mod pw;
 mod shot;
 mod ui;
@@ -14,6 +15,7 @@ use winit::event_loop::EventLoop;
 use pw::Connection;
 
 fn main() {
+    mem::limit_arenas();
     let args: Vec<String> = std::env::args().skip(1).collect();
     // pictures without a window (see `shot`)
     let shot = match args.first().map(String::as_str) {

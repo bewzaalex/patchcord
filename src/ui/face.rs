@@ -63,8 +63,8 @@ pub struct JackDef {
 pub fn jacks(dev: &Device, split: &[bool]) -> Vec<JackDef> {
     let mut v = Vec::new();
     for (gi, g) in dev.groups.iter().enumerate() {
-        // one of an app's several streams: its jacks keyed by its number (their names repeat), a
-        // mono one labelled with it
+        // one of an app's several streams: its jacks keyed by its number (their names repeat); the
+        // number is in the frame's name (OUTPUT 2), the jack says what it carries (MONO)
         let pre = if g.stream > 0 { format!("{}:", g.stream) } else { String::new() };
         if g.stereo && !split.get(gi).copied().unwrap_or(false) {
             let names = format!("{}+{}", g.ports[0].name, g.ports[1].name);
@@ -86,7 +86,7 @@ pub fn jacks(dev: &Device, split: &[bool]) -> Vec<JackDef> {
                     kind: if p.media == Media::Midi { JackKind::Midi } else { JackKind::Mono },
                     dir: g.dir,
                     media: p.media,
-                    label: if g.stream > 0 && g.ports.len() == 1 { g.stream.to_string() } else { p.label.clone() },
+                    label: p.label.clone(),
                 });
             }
         }
@@ -388,12 +388,16 @@ fn jacks_w(dev: &Device, gi: usize, jd: &[JackDef], counts: &[usize]) -> f64 {
     let g = &dev.groups[gi];
     let mine = || jd.iter().enumerate().filter(|(_, j)| j.group == gi).map(|(i, _)| slots(counts[i]));
     let jacks = if stacked(dev, gi, jd) {
-        // the longest row, and room for the switch right of its lower jacks
-        ROW_X + (mine().max().unwrap_or(1) - 1) as f64 * JP + 22.0 + 46.0
+        // the longest row, and room for the switch right of its lower jacks (one with controls
+        // has it as a key beside its MUTE)
+        ROW_X + (mine().max().unwrap_or(1) - 1) as f64 * JP + 22.0 + if g.mix.is_none() { 46.0 } else { 14.0 }
     } else {
         mine().sum::<usize>() as f64 * JP + 14.0
     };
-    jacks.max(if g.stereo { 100.0 } else { 0.0 }).max((label_w(&name(dev, gi)) + 48.0).ceil()) + rec_w(dev, gi, jd, counts)
+    // the name (and its IN / OUT) spans the REC OUT too: room for it is found over both
+    let rec = rec_w(dev, gi, jd, counts);
+    // a stereo group without controls has its SPLIT switch under its jacks: room for it
+    (jacks.max(if g.stereo && g.mix.is_none() { 100.0 } else { 0.0 }) + rec).max((label_w(&name(dev, gi)) + 48.0).ceil())
 }
 
 /// At most this many frames (inputs, outputs, monitors…) side by side: the next starts a new

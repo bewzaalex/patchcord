@@ -9,7 +9,7 @@ use super::cord::Cord;
 type Rgb = [u8; 3];
 
 /// The colour lighter (f > 0, towards white) or darker (f < 0, towards black).
-fn shade(c: Rgb, f: f32) -> Rgb {
+pub(super) fn shade(c: Rgb, f: f32) -> Rgb {
     c.map(|v| {
         let v = v as f32;
         (if f < 0.0 { v * (1.0 + f) } else { v + (255.0 - v) * f }) as u8
@@ -49,7 +49,7 @@ fn trace(c: &Cord, ox: f32, oy: f32) -> Option<Path> {
     pb.finish()
 }
 
-fn cord_w(c: &Cord) -> f32 {
+pub(super) fn cord_w(c: &Cord) -> f32 {
     (if c.stereo() { 7.6 } else { 6.6 }) / c.strain.max(1.0).sqrt()
 }
 
