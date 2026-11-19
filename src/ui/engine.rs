@@ -207,9 +207,10 @@ const C_SYSTEM: [u8; 3] = [0x2f, 0xb0, 0xa6];
 const C_MIDI: [u8; 3] = [0xe0, 0x8a, 0x3c];
 const C_VIDEO: [u8; 3] = [0xd9, 0x57, 0x8f];
 const C_PATCHCORD: [u8; 3] = [0x5f, 0xa3, 0x6a];
-/// The selection's glow.
-const GLOW: &str = "#ffd36a";
-/// The legend window, made by docs/design/engine/legend.py.
+/// What is chosen: the LCD's amber, and text on it as on the LCD.
+const SEL: &str = "#f7bb62";
+const SEL_TEXT: &str = "#3a2408";
+/// The legend card, made by docs/design/engine/legend2.py.
 const LEGEND_SVG: &str = include_str!("legend.svg");
 
 const SHOW: [(&str, &str); 4] = [("PATCHCORD", "Patchcord's own signal meters"), ("MIDI", "MIDI nodes"), ("NOT RUNNING", "nodes no driver clocks now: suspended devices, idle streams"), ("INTERNAL", "Dummy-Driver and Freewheel-Driver: PipeWire's own clocks, idle")];
@@ -247,13 +248,58 @@ fn led_color(state: &str, err: bool) -> &'static str {
 
 /// Where a link at height `y` crosses a column with nodes at `rects` (top, bottom): at `y` when
 /// that is clear of them, else just above or below the nearest of them.
-fn free_y(rects: &[(f64, f64)], y: f64) -> f64 {
-    if !rects.iter().any(|(t, b)| y > t - 5.0 && y < b + 5.0) {
+fn free_y(rects: &[(f64, f64)], y: f64, extent: f64) -> f64 {
+    let clear = |f: f64, m: f64| !rects.iter().any(|(t, b)| f + extent > t - m && f < b + m);
+    if clear(y, 5.0) {
         return y;
     }
-    // just above or below a node (half a gap off it: the middle of the gap between two)
-    let free = rects.iter().flat_map(|(t, b)| [t - NGAP / 2.0, b + NGAP / 2.0]);
-    free.filter(|f| !rects.iter().any(|(t, b)| *f > t - 2.0 && *f < b + 2.0)).min_by(|p, q| (p - y).abs().total_cmp(&(q - y).abs())).unwrap_or(y)
+    // just above or below a node (half a gap off it: the middle of the gap between two), with room
+    // for a bundle `extent` deep under its first line
+    let free = rects.iter().flat_map(|(t, b)| [t - NGAP / 2.0 - extent, b + NGAP / 2.0]);
+    free.filter(|f| clear(*f, 2.0)).min_by(|p, q| (p - y).abs().total_cmp(&(q - y).abs())).unwrap_or(y)
+}
+
+/// A cubic piece in two halves (de Casteljau).
+fn split(c: [(f64, f64); 4]) -> [[(f64, f64); 4]; 2] {
+    let mid = |p: (f64, f64), q: (f64, f64)| ((p.0 + q.0) / 2.0, (p.1 + q.1) / 2.0);
+    let (a, b, d) = (mid(c[0], c[1]), mid(c[1], c[2]), mid(c[2], c[3]));
+    let (e, f) = (mid(a, b), mid(b, d));
+    let g = mid(e, f);
+    [[c[0], a, e, g], [g, f, d, c[3]]]
+}
+
+/// A cubic piece moved `s` off itself, square to its way (down, going right), its shape kept:
+/// the edges of its control polygon moved and met again (Tiller and Hanson). So the links of a
+/// stereo pair keep the same distance apart all along, on the slopes too.
+fn offset_cubic(c: [(f64, f64); 4], s: f64) -> [(f64, f64); 4] {
+    if s == 0.0 {
+        return c;
+    }
+    let normal = |p: (f64, f64), q: (f64, f64)| {
+        let (dx, dy) = (q.0 - p.0, q.1 - p.1);
+        let l = dx.hypot(dy);
+        (l > 1e-6).then(|| (-dy / l, dx / l))
+    };
+    // each edge's normal, a short one taking its neighbour's
+    let n = [normal(c[0], c[1]), normal(c[1], c[2]), normal(c[2], c[3])];
+    let any = n.iter().flatten().next().copied().unwrap_or((0.0, 1.0));
+    let n = [n[0].or(n[1]).unwrap_or(any), n[1].or(n[0]).or(n[2]).unwrap_or(any), n[2].or(n[1]).unwrap_or(any)];
+    let moved = |p: (f64, f64), k: usize| (p.0 + n[k].0 * s, p.1 + n[k].1 * s);
+    // where two moved edges meet (the point moved square to the first, when they run alike)
+    let meet = |a: (f64, f64), da: (f64, f64), b: (f64, f64), db: (f64, f64), fallback: (f64, f64)| {
+        let den = da.0 * db.1 - da.1 * db.0;
+        if den.abs() < 1e-6 {
+            return fallback;
+        }
+        let t = ((b.0 - a.0) * db.1 - (b.1 - a.1) * db.0) / den;
+        (a.0 + da.0 * t, a.1 + da.1 * t)
+    };
+    let dir = |k: usize| (n[k].1, -n[k].0);
+    let p0 = moved(c[0], 0);
+    let p3 = moved(c[3], 2);
+    let p1 = meet(p0, dir(0), moved(c[1], 1), dir(1), moved(c[1], 0));
+    let p2 = meet(moved(c[2], 1), dir(1), p3, dir(2), moved(c[2], 2));
+    [p0, p1, p2, p3]
 }
 
 fn node_h(n: &ENode) -> f64 {
@@ -1019,7 +1065,7 @@ impl Engine {
                 let i = m.node(l.out_node)?.outs.iter().position(|p| p.id == l.out_port)?;
                 let mut y = top + NH0 + i as f64 * PR + PR / 2.0 + 2.0;
                 for r in rects.iter().take(ci).skip(cs + 1) {
-                    y = free_y(r, y);
+                    y = free_y(r, y, 0.0);
                 }
                 Some(y)
             };
@@ -1063,7 +1109,20 @@ impl Engine {
 
     /// A link's way from `a` to `b` as cubic pieces: one curve, or, when nodes in a column it
     /// crosses stand in its way, through the gap beside them, straight across that column.
-    fn link_path(&self, lay: &Layout, a: (f64, f64), b: (f64, f64)) -> Vec<[(f64, f64); 4]> {
+    /// Where a link out of `port` runs in the bundle of its node's links: as far below the first
+    /// one as its port is below the first port, and how deep the bundle is.
+    fn lane(&self, node: u32, port: u32) -> (f64, f64) {
+        let Some(n) = self.model.node(node) else { return (0.0, 0.0) };
+        let Some(i) = n.outs.iter().position(|p| p.id == port) else { return (0.0, 0.0) };
+        (i as f64 * PR, (n.outs.len() as f64 - 1.0) * PR)
+    }
+
+    /// A link's way from `a` to `b`. The links out of one node go as a bundle (see `lane`): the
+    /// way is found once, for the first, and each one is that way moved `lane.0` off it, so a
+    /// stereo pair keeps its distance apart all along, round the nodes in its way too.
+    fn link_path(&self, lay: &Layout, a: (f64, f64), b: (f64, f64), lane: (f64, f64)) -> Vec<[(f64, f64); 4]> {
+        let (off, extent) = lane;
+        let (a, b) = ((a.0, a.1 - off), (b.0, b.1 - off));
         let curve = |p: (f64, f64), q: (f64, f64)| {
             let d = ((q.0 - p.0).abs() / 2.0).max(50.0);
             [p, (p.0 + d, p.1), (q.0 - d, q.1), q]
@@ -1095,20 +1154,24 @@ impl Engine {
                 let u = 1.0 - t;
                 let px = u * u * u * c[0].0 + 3.0 * u * u * t * c[1].0 + 3.0 * u * t * t * c[2].0 + t * t * t * c[3].0;
                 let py = u * u * u * c[0].1 + 3.0 * u * u * t * c[1].1 + 3.0 * u * t * t * c[2].1 + t * t * t * c[3].1;
-                px > x - 4.0 && px < x + NW + 4.0 && rects.iter().any(|(t, b)| py > t - 4.0 && py < b + 4.0)
+                px > x - 4.0 && px < x + NW + 4.0 && rects.iter().any(|(t, b)| py + extent > t - 4.0 && py < b + 4.0)
             });
             if !hits {
                 continue;
             }
             rects.sort_by(|p, q| p.0.total_cmp(&q.0));
-            let wy = free_y(&rects, from.1);
+            let wy = free_y(&rects, from.1, extent);
             let (l, r) = ((x - 12.0, wy), (x + NW + 12.0, wy));
             out.push(curve(from, l));
             out.push([l, l, r, r]);
             from = r;
         }
         out.push(curve(from, b));
-        out
+        if off == 0.0 {
+            return out;
+        }
+        // in quarters first: a curve moved off itself in one piece bends too far on its slopes
+        out.into_iter().flat_map(|c| split(c).into_iter().flat_map(split)).map(|c| offset_cubic(c, off)).collect()
     }
 
     // ---------------- drawing ----------------
@@ -1188,27 +1251,25 @@ impl Engine {
             let c = hex(col);
             let _ = write!(
                 o,
-                // the strip down the left follows the frame's rounded corners
-                r##"<rect x="0" y="{y}" width="{w}" height="{bh}" rx="10" fill="#fff" fill-opacity=".025" stroke="{c}" stroke-opacity="{}" stroke-width="1.2"{}/><path d="M5,{} A10,10 0 0 0 0,{} V{} A10,10 0 0 0 5,{} Z" fill="{c}" opacity="{}"/><text x="{BPAD}" y="{}" font-family="Noto Sans Mono" font-weight="bold" font-size="12" fill="#c9cbcd" xml:space="preserve">{head}</text>"##,
+                r##"<rect x="0" y="{y}" width="{w}" height="{bh}" rx="10" fill="#fff" fill-opacity=".025" stroke="{c}" stroke-opacity="{}" stroke-width="1.2"{}/><text x="{BPAD}" y="{}" font-family="Noto Sans Mono" font-weight="bold" font-size="12" fill="#c9cbcd" xml:space="preserve">{head}</text>"##,
                 if gi.is_some() { 0.35 } else { 0.5 },
                 if gi.is_some() { "" } else { r#" stroke-dasharray="5 5""# },
-                y + 1.34,
-                y + 10.0,
-                y + bh - 10.0,
-                y + bh - 1.34,
-                if gi.is_some() { 0.9 } else { 0.4 },
                 y + 22.0
             );
         }
         let (focus, near) = self.focus();
         let any = self.sel.is_some() && (!focus.is_empty() || matches!(self.sel, Some(Sel::Link(_))));
-        // ports that glow (a chosen port, a chosen link's ends): drawn over the blocks, at the end
-        let mut tops: Vec<((f64, f64), [u8; 3])> = Vec::new();
-        // each glow blurs only its own box: a blur over the whole graph takes seconds
-        let mut defs = String::new();
+        // what is chosen turns the LCD's amber: a node where it shows its colour (frame, header,
+        // ports, the links out of it), a port as a whole, a link and the ports at its ends
+        let chosen_node = |id: u32| focus.contains(&id) && matches!(self.sel, Some(Sel::Node(_) | Sel::Obj(_)));
+        let lit_ports: HashSet<u32> = match self.sel {
+            Some(Sel::Port(p)) => [p].into(),
+            Some(Sel::Link(id)) => m.links.iter().filter(|l| l.id == id).flat_map(|l| [l.out_port, l.in_port]).collect(),
+            _ => HashSet::new(),
+        };
         for l in &m.links {
             let (Some(a), Some(b)) = (self.port_xy(lay, l.out_node, l.out_port), self.port_xy(lay, l.in_node, l.in_port)) else { continue };
-            let d = self.link_path(lay, a, b).iter().fold(format!("M{},{}", a.0, a.1), |mut d, c| {
+            let d = self.link_path(lay, a, b, self.lane(l.out_node, l.out_port)).iter().fold(format!("M{},{}", a.0, a.1), |mut d, c| {
                 let _ = write!(d, " C{},{} {},{} {},{}", c[1].0, c[1].1, c[2].0, c[2].1, c[3].0, c[3].1);
                 d
             });
@@ -1225,16 +1286,13 @@ impl Engine {
                 (from, 1.6, r#" stroke-opacity=".45""#)
             };
             let op = if any && !hl { 0.2 } else { 1.0 };
-            // a chosen link glows, and so do the ports at its ends
-            if self.sel == Some(Sel::Link(l.id)) {
-                let pts = self.link_path(lay, a, b).into_iter().flatten().chain([a, b]).collect::<Vec<_>>();
-                let (x0, y0) = pts.iter().fold((f64::MAX, f64::MAX), |m, p| (m.0.min(p.0), m.1.min(p.1)));
-                let (x1, y1) = pts.iter().fold((f64::MIN, f64::MIN), |m, p| (m.0.max(p.0), m.1.max(p.1)));
-                let f = glow_filter(&mut defs, x0, y0, x1 - x0, y1 - y0);
-                let _ = write!(o, r##"<path d="{d}" fill="none" stroke="{GLOW}" stroke-width="10" opacity=".95" filter="url(#{f})"/>"##);
-                tops.extend(m.port(l.out_port).map(|(n, ..)| (a, n.color)));
-                tops.extend(m.port(l.in_port).map(|(n, ..)| (b, n.color)));
-            }
+            let (stroke, width) = if self.sel == Some(Sel::Link(l.id)) {
+                (SEL.to_owned(), 2.6)
+            } else if chosen_node(l.out_node) && l.state != "error" {
+                (SEL.to_owned(), width)
+            } else {
+                (stroke, width)
+            };
             let _ = write!(o, r#"<path d="{d}" fill="none" stroke="{stroke}" stroke-width="{width}" opacity="{op}"{extra}/>"#);
         }
         for n in &m.nodes {
@@ -1272,19 +1330,16 @@ impl Engine {
             let tag_w = if tags.is_empty() { 0.0 } else { text::width(text::BOLD, &tag_s, 8.5, 0.5) + 8.0 };
             let class_n = (((NW - 22.0 - tag_w) / 6.05) as usize).saturating_sub(n.id.to_string().len() + 3).max(4);
             let busy = if numbers { t.filter(|_| running).map_or(String::new(), |t| format!("{:.0}µs", t.busy_ns as f64 / 1000.0)) } else { String::new() };
-            let c = hex(n.color);
-            // the chosen block (not a chosen port's): a yellow glow behind it, its colours as ever
-            if on && matches!(self.sel, Some(Sel::Node(_) | Sel::Obj(_))) {
-                let f = glow_filter(&mut defs, x - 3.0, y - 3.0, NW + 6.0, nh + 6.0);
-                let _ = write!(o, r##"<rect x="{}" y="{}" width="{}" height="{}" rx="9" fill="{GLOW}" opacity=".95" filter="url(#{f})"/>"##, x - 3.0, y - 3.0, NW + 6.0, nh + 6.0);
-            }
+            let picked = chosen_node(n.id);
+            let c = if picked { SEL.to_owned() } else { hex(n.color) };
             // the header strip, then the body over it (rounded as the frame's inside), then the frame
             let _ = write!(
                 o,
-                r##"<g transform="translate({x},{y})" opacity="{op}"><path d="M0,6 A6,6 0 0 1 6,0 H{} A6,6 0 0 1 {NW},6 V12 H0 Z" fill="{c}"/><rect x=".75" y="4" width="{}" height="{}" rx="5.25" fill="#1d1e21"/><rect width="{NW}" height="{nh}" rx="6" fill="none" stroke="{c}" stroke-width="1.5"/><circle cx="12" cy="17" r="4" fill="{}"/><text x="22" y="21" font-size="12" font-weight="bold" fill="#e6e7e8">{}</text><text x="12" y="34" font-family="Noto Sans Mono" font-size="10" fill="#7d8085">{} · {}</text><text x="{}" y="21" text-anchor="end" font-family="Noto Sans Mono" font-size="10" fill="#5cff7a">{busy}</text>"##,
+                r##"<g transform="translate({x},{y})" opacity="{op}"><path d="M0,6 A6,6 0 0 1 6,0 H{} A6,6 0 0 1 {NW},6 V12 H0 Z" fill="{c}"/><rect x=".75" y="4" width="{}" height="{}" rx="5.25" fill="#1d1e21"/><rect width="{NW}" height="{nh}" rx="6" fill="none" stroke="{c}" stroke-width="{}"/><circle cx="12" cy="17" r="4" fill="{}"/><text x="22" y="21" font-size="12" font-weight="bold" fill="#e6e7e8">{}</text><text x="12" y="34" font-family="Noto Sans Mono" font-size="10" fill="#7d8085">{} · {}</text><text x="{}" y="21" text-anchor="end" font-family="Noto Sans Mono" font-size="10" fill="#5cff7a">{busy}</text>"##,
                 NW - 6.0,
                 NW - 1.5,
                 nh - 4.75,
+                if picked { 2.5 } else { 1.5 },
                 led_color(if running { "running" } else { n.state }, xr),
                 esc(&cut(&n.desc, 26)),
                 n.id,
@@ -1294,26 +1349,28 @@ impl Engine {
             if !tags.is_empty() {
                 let _ = write!(o, r##"<text x="{}" y="34" text-anchor="end" font-size="8.5" font-weight="bold" letter-spacing=".5" fill="{}">{}</text>"##, NW - 10.0, if xr { "#ff6a52" } else { "#e58f2c" }, esc(&tag_s));
             }
-            // ports in the block's colour, inputs on the left, outputs on the right
-            let half = if !n.ins.is_empty() && !n.outs.is_empty() { 17 } else { 34 };
+            // ports: ears from the edge in the block's colour (square there, round inside), the
+            // whole ear the port; inputs on the left, outputs on the right
             for (out, ports) in [(false, &n.ins), (true, &n.outs)] {
-                let px = if out { NW } else { 0.0 };
                 for (i, p) in ports.iter().enumerate() {
                     let py = NH0 + i as f64 * PR + PR / 2.0 + 2.0;
-                    if self.sel == Some(Sel::Port(p.id)) {
-                        tops.push(((x + px, y + py), n.color));
-                    }
-                    let (tx, anchor) = if out { (NW - 10.0, r#" text-anchor="end""#) } else { (10.0, "") };
-                    let _ = write!(o, r##"<circle cx="{px}" cy="{py}" r="4" fill="{c}" stroke="#0f1011" stroke-width="1.5"/><text x="{tx}" y="{}"{anchor} font-family="Noto Sans Mono" font-size="10" fill="#a8abae">{}</text>"##, py + 3.5, esc(&cut(&p.name, half)));
+                    let label = port_label(n, p);
+                    let w = ear_w(&label);
+                    let (px, tx, anchor, d) = if out {
+                        (NW, NW - 10.0, r#" text-anchor="end""#, format!("M{},{} H{} A6.5,6.5 0 0 0 {},{} H{} Z", NW - 0.75, py - 6.5, NW - w + 6.5, NW - w + 6.5, py + 6.5, NW - 0.75))
+                    } else {
+                        (0.0, 10.0, "", format!("M0.75,{} H{} A6.5,6.5 0 0 1 {},{} H0.75 Z", py - 6.5, w - 6.5, w - 6.5, py + 6.5))
+                    };
+                    let _ = if lit_ports.contains(&p.id) {
+                        write!(o, r##"<path d="{d}" fill="{SEL}"/><circle cx="{px}" cy="{py}" r="4" fill="{SEL}" stroke="#0f1011" stroke-width="1.5"/><text x="{tx}" y="{}"{anchor} font-family="Noto Sans Mono" font-size="10" font-weight="bold" fill="{SEL_TEXT}">{}</text>"##, py + 3.5, esc(&label))
+                    } else {
+                        write!(o, r##"<path d="{d}" fill="{c}" fill-opacity=".1"/><circle cx="{px}" cy="{py}" r="4" fill="{c}" stroke="#0f1011" stroke-width="1.5"/><text x="{tx}" y="{}"{anchor} font-family="Noto Sans Mono" font-size="10" fill="#a8abae">{}</text>"##, py + 3.5, esc(&label))
+                    };
                 }
             }
             o += "</g>";
         }
-        for ((px, py), c) in tops {
-            let f = glow_filter(&mut defs, px - 8.0, py - 8.0, 16.0, 16.0);
-            let _ = write!(o, r##"<circle cx="{px}" cy="{py}" r="8" fill="{GLOW}" filter="url(#{f})"/><circle cx="{px}" cy="{py}" r="4" fill="{}" stroke="#0f1011" stroke-width="1.5"/>"##, hex(c));
-        }
-        format!(r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" font-family="Noto Sans"><defs>{defs}</defs>{o}</svg>"##)
+        format!(r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" font-family="Noto Sans">{o}</svg>"##)
     }
 
     /// What changes every moment on the graph, drawn apart so the graph isn't drawn again for it:
@@ -1454,12 +1511,13 @@ impl Engine {
             self.strip = Some((sig, Layer { id: next_id(), pm: rasterize(&text::svg_options(), &strip_svg, dpi), x: strip_a[0], y: strip_a[1], w: strip_a[2], h: strip_a[3] }));
         }
         self.hits.clear();
-        // the legend, over the graph's middle, made smaller to fit a small window
+        // the legend, over the graph's bottom left just above its key, made smaller to fit a small
+        // window
         if self.legend_open {
             let (lw, lh) = legend_size();
-            let s = ((graph_a[2] - 24.0) / lw).min((graph_a[3] - 24.0) / lh).clamp(0.2, 1.0);
+            let s = ((graph_a[2] - 12.0) / lw).min((graph_a[3] - 48.0) / lh).clamp(0.2, 1.0);
             let (w, h) = (lw * s, lh * s);
-            let (x, y) = (graph_a[0] + (graph_a[2] - w) / 2.0, graph_a[1] + (graph_a[3] - h) / 2.0);
+            let (x, y) = (graph_a[0] + 6.0, graph_a[1] + graph_a[3] - 36.0 - h);
             let sig = hash_str(LEGEND_SVG, dpi * s);
             if self.legend.as_ref().is_none_or(|(sg, _)| *sg != sig) {
                 self.legend = Some((sig, Layer { id: next_id(), pm: rasterize(&text::svg_options(), LEGEND_SVG, dpi * s), x, y, w, h }));
@@ -1468,7 +1526,7 @@ impl Engine {
                 (l.x, l.y) = (x, y);
             }
             // its cross, then the rest of it
-            self.hits.push((Hit::Legend, [x + w - 34.0 * s, y + 8.0 * s, 30.0 * s, 30.0 * s]));
+            self.hits.push((Hit::Legend, [x + w - 32.0 * s, y + 2.0 * s, 28.0 * s, 28.0 * s]));
             self.hits.push((Hit::LegendWin, [x, y, w, h]));
         } else {
             self.legend = None;
@@ -2463,15 +2521,18 @@ impl Engine {
         let lay = &self.lay;
         for n in &self.model.nodes {
             let Some(&(nx, ny)) = lay.pos.get(&n.id) else { continue };
+            // a port: its jack, or anywhere on its ear
             for (i, p) in n.ins.iter().enumerate() {
                 let py = ny + NH0 + i as f64 * PR + PR / 2.0 + 2.0;
-                if (x - nx).abs() < 8.0 && (y - py).abs() < 7.0 || (x >= nx && x <= nx + NW / 2.0 && (y - py).abs() < PR / 2.0) {
+                let w = ear_w(&port_label(n, p));
+                if (x - nx).abs() < 8.0 && (y - py).abs() < 7.0 || (x >= nx && x <= nx + w && (y - py).abs() <= PR / 2.0) {
                     return Some(Sel::Port(p.id));
                 }
             }
             for (i, p) in n.outs.iter().enumerate() {
                 let py = ny + NH0 + i as f64 * PR + PR / 2.0 + 2.0;
-                if (x - nx - NW).abs() < 8.0 && (y - py).abs() < 7.0 || (x >= nx + NW / 2.0 && x <= nx + NW && (y - py).abs() < PR / 2.0) {
+                let w = ear_w(&port_label(n, p));
+                if (x - nx - NW).abs() < 8.0 && (y - py).abs() < 7.0 || (x >= nx + NW - w && x <= nx + NW && (y - py).abs() <= PR / 2.0) {
                     return Some(Sel::Port(p.id));
                 }
             }
@@ -2483,7 +2544,7 @@ impl Engine {
         let mut best: Option<(f64, u32)> = None;
         for l in &self.model.links {
             let (Some(a), Some(b)) = (self.port_xy(lay, l.out_node, l.out_port), self.port_xy(lay, l.in_node, l.in_port)) else { continue };
-            let path = self.link_path(lay, a, b);
+            let path = self.link_path(lay, a, b, self.lane(l.out_node, l.out_port));
             for (k, c) in (0..=40).flat_map(|k| path.iter().map(move |c| (k, c))) {
                 let t = k as f64 / 40.0;
                 let u = 1.0 - t;
@@ -2640,6 +2701,17 @@ struct Num {
     alpha: f64,
 }
 
+/// A port's name as its block shows it: cut to half the block's width when it has ports on both
+/// sides.
+fn port_label(n: &ENode, p: &EPort) -> String {
+    cut(&p.name, if !n.ins.is_empty() && !n.outs.is_empty() { 17 } else { 34 })
+}
+
+/// How wide a port's ear is, from the block's edge: its name and room round it.
+fn ear_w(label: &str) -> f64 {
+    text::width(text::MONO, label, 10.0, 0.0) + 20.0
+}
+
 /// A group's band header after its driver's name: its class and id, rate, quantum and cycle.
 fn band_rest(g: &Group, d: Option<&ENode>) -> String {
     format!("{} #{} · {} Hz · QUANT {} · {}", d.map_or(String::new(), |n| n.class.clone()), g.driver, g.rate, g.quantum, ms(g.quantum, g.rate))
@@ -2648,15 +2720,6 @@ fn band_rest(g: &Group, d: Option<&ENode>) -> String {
 /// What changes every moment in a group's band header: its load, and the time its worst cycle left.
 fn band_load(g: &Group) -> String {
     format!(" · DSP {:.1}%{}", g.load * 100.0, if g.end_max_ns > 0 { format!(" · {:.0}% OF THE CYCLE LEFT", 100.0 * (1.0 - g.end_max_ns as f64 / g.period_ns())) } else { String::new() })
-}
-
-/// A glow's blur, over its box (x, y, w, h) and the blur's reach around it, in the picture's own
-/// units: so a straight link, with no height, still has one. Returns the filter's id.
-fn glow_filter(defs: &mut String, x: f64, y: f64, w: f64, h: f64) -> String {
-    let id = format!("glow{}", defs.matches("<filter").count());
-    let m = 24.0;
-    let _ = write!(defs, r#"<filter id="{id}" filterUnits="userSpaceOnUse" x="{}" y="{}" width="{}" height="{}"><feGaussianBlur stdDeviation="6"/></filter>"#, x - m, y - m, w + 2.0 * m, h + 2.0 * m);
-    id
 }
 
 /// The legend window's size, from its picture.
@@ -2931,5 +2994,53 @@ impl Engine {
         }
         // names, the home folder and MAC addresses wherever they show (keys and ids too)
         system + &r.text(&o)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(id: u32, ins: &[u32], outs: &[u32]) -> ENode {
+        let port = |id: &u32| EPort { id: *id, name: format!("p{id}"), channel: String::new(), monitor: false, midi: false };
+        ENode { id, name: format!("n{id}"), desc: format!("n{id}"), class: "Stream/Output/Audio".into(), kind: NKind::Stream, state: "running", ins: ins.iter().map(port).collect(), outs: outs.iter().map(port).collect(), color: C_APP, desk: None, system: false }
+    }
+
+    /// A stereo pair keeps the distance its ports are apart all along: round a node in its way,
+    /// on the slopes too, FL above FR, not one over the other.
+    #[test]
+    fn a_stereo_pair_keeps_its_distance_all_along() {
+        let mut e = Engine::new();
+        let nodes = vec![node(1, &[], &[11, 12]), node(2, &[21, 22], &[]), node(3, &[31, 32], &[])];
+        e.model.at = nodes.iter().enumerate().map(|(i, n)| (n.id, i)).collect();
+        e.model.nodes = nodes;
+        let mut lay = Layout::default();
+        // the source at the top left, a node right in the way, the target below it on the right
+        lay.pos.insert(1, (0.0, 0.0));
+        lay.pos.insert(2, (COLW, 0.0));
+        lay.pos.insert(3, (2.0 * COLW, 100.0));
+        lay.bands.push((-50.0, 400.0, Some(0), ""));
+        let points = |out: u32, inp: u32| {
+            let (a, b) = (e.port_xy(&lay, 1, out).unwrap(), e.port_xy(&lay, 3, inp).unwrap());
+            let path = e.link_path(&lay, a, b, e.lane(1, out));
+            path.iter()
+                .flat_map(|c| {
+                    (0..=60).map(move |k| {
+                        let t = k as f64 / 60.0;
+                        let u = 1.0 - t;
+                        (u * u * u * c[0].0 + 3.0 * u * u * t * c[1].0 + 3.0 * u * t * t * c[2].0 + t * t * t * c[3].0, u * u * u * c[0].1 + 3.0 * u * u * t * c[1].1 + 3.0 * u * t * t * c[2].1 + t * t * t * c[3].1)
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        let (fl, fr) = (points(11, 31), points(12, 32));
+        // it goes round the node: below its bottom while across its column
+        let bottom = NH0 + 2.0 * PR + 8.0;
+        assert!(fl.iter().filter(|p| p.0 > COLW + 20.0 && p.0 < COLW + NW - 20.0).all(|p| p.1 > bottom), "FL goes round the node in its way");
+        for p in &fl {
+            let d = fr.iter().map(|q| (q.0 - p.0).hypot(q.1 - p.1)).fold(f64::MAX, f64::min);
+            assert!((d - PR).abs() < 1.0, "at ({:.0}, {:.0}) FL is {d:.1} from FR, not {PR}", p.0, p.1);
+        }
+        assert!(fr[fr.len() / 2].1 > fl[fl.len() / 2].1, "FR runs below FL");
     }
 }

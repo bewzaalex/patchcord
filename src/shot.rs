@@ -634,6 +634,10 @@ fn render_specimen(path: &str) -> Result<(), String> {
         (72, 70, "in", "input_FR", "FR", false, false),
         (73, 70, "out", "monitor_FL", "FL", true, false),
         (74, 70, "out", "monitor_FR", "FR", true, false),
+        (76, 75, "in", "input_FL", "FL", false, false),
+        (77, 75, "in", "input_FR", "FR", false, false),
+        (78, 75, "out", "monitor_FL", "FL", true, false),
+        (79, 75, "out", "monitor_FR", "FR", true, false),
         (81, 80, "out", "output_MONO", "MONO", false, false),
         (91, 90, "out", "capture_MONO", "MONO", false, false),
         (96, 95, "in", "input_MONO", "MONO", false, false),
@@ -653,6 +657,8 @@ fn render_specimen(path: &str) -> Result<(), String> {
     node(&mut g, 60, "Firefox", "Firefox", "Stream/Output/Audio", "running");
     node(&mut g, 65, "fooyin", "fooyin", "Stream/Output/Audio", "running");
     node(&mut g, 70, "patchcord-meter-1", "Patchcord signal meter", "Stream/Input/Audio", "running");
+    // a meter on an app's output, as Patchcord puts on each app that plays
+    node(&mut g, 75, "patchcord-meter-2", "Patchcord signal meter", "Stream/Input/Audio", "running");
     node(&mut g, 80, "Broken app", "Broken app", "Stream/Output/Audio", "running");
     node(&mut g, 90, "alsa_input.usb-Rode_NT-USB.mono", "RØDE NT-USB", "Audio/Source", "running");
     node(&mut g, 95, "OBS", "OBS", "Stream/Input/Audio", "running");
@@ -688,6 +694,8 @@ fn render_specimen(path: &str) -> Result<(), String> {
         (208, 90, 91, 100, 101, true, "active"),
         (209, 90, 91, 105, 106, false, "paused"),
         (210, 120, 122, 125, 126, false, "active"),
+        (211, 60, 61, 75, 76, true, "active"),
+        (212, 60, 62, 75, 77, true, "active"),
     ];
     for &(id, on, op, inn, ip, passive, state) in links {
         let p = props(&[("link.output.node", &on.to_string()), ("link.output.port", &op.to_string()), ("link.input.node", &inn.to_string()), ("link.input.port", &ip.to_string()), ("link.passive", &passive.to_string())]);
@@ -702,7 +710,7 @@ fn render_specimen(path: &str) -> Result<(), String> {
         n
     };
     let drivers = vec![
-        DriverTiming { node: t(50, "Scarlett 2i2", 52, 48000, 0), quantum: 1024, rate: 48000, load: 0.06, xruns: 0, end_ns: 420_000, end_max_ns: 1_300_000, followers: vec![t(60, "Firefox", 31, 48000, 0), t(65, "fooyin", 44, 44100, 3), t(70, "patchcord-meter-1", 12, 48000, 0), t(80, "Broken app", 9, 48000, 0)] },
+        DriverTiming { node: t(50, "Scarlett 2i2", 52, 48000, 0), quantum: 1024, rate: 48000, load: 0.06, xruns: 0, end_ns: 420_000, end_max_ns: 1_300_000, followers: vec![t(60, "Firefox", 31, 48000, 0), t(65, "fooyin", 44, 44100, 3), t(70, "patchcord-meter-1", 12, 48000, 0), t(75, "patchcord-meter-2", 11, 48000, 0), t(80, "Broken app", 9, 48000, 0)] },
         DriverTiming { node: t(90, "RØDE NT-USB", 18, 48000, 0), quantum: 512, rate: 48000, load: 0.02, xruns: 0, end_ns: 150_000, end_max_ns: 400_000, followers: vec![t(95, "OBS", 61, 48000, 0), t(100, "bluez_capture_internal", 16, 48000, 0), t(105, "Recorder", 22, 48000, 0)] },
     ];
     let mut eng = Engine::new();
