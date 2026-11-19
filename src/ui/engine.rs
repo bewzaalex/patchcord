@@ -68,8 +68,10 @@ enum Hit {
     Bottom,
     /// open or close the legend
     Legend,
-    /// the legend window itself: a click there does nothing
+    /// the legend window itself (or another card): a click there does nothing
     LegendWin,
+    /// the strip's i cell: the cells that didn't fit
+    Info,
 }
 
 /// What the app has to do after a click.
@@ -200,6 +202,12 @@ const INSP_W: f64 = 380.0;
 const TABS_H: f64 = 30.0;
 const ROW_H: f64 = 19.0;
 const REPORT_W: f64 = 116.0;
+/// the strip's HEALTH cell, its i cell and DSP LOAD's curve
+const HEALTH_W: f64 = 112.0;
+const INFO_W: f64 = 30.0;
+const CURVE_W: f64 = 186.0;
+/// a window narrower than this has the details over the graph
+const NARROW: f64 = 700.0;
 /// What a block is, by its colour; its ports and the links out of it take it too.
 const C_DEVICE: [u8; 3] = [0x4f, 0x86, 0xd9];
 const C_APP: [u8; 3] = [0x9b, 0x6b, 0xd6];
@@ -395,6 +403,13 @@ pub struct Engine {
     legend_open: bool,
     /// content heights of the inspector's and the tabs' bodies, to clamp scrolling
     content_h: [f64; 2],
+    /// the i cell's card, and whether it is open
+    info: Option<(u64, Layer)>,
+    info_open: bool,
+    /// the details and the tables being drawn on the painter's threads: what for, where
+    insp_want: Option<(u64, [f64; 4])>,
+    bottom_want: Option<(u64, [f64; 4])>,
+    strip_want: Option<(u64, [f64; 4])>,
 }
 
 /// What the last look saw: each link's ends by name, each node's name and state.
@@ -466,6 +481,11 @@ impl Engine {
             reveal: false,
             bottom_shut: true,
             legend_open: false,
+            info: None,
+            info_open: false,
+            insp_want: None,
+            bottom_want: None,
+            strip_want: None,
             content_h: [0.0, 0.0],
         }
     }
@@ -478,9 +498,9 @@ impl Engine {
             self.dirty = true;
             // drawn again: while the desk was shown the GPU let their textures go
             self.graph_layer = None;
-            self.strip = None;
-            self.insp = None;
-            self.bottom = None;
+            (self.strip, self.strip_want) = (None, None);
+            (self.insp, self.insp_want) = (None, None);
+            (self.bottom, self.bottom_want) = (None, None);
             self.overlay = None;
             self.legend = None;
             self.nums.clear();
@@ -1405,9 +1425,12 @@ impl Engine {
         let top = panel::H;
         let bottom_h = if self.bottom_shut { 0.0 } else { BOTTOM_H.min(((h - top - panel::STATUS_H) * 0.4).max(120.0)) };
         let by = h - panel::STATUS_H - bottom_h;
-        let iw = if self.sel.is_none() { 0.0 } else { INSP_W.min(w * 0.4) };
+        // the details: at most half the window; in a narrow one they open over the graph, which
+        // keeps the whole width
+        let iw = if self.sel.is_none() { 0.0 } else { INSP_W.min(w * 0.5) };
+        let gw = if w < NARROW { w } else { w - iw };
         let gy = top + STRIP_H;
-        [[0.0, top, w, STRIP_H], [0.0, gy, w - iw, (by - gy).max(0.0)], [w - iw, gy, iw, (by - gy).max(0.0)], [0.0, by, w, bottom_h]]
+        [[0.0, top, w, STRIP_H], [0.0, gy, gw, (by - gy).max(0.0)], [w - iw, gy, iw, (by - gy).max(0.0)], [0.0, by, w, bottom_h]]
     }
 
     /// Whether a window point (in pixels) is over the graph.
@@ -1440,12 +1463,7 @@ impl Engine {
         let sig = std::hash::Hasher::finish(&hsh);
         // the graph is drawn on the painter's threads: the old one shows until the new one comes
         for done in self.inbox.take() {
-            if let Some((want, sig, vs, w, h)) = self.graph_want
-                && want == done.sig
-            {
-                self.graph_layer = Some((sig, vs, Layer { id: next_id(), pm: done.pm, x: 0.0, y: 0.0, w, h }));
-                self.graph_want = None;
-            }
+            self.done(done);
         }
         let settled = self.zoomed.is_none_or(|t| t.elapsed() > Duration::from_millis(250));
         let stale = self.graph_layer.as_ref().is_none_or(|(s, r, _)| *s != sig || (settled && (*r - self.view.s).abs() > 1e-3));
@@ -1505,12 +1523,42 @@ impl Engine {
         }
         // the strip, the inspector, the tabs and the graph's overlay: in window units
         lap(&mut self.spent, "engine.reveal");
-        let strip_svg = self.strip_svg(strip_a[2], version);
+        let (strip_svg, info_at, hidden) = self.strip_svg(strip_a[2], version);
         let sig = hash_str(&strip_svg, dpi);
-        if self.strip.as_ref().is_none_or(|(s, _)| *s != sig) {
+        // it changes with the load, a few times a second: on the painter's threads after the first
+        if self.strip.is_none() {
             self.strip = Some((sig, Layer { id: next_id(), pm: rasterize(&text::svg_options(), &strip_svg, dpi), x: strip_a[0], y: strip_a[1], w: strip_a[2], h: strip_a[3] }));
+        } else if self.strip.as_ref().is_some_and(|(s, _)| *s != sig) && self.strip_want.map(|w| w.0) != Some(sig) {
+            self.strip_want = Some((sig, strip_a));
+            self.inbox.ask(painter::key("strip", 0u8), sig, strip_svg, dpi);
         }
         self.hits.clear();
+        // the i cell, and its card under it while open, over everything below the strip
+        match info_at {
+            Some([ix, iy, iw, ih]) => {
+                self.hits.push((Hit::Info, [strip_a[0] + ix, strip_a[1] + iy, iw, ih]));
+                if self.info_open {
+                    let (svg, w, h) = Self::info_svg(&hidden);
+                    let sig = hash_str(&svg, dpi);
+                    let x = (strip_a[0] + ix).min(fw - 6.0 - w).max(6.0);
+                    let y = strip_a[1] + STRIP_H - 4.0;
+                    if self.info.as_ref().is_none_or(|(s, _)| *s != sig) {
+                        self.info = Some((sig, Layer { id: next_id(), pm: rasterize(&text::svg_options(), &svg, dpi), x, y, w, h }));
+                    }
+                    if let Some((_, l)) = &mut self.info {
+                        (l.x, l.y) = (x, y);
+                    }
+                    self.hits.push((Hit::LegendWin, [x, y, w, h]));
+                } else {
+                    self.info = None;
+                }
+            }
+            None => {
+                self.info_open = false;
+                self.info = None;
+            }
+        }
+        let info_hits = self.hits.len();
         // the legend, over the graph's bottom left just above its key, made smaller to fit a small
         // window
         if self.legend_open {
@@ -1531,9 +1579,10 @@ impl Engine {
         } else {
             self.legend = None;
         }
-        self.hits.push((Hit::Report, [strip_a[2] - 140.0 - 10.0 - REPORT_W, strip_a[1] + 9.0, REPORT_W, 34.0]));
         lap(&mut self.spent, "engine.strip+legend");
-        let (ov, ov_hits) = self.overlay_svg(graph_a);
+        // what of the graph the details leave in sight
+        let seen = if self.sel.is_some() { graph_a[2].min(insp_a[0] - graph_a[0]) } else { graph_a[2] };
+        let (ov, ov_hits) = self.overlay_svg(graph_a, seen);
         let sig = hash_str(&ov, dpi);
         if self.overlay.as_ref().is_none_or(|(s, _)| *s != sig) {
             self.overlay = Some((sig, Layer { id: next_id(), pm: rasterize(&text::svg_options(), &ov, dpi), x: graph_a[0], y: graph_a[1], w: graph_a[2], h: graph_a[3] }));
@@ -1541,23 +1590,32 @@ impl Engine {
         self.hits.extend(ov_hits);
         lap(&mut self.spent, "engine.overlay");
         if self.sel.is_none() {
-            self.insp = None;
+            (self.insp, self.insp_want) = (None, None);
         } else {
             let (isvg, ihits) = self.insp_svg(insp_a);
             let sig = hash_str(&isvg, dpi);
-            if self.insp.as_ref().is_none_or(|(s, _)| *s != sig) {
+            // the first at once, then on the painter's threads (the old one shows meanwhile)
+            if self.insp.is_none() {
                 self.insp = Some((sig, Layer { id: next_id(), pm: rasterize(&text::svg_options(), &isvg, dpi), x: insp_a[0], y: insp_a[1], w: insp_a[2], h: insp_a[3] }));
+            } else if self.insp.as_ref().is_some_and(|(s, _)| *s != sig) && self.insp_want.map(|w| w.0) != Some(sig) {
+                self.insp_want = Some((sig, insp_a));
+                self.inbox.ask(painter::key("details", 0u8), sig, isvg, dpi);
             }
-            self.hits.extend(ihits);
+            // before the graph's own: in a narrow window the details lie over it; the i cell's
+            // card stays first
+            self.hits.splice(info_hits..info_hits, ihits.into_iter().chain([(Hit::LegendWin, insp_a)]));
         }
         lap(&mut self.spent, "engine.details");
         if self.bottom_shut {
-            self.bottom = None;
+            (self.bottom, self.bottom_want) = (None, None);
         } else {
             let (bsvg, bhits) = self.bottom_svg(bottom_a);
             let sig = hash_str(&bsvg, dpi);
-            if self.bottom.as_ref().is_none_or(|(s, _)| *s != sig) {
+            if self.bottom.is_none() {
                 self.bottom = Some((sig, Layer { id: next_id(), pm: rasterize(&text::svg_options(), &bsvg, dpi), x: bottom_a[0], y: bottom_a[1], w: bottom_a[2], h: bottom_a[3] }));
+            } else if self.bottom.as_ref().is_some_and(|(s, _)| *s != sig) && self.bottom_want.map(|w| w.0) != Some(sig) {
+                self.bottom_want = Some((sig, bottom_a));
+                self.inbox.ask(painter::key("tables", 0u8), sig, bsvg, dpi);
             }
             self.hits.extend(bhits);
         }
@@ -1577,7 +1635,7 @@ impl Engine {
         for (_, l) in self.nums.values() {
             out.push((l, l.x * v.s + v.x, l.y * v.s + v.y, l.w * v.s, l.h * v.s));
         }
-        for l in [&self.overlay, &self.legend, &self.strip, &self.insp, &self.bottom].into_iter().flatten().map(|(_, l)| l) {
+        for l in [&self.overlay, &self.legend, &self.strip, &self.insp, &self.bottom, &self.info].into_iter().flatten().map(|(_, l)| l) {
             out.push((l, l.x * dpi, l.y * dpi, l.w * dpi, l.h * dpi));
         }
         out
@@ -1586,7 +1644,7 @@ impl Engine {
     /// The GPU has these pictures' pixels now: they are let go. Returns how many bytes.
     pub fn uploaded(&mut self, has: impl Fn(u64) -> bool) -> usize {
         let mut freed = 0;
-        let parts = [self.graph_layer.as_mut().map(|(_, _, l)| l), self.strip.as_mut().map(|(_, l)| l), self.insp.as_mut().map(|(_, l)| l), self.bottom.as_mut().map(|(_, l)| l), self.overlay.as_mut().map(|(_, l)| l), self.legend.as_mut().map(|(_, l)| l)];
+        let parts = [self.graph_layer.as_mut().map(|(_, _, l)| l), self.strip.as_mut().map(|(_, l)| l), self.insp.as_mut().map(|(_, l)| l), self.bottom.as_mut().map(|(_, l)| l), self.overlay.as_mut().map(|(_, l)| l), self.legend.as_mut().map(|(_, l)| l), self.info.as_mut().map(|(_, l)| l)];
         for l in self.nums.values_mut().map(|(_, l)| l).chain(parts.into_iter().flatten()) {
             if has(l.id) {
                 freed += l.pm.take().map_or(0, |pm| pm.data().len());
@@ -1595,7 +1653,8 @@ impl Engine {
         freed
     }
 
-    fn strip_svg(&self, w: f64, version: &str) -> String {
+    /// ENGINE's strip `w` wide: its SVG, where its i cell is (in the strip) and what is behind it.
+    fn strip_svg(&self, w: f64, version: &str) -> (String, Option<[f64; 4]>, Vec<(String, String)>) {
         let m = &self.model;
         let ports: usize = m.nodes.iter().map(|n| n.ins.len() + n.outs.len()).sum();
         let get = |name: &str, key: &str| self.meta.iter().find(|((id, s, k), _)| *s == 0 && k == key && self.meta_name(*id) == name).map(|(_, (_, v))| v.clone());
@@ -1609,24 +1668,41 @@ impl Engine {
         let load = self.load.back().copied().unwrap_or(0.0);
         let session = self.objects.iter().find(|o| o.0 == "Client" && o.2.to_lowercase().contains("wireplumber")).map_or("—".into(), |_| "WirePlumber".to_owned());
         let cnt = |lv: u8| self.issues.iter().filter(|i| i.level == lv).count();
+        // what matters most first: the clock, the quantum, the load, the xruns
         let cells: Vec<(String, String)> = vec![
-            ("SERVER".into(), format!("PipeWire {version}")),
-            ("SESSION".into(), session),
             ("CLOCK".into(), format!("{rate} Hz{}", forced[0].as_ref().map_or(String::new(), |f| format!(" · forced {f}")))),
-            ("ALLOWED".into(), cut(allowed.trim_matches(|c| c == '[' || c == ']').trim(), 22)),
             ("QUANTUM".into(), format!("{q} · {qmin}–{qmax}{}", forced[1].as_ref().map_or(String::new(), |f| format!(" · forced {f}")))),
-            ("DRIVERS".into(), format!("{} running", m.groups.len())),
             ("DSP LOAD".into(), format!("{:.1}%", load * 100.0)),
             ("XRUNS".into(), xr.to_string()),
+            ("DRIVERS".into(), format!("{} running", m.groups.len())),
+            ("SERVER".into(), format!("PipeWire {version}")),
+            ("SESSION".into(), session),
+            ("ALLOWED".into(), cut(allowed.trim_matches(|c| c == '[' || c == ']').trim(), 22)),
             ("OBJECTS".into(), format!("{} · {} nodes · {ports} ports · {} links", self.objects.len(), m.nodes.len(), m.links.len())),
         ];
+        // what matters first; the rest while there is room, then behind the i cell (DSP LOAD's
+        // curve before them)
+        let (first, rest) = cells.split_at(4);
+        let cw = |k: &str, v: &str| text::width(text::MONO_BOLD, v, 12.0, 0.0).max(text::width(text::MONO_BOLD, k, 9.0, 1.2)) + 20.0;
+        let room = w - 12.0 - HEALTH_W - 10.0;
+        let used = 12.0 + first.iter().map(|(k, v)| cw(k, v) + 10.0).sum::<f64>();
+        let all = used + CURVE_W + rest.iter().map(|(k, v)| cw(k, v) + 10.0).sum::<f64>();
+        let (room, curve) = if all <= room { (room, true) } else { (room - INFO_W - 10.0, used + CURVE_W <= room - INFO_W - 10.0) };
+        let mut shown: Vec<(&str, &str, bool)> = first.iter().map(|(k, v)| (k.as_str(), v.as_str(), curve && k == "DSP LOAD")).collect();
+        let mut x = used + if curve { CURVE_W } else { 0.0 };
+        let mut hidden = Vec::new();
+        for (k, v) in rest {
+            if hidden.is_empty() && x + cw(k, v) <= room {
+                shown.push((k, v, false));
+                x += cw(k, v) + 10.0;
+            } else {
+                hidden.push((k.clone(), v.clone()));
+            }
+        }
         let mut o = String::new();
         let mut x = 12.0;
-        for (i, (k, v)) in cells.iter().enumerate() {
-            let cw = text::width(text::MONO_BOLD, v, 12.0, 0.0).max(text::width(text::MONO_BOLD, k, 9.0, 1.2)) + 20.0 + if i == 6 { 186.0 } else { 0.0 };
-            if x + cw > w - 150.0 - REPORT_W - 10.0 {
-                break;
-            }
+        for (k, v, with_curve) in shown {
+            let cw = cw(k, v) + if with_curve { CURVE_W } else { 0.0 };
             let _ = write!(
                 o,
                 r##"<rect x="{}" y="8" width="{}" height="36" rx="4" fill="#0c0c0d"/><rect x="{x}" y="10" width="{cw}" height="32" rx="3" fill="url(#lcd)"/><text x="{}" y="22" font-size="9" letter-spacing="1.2" fill="#3a2408" opacity=".65">{k}</text><text x="{}" y="37" font-size="12" fill="#3a2408" xml:space="preserve">{}</text>"##,
@@ -1636,7 +1712,7 @@ impl Engine {
                 x + 10.0,
                 esc(v)
             );
-            if i == 6 {
+            if with_curve {
                 // the busiest group's load over the last 45 seconds
                 let top = self.load.iter().copied().fold(0.01, f32::max) as f64 * 1.2;
                 let px = x + cw - 190.0;
@@ -1647,31 +1723,54 @@ impl Engine {
             }
             x += cw + 10.0;
         }
-        // a report for a bug ticket: a dark key, as on the panel
-        let rx = w - 140.0 - 10.0 - REPORT_W;
-        let _ = write!(
-            o,
-            r##"<rect x="{}" y="9" width="{}" height="34" rx="5" fill="#050506" stroke="#55585b" stroke-width="1"/><rect x="{rx}" y="11" width="{REPORT_W}" height="30" rx="4" fill="#262729" stroke="#070708"/><text x="{}" y="30" font-family="Noto Sans" font-size="10.5" letter-spacing=".4" fill="#e6e7e8" text-anchor="middle">SAVE REPORT</text>"##,
-            rx - 2.0,
-            REPORT_W + 4.0,
-            rx + REPORT_W / 2.0
-        );
+        // the rest behind i: its card drops under it
+        let info = (!hidden.is_empty()).then(|| {
+            let _ = write!(
+                o,
+                r##"<rect x="{}" y="8" width="{}" height="36" rx="4" fill="#0c0c0d"/><rect x="{x}" y="10" width="{INFO_W}" height="32" rx="3" fill="url(#lcd)"{}/><text x="{}" y="32" font-family="Noto Sans" font-weight="bold" font-size="17" fill="#3a2408" text-anchor="middle">i</text>"##,
+                x - 2.0,
+                INFO_W + 4.0,
+                if self.info_open { r##" stroke="#3a2408" stroke-width="2""## } else { "" },
+                x + INFO_W / 2.0
+            );
+            [x, 10.0, INFO_W, 32.0]
+        });
         // health: errors, warnings, notes
-        let hx = w - 140.0;
+        let hx = w - HEALTH_W - 12.0;
         let _ = write!(
             o,
-            r##"<rect x="{}" y="8" width="132" height="36" rx="4" fill="#0c0c0d"/><rect x="{hx}" y="10" width="128" height="32" rx="3" fill="url(#lcd)"/><text x="{}" y="22" font-size="9" letter-spacing="1.2" fill="#3a2408" opacity=".65">HEALTH</text>"##,
+            r##"<rect x="{}" y="8" width="{}" height="36" rx="4" fill="#0c0c0d"/><rect x="{hx}" y="10" width="{HEALTH_W}" height="32" rx="3" fill="url(#lcd)"/><text x="{}" y="22" font-size="9" letter-spacing="1.2" fill="#3a2408" opacity=".65">HEALTH</text>"##,
             hx - 2.0,
+            HEALTH_W + 4.0,
             hx + 10.0
         );
         for (j, (lv, c)) in [(2u8, "#ff4a32"), (1, "#ffb02e"), (0, "#5fd4ff")].iter().enumerate() {
-            let cx = hx + 16.0 + j as f64 * 38.0;
+            let cx = hx + 16.0 + j as f64 * 32.0;
             let _ = write!(o, r##"<circle cx="{cx}" cy="33" r="4" fill="{c}" stroke="#3a2408" stroke-opacity=".5"/><text x="{}" y="37" font-size="12" fill="#3a2408">{}</text>"##, cx + 8.0, cnt(*lv));
         }
-        format!(
+        let svg = format!(
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{STRIP_H}" viewBox="0 0 {w} {STRIP_H}" font-family="Noto Sans Mono" font-weight="bold"><defs><linearGradient id="lcd" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f7bb62"/><stop offset="1" stop-color="#e58f2c"/></linearGradient></defs><rect width="{w}" height="{STRIP_H}" fill="#1a1b1d"/><path d="M0,{} H{w}" stroke="#000"/>{o}</svg>"##,
             STRIP_H - 0.5
-        )
+        );
+        (svg, info, hidden)
+    }
+
+    /// The i cell's card: the strip's cells that didn't fit, one a line, as on the LCD.
+    fn info_svg(cells: &[(String, String)]) -> (String, f64, f64) {
+        let kw = cells.iter().map(|(k, _)| text::width(text::MONO_BOLD, k, 9.0, 1.2)).fold(0.0, f64::max) + 16.0;
+        let vw = cells.iter().map(|(_, v)| text::width(text::MONO_BOLD, v, 12.0, 0.0)).fold(0.0, f64::max);
+        let (w, h) = (14.0 + kw + vw + 14.0, 12.0 + cells.len() as f64 * 22.0 + 6.0);
+        let mut o = String::new();
+        for (i, (k, v)) in cells.iter().enumerate() {
+            let y = 12.0 + i as f64 * 22.0 + 14.0;
+            let _ = write!(o, r##"<text x="14" y="{}" font-size="9" letter-spacing="1.2" fill="#3a2408" opacity=".65">{k}</text><text x="{}" y="{y}" font-size="12" fill="#3a2408" xml:space="preserve">{}</text>"##, y - 1.0, 14.0 + kw, esc(v));
+        }
+        let svg = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" font-family="Noto Sans Mono" font-weight="bold"><defs><linearGradient id="lcd" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f7bb62"/><stop offset="1" stop-color="#e58f2c"/></linearGradient></defs><rect width="{w}" height="{h}" rx="5" fill="#0c0c0d"/><rect x="2" y="2" width="{}" height="{}" rx="4" fill="url(#lcd)"/>{o}</svg>"##,
+            w - 4.0,
+            h - 4.0
+        );
+        (svg, w, h)
     }
 
     fn meta_name(&self, id: u32) -> String {
@@ -1679,22 +1778,30 @@ impl Engine {
     }
 
     /// The SHOW chips over the graph's top left corner, and the keys to the legend and the diagnostics at its bottom.
-    fn overlay_svg(&self, a: [f64; 4]) -> (String, Vec<(Hit, [f64; 4])>) {
+    /// `seen`: how much of its width the details leave in sight.
+    fn overlay_svg(&self, a: [f64; 4], seen: f64) -> (String, Vec<(Hit, [f64; 4])>) {
         let (w, h) = (a[2].max(1.0), a[3].max(1.0));
+        let seen = seen.clamp(1.0, w);
         let mut o = String::new();
         let mut hits = Vec::new();
         let _ = write!(o, r##"<text x="12" y="25" font-size="9" letter-spacing="1.2" fill="#7d8085">ALSO SHOW</text>"##);
-        let mut x = 84.0;
+        let (mut x, mut y) = (84.0, 10.0);
         for (i, (name, _)) in SHOW.iter().enumerate() {
             let cw = text::width(text::BOLD, name, 10.0, 0.5) + 30.0;
+            // what doesn't fit goes on a row below
+            if x > 84.0 && x + cw > seen - 12.0 {
+                (x, y) = (84.0, y + 28.0);
+            }
             let _ = write!(
                 o,
-                r##"<rect x="{x}" y="10" width="{cw}" height="22" rx="4" fill="#2a2b2e" stroke="#0b0b0c"/><circle cx="{}" cy="21" r="3" fill="{}"/><text x="{}" y="25" font-size="10" letter-spacing=".5" fill="#e6e7e8" font-family="Noto Sans" font-weight="bold">{name}</text>"##,
+                r##"<rect x="{x}" y="{y}" width="{cw}" height="22" rx="4" fill="#2a2b2e" stroke="#0b0b0c"/><circle cx="{}" cy="{}" r="3" fill="{}"/><text x="{}" y="{}" font-size="10" letter-spacing=".5" fill="#e6e7e8" font-family="Noto Sans" font-weight="bold">{name}</text>"##,
                 x + 10.0,
+                y + 11.0,
                 if self.show[i] { "#ff4a32" } else { "#3a1512" },
-                x + 19.0
+                x + 19.0,
+                y + 15.0
             );
-            hits.push((Hit::Show(i), [a[0] + x, a[1] + 10.0, cw, 22.0]));
+            hits.push((Hit::Show(i), [a[0] + x, a[1] + y, cw, 22.0]));
             x += cw + 8.0;
         }
         let ly = h - 14.0;
@@ -1707,13 +1814,13 @@ impl Engine {
                 n => format!("DIAGNOSTICS · {n} ISSUES"),
             };
             let cw = text::width(text::BOLD, &label, 10.0, 0.5) + 36.0;
-            let cx = w - cw - 12.0;
+            let cx = (seen - cw - 12.0).max(118.0);
             let _ = write!(
                 o,
                 r##"<rect x="{cx}" y="{}" width="{cw}" height="24" rx="4" fill="#2a2b2e" stroke="#0b0b0c"/><path d="M{},{} l5,-5 l5,5" fill="none" stroke="#9a9da1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><text x="{}" y="{}" font-size="10" letter-spacing=".5" fill="#e6e7e8" font-family="Noto Sans" font-weight="bold">{label}</text>"##,
                 ly - 16.0,
                 cx + 10.0,
-                ly + 1.0,
+                ly - 1.5,
                 cx + 26.0,
                 ly
             );
@@ -2156,13 +2263,6 @@ impl Engine {
             hits.push((Hit::Tab(t), [a[0] + x, a[1] + 6.0, tw, 24.0]));
             x += tw + 4.0;
         }
-        let hint = match self.tab {
-            Tab::Top => "as pw-top: each driver and the nodes it clocks; the last half second's cycles, averaged, with the peak",
-            Tab::Issues => "what looks wrong or is worth knowing, worst first",
-            Tab::Objects => "every object PipeWire lists",
-            Tab::Metadata => "shared settings: defaults, clock, WirePlumber's",
-            Tab::Events => "what happened while ENGINE watched",
-        };
         // puts the tabs away (DIAGNOSTICS, by the legend, brings them back)
         let tx = w - 32.0;
         let _ = write!(
@@ -2171,7 +2271,16 @@ impl Engine {
             tx + 7.0
         );
         hits.push((Hit::Bottom, [a[0] + tx, a[1] + 6.0, 24.0, 24.0]));
-        let _ = write!(head, r##"<text x="{}" y="21" font-size="11" fill="#7d8085" text-anchor="end">{hint}</text>"##, w - 44.0);
+        // a report for a bug ticket, a key as on the panel, where the diagnostics are
+        let rx = (tx - 10.0 - REPORT_W).max(x + 6.0);
+        let _ = write!(
+            head,
+            r##"<rect x="{}" y="4" width="{}" height="26" rx="4" fill="#050506" stroke="#55585b" stroke-width="1"/><rect x="{rx}" y="6" width="{REPORT_W}" height="22" rx="3" fill="#262729" stroke="#070708"/><text x="{}" y="21" font-family="Noto Sans" font-weight="bold" font-size="10" letter-spacing=".4" fill="#e6e7e8" text-anchor="middle">SAVE REPORT</text>"##,
+            rx - 2.0,
+            REPORT_W + 4.0,
+            rx + REPORT_W / 2.0
+        );
+        hits.push((Hit::Report, [a[0] + rx, a[1] + 4.0, REPORT_W, 26.0]));
         // the body: a table head (fixed) and rows (scrolled); rows that select carry a Sel
         let mut thead = String::new();
         let mut body = String::new();
@@ -2180,8 +2289,8 @@ impl Engine {
         let sel_row = |s: Option<Sel>| s.is_some() && s == self.sel;
         match self.tab {
             Tab::Top => {
-                let cols: [(&str, f64, bool); 12] = [("S", 14.0, false), ("ID", 70.0, true), ("QUANT", 130.0, true), ("RATE", 190.0, true), ("WAIT", 270.0, true), ("BUSY", 350.0, true), ("PEAK", 430.0, true), ("W/Q", 480.0, true), ("B/Q", 600.0, true), ("ERR", 650.0, true), ("FORMAT", 670.0, false), ("NAME", 800.0, false)];
-                for (c, cx, right) in cols {
+                let cols = top_columns(w);
+                for &(c, cx, right) in &cols {
                     let _ = write!(thead, r##"<text x="{cx}" y="14" font-size="11" fill="#7d8085" text-anchor="{}">{c}</text>"##, if right { "end" } else { "start" });
                 }
                 let mut order: Vec<(u32, bool, Option<&Group>)> = Vec::new();
@@ -2236,13 +2345,16 @@ impl Engine {
                         format!("{}{}{}", if lead { "" } else { " + " }, n.desc, if n.desc != n.name { format!("  ({})", n.name) } else { String::new() }),
                     ];
                     for (i, (c, cx, right)) in cols.iter().enumerate() {
-                        let _ = c;
+                        if c.is_empty() {
+                            continue;
+                        }
                         let txt = if i == 11 { cut(&cells[i], ((w - cx - 10.0) / 6.6).max(4.0) as usize) } else { cells[i].clone() };
                         let color = if i == 9 && err > 0 { "#ff6a52" } else { fill };
                         let _ = write!(body, r##"<text x="{cx}" y="{}" font-size="11" font-weight="{weight}" fill="{color}" text-anchor="{}" xml:space="preserve">{}</text>"##, y + 14.0, if *right { "end" } else { "start" }, esc(&txt));
                     }
-                    if t.is_some() {
-                        let _ = write!(body, r##"<rect x="490" y="{}" width="50" height="6" rx="2" fill="#24262a"/><rect x="490" y="{}" width="{:.1}" height="6" rx="2" fill="#5cff7a"/>"##, y + 7.0, y + 7.0, (bq * 200.0).min(50.0));
+                    if t.is_some() && !cols[8].0.is_empty() {
+                        let bx = cols[8].1 - 110.0;
+                        let _ = write!(body, r##"<rect x="{bx}" y="{}" width="50" height="6" rx="2" fill="#24262a"/><rect x="{bx}" y="{}" width="{:.1}" height="6" rx="2" fill="#5cff7a"/>"##, y + 7.0, y + 7.0, (bq * 200.0).min(50.0));
                     }
                     rows.push((sel, y, ROW_H));
                     y += ROW_H;
@@ -2453,6 +2565,7 @@ impl Engine {
                 Hit::Bottom => self.bottom_shut = !self.bottom_shut,
                 Hit::Legend => self.legend_open = !self.legend_open,
                 Hit::LegendWin => {}
+                Hit::Info => self.info_open = !self.info_open,
             }
             return None;
         }
@@ -2512,6 +2625,11 @@ impl Engine {
     }
 
     /// The ? key: opens or closes the legend.
+    /// Opens the strip's i card (for pictures without a window).
+    pub fn open_info(&mut self) {
+        self.info_open = true;
+    }
+
     pub fn toggle_legend(&mut self) {
         self.legend_open = !self.legend_open;
     }
@@ -2584,11 +2702,28 @@ impl Engine {
         let _ = self.sprites(size, dpi, version);
         while self.inbox.busy() {
             let Some(done) = self.inbox.wait(Duration::from_secs(5)) else { break };
-            if let Some((want, sig, vs, w, h)) = self.graph_want
-                && want == done.sig
+            self.done(done);
+        }
+    }
+
+    /// A picture back from the painter's threads: the graph, the details or the tables.
+    fn done(&mut self, done: painter::Done) {
+        if let Some((want, sig, vs, w, h)) = self.graph_want
+            && want == done.sig
+            && done.key == painter::key("graph", 0u8)
+        {
+            self.graph_layer = Some((sig, vs, Layer { id: next_id(), pm: done.pm, x: 0.0, y: 0.0, w, h }));
+            self.graph_want = None;
+            return;
+        }
+        for (key, want, layer) in [("details", &mut self.insp_want, &mut self.insp), ("tables", &mut self.bottom_want, &mut self.bottom), ("strip", &mut self.strip_want, &mut self.strip)] {
+            if let Some((sig, [x, y, w, h])) = *want
+                && sig == done.sig
+                && done.key == painter::key(key, 0u8)
             {
-                self.graph_layer = Some((sig, vs, Layer { id: next_id(), pm: done.pm, x: 0.0, y: 0.0, w, h }));
-                self.graph_want = None;
+                *layer = Some((sig, Layer { id: next_id(), pm: done.pm, x, y, w, h }));
+                *want = None;
+                return;
             }
         }
     }
@@ -2620,7 +2755,7 @@ impl Engine {
         let (w, h) = (self.lay.w.max(10.0), self.lay.h.max(10.0));
         let (gap, title, top) = (60.0, 34.0, 110.0);
         let mut o = String::new();
-        let (ov, _) = self.overlay_svg([0.0, 0.0, 2.0 * w + gap, 80.0]);
+        let (ov, _) = self.overlay_svg([0.0, 0.0, 2.0 * w + gap, 80.0], 2.0 * w + gap);
         let _ = write!(o, r#"<g transform="translate(30,20)">{ov}</g>"#);
         for (i, (name, sel)) in [("NOTHING SELECTED", None), ("A NODE SELECTED", Some(Sel::Node(node))), ("A PORT SELECTED", Some(Sel::Port(port))), ("A LINK SELECTED", Some(Sel::Link(link)))].into_iter().enumerate() {
             self.sel = sel;
@@ -2679,8 +2814,20 @@ impl Engine {
             Hit::Legend => if self.legend_open { "close the legend (? or Esc)" } else { "how to read the graph: colours, lights, tags, links (?)" }.into(),
             Hit::Close => "close the details (choosing something opens them again)".into(),
             Hit::Report => "save what PipeWire has to a text file for a bug report, without names, addresses or what plays".into(),
+            Hit::Info => if self.info_open { "close the card" } else { "the rest: what the strip has no room for" }.into(),
+            Hit::Tab(_) => "click: show this table".into(),
             _ => return None,
         })
+    }
+
+    /// The line about a tab of the diagnostics, while the pointer is over it: it takes the
+    /// status bar's left.
+    pub fn tab_hint_at(&self, p: (f64, f64), dpi: f64) -> Option<&'static str> {
+        let (lx, ly) = (p.0 / dpi, p.1 / dpi);
+        match self.hits.iter().find(|(_, [x, y, w, h])| lx >= *x && lx <= x + w && ly >= *y && ly <= y + h)? {
+            (Hit::Tab(t), _) => Some(tab_hint(t)),
+            _ => None,
+        }
     }
 
     pub fn summary(&self) -> String {
@@ -2703,6 +2850,46 @@ struct Num {
 
 /// A port's name as its block shows it: cut to half the block's width when it has ports on both
 /// sides.
+/// TOP's columns in a table `w` wide: (name, x, right-aligned); a column left out has no name.
+/// When narrow, the columns that say least go first, from the right; S, ID, BUSY, ERR and NAME
+/// stay.
+fn top_columns(w: f64) -> [(&'static str, f64, bool); 12] {
+    // names, right-aligned ones' widths (left-aligned: what they take after a 20 gap)
+    const COLS: [(&str, f64, bool); 12] = [("S", 0.0, false), ("ID", 56.0, true), ("QUANT", 60.0, true), ("RATE", 60.0, true), ("WAIT", 80.0, true), ("BUSY", 80.0, true), ("PEAK", 80.0, true), ("W/Q", 50.0, true), ("B/Q", 120.0, true), ("ERR", 50.0, true), ("FORMAT", 110.0, false), ("NAME", 0.0, false)];
+    let place = |on: &[bool; 12]| {
+        let mut out = [("", 0.0, false); 12];
+        let mut x = 0.0;
+        for (i, &(c, cw, right)) in COLS.iter().enumerate() {
+            if !on[i] {
+                continue;
+            }
+            let cx = if right { x + cw } else if i == 0 { 14.0 } else { x + 20.0 };
+            x = if right { cx } else { cx + cw };
+            out[i] = (c, cx, right);
+        }
+        out
+    };
+    let mut on = [true; 12];
+    for drop in [10, 8, 7, 6, 4, 3, 2] {
+        if place(&on)[11].1 + 220.0 <= w {
+            break;
+        }
+        on[drop] = false;
+    }
+    place(&on)
+}
+
+/// What a tab of the diagnostics shows, for the status bar while the pointer is over it.
+fn tab_hint(t: &Tab) -> &'static str {
+    match t {
+        Tab::Top => "TOP: as pw-top: each driver and the nodes it clocks; the last half second's cycles, averaged, with the peak",
+        Tab::Issues => "ISSUES: what looks wrong or is worth knowing, worst first",
+        Tab::Objects => "OBJECTS: every object PipeWire lists",
+        Tab::Metadata => "METADATA: shared settings: defaults, clock, WirePlumber's",
+        Tab::Events => "EVENTS: what happened while ENGINE watched",
+    }
+}
+
 fn port_label(n: &ENode, p: &EPort) -> String {
     cut(&p.name, if !n.ins.is_empty() && !n.outs.is_empty() { 17 } else { 34 })
 }

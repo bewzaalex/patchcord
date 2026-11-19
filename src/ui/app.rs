@@ -202,7 +202,7 @@ impl App {
             prof: super::prof::Prof::new(),
             next_frame: now,
             last_press: (now, (0.0, 0.0)),
-            panel: Panel::new(panel::State { rack: false, engine: false, locked: settings.lock, align: settings.align, cables: settings.cables, lcd: [String::new(), String::new()], defaults: [String::new(), String::new()], cue_led: false, cue_level: 70, hidden: 0, flow: true, pressed: None }),
+            panel: Panel::new(panel::State { rack: false, engine: false, locked: settings.lock, align: settings.align, cables: settings.cables, lcd: [String::new(), String::new()], defaults: [String::new(), String::new()], cue_led: false, cue_level: 70, hidden: 0, flow: true, pressed: None, more: false }),
             hint: String::new(),
             status: None,
             notice: None,
@@ -467,7 +467,7 @@ impl App {
 
     /// What a panel key does.
     fn panel_key(&mut self, key: Key) {
-        if self.engine.on && key.desk_only() {
+        if (self.engine.on && key.desk_only()) || (!self.engine.on && self.scene.rack && key == Key::Align) {
             return;
         }
         match key {
@@ -529,6 +529,12 @@ impl App {
             Key::Defaults => self.open_defaults(true),
             Key::Cue => self.set_cue_mode(!self.cue.mode),
             Key::CueLevel => {}
+            Key::More => {
+                self.panel.state.more = !self.panel.state.more;
+                if !self.panel.state.more {
+                    self.panel.menu = None;
+                }
+            }
         }
         self.redraw();
     }
@@ -755,7 +761,7 @@ impl App {
             self.prof.mark("engine.build");
         }
         let left = if self.engine.on {
-            self.engine.summary()
+            self.engine.tab_hint_at(self.cursor, dpi).map_or_else(|| self.engine.summary(), str::to_owned)
         } else {
             format!(
                 "PipeWire {} · {} devices · {} links · {} cords",
@@ -816,7 +822,10 @@ impl App {
             }
             self.prof.mark("engine.pictures");
         }
-        if !engine_on && let Some((_, l)) = &self.scene.rack_bg {
+        if !engine_on
+            && self.scene.rack
+            && let Some((_, l)) = &self.scene.rack_bg
+        {
             sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: l.x * v.s + v.x, y: l.y * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha: 1.0 });
         }
         let targets = match &self.drag {
@@ -877,7 +886,8 @@ impl App {
         }
         self.prof.mark("sprites");
         // while ENGINE shows, the GPU keeps the desk's pictures: back on the desk they are there
-        let keep: std::collections::HashSet<u64> = if engine_on { self.scene.layer_ids().collect() } else { Default::default() };
+        // and the devices' faces for the other screen (desk or rack) always
+        let keep: std::collections::HashSet<u64> = if engine_on { self.scene.layer_ids().collect() } else { self.scene.spare_ids().collect() };
         let [wait, upload, draw] = sf.gpu.draw(&sprites, mesh.as_ref().map(|m| (cords_at, m)), &keep);
         self.prof.mark("gpu");
         self.prof.add("gpu.wait", wait);
@@ -971,8 +981,20 @@ impl App {
         self.set_hover(Hover::None);
         let w = self.world(self.cursor);
         let (top, bottom) = self.field();
+        let (px, py) = (self.cursor.0 / self.dpi(), self.cursor.1 / self.dpi());
+        let in_more = self.panel.in_more(px, py);
+        // a click off MORE's drop-down closes it (one on the panel also does what it does there)
+        if self.panel.state.more && !in_more && self.panel.hit(px, py) != Some(Key::More) && self.panel.menu_hit(px, py).is_none() {
+            // and a list opened from it
+            self.panel.state.more = false;
+            self.panel.menu = None;
+            self.redraw();
+            if self.cursor.1 >= top {
+                return;
+            }
+        }
         // ENGINE takes the clicks between the panel and the status bar
-        if self.engine.on && self.cursor.1 >= top && self.cursor.1 <= bottom && self.panel.menu.is_none() {
+        if self.engine.on && self.cursor.1 >= top && self.cursor.1 <= bottom && self.panel.menu.is_none() && !in_more {
             if button == MouseButton::Left {
                 match self.engine.press(self.cursor, self.size, self.dpi()) {
                     Some(Action::Report) => self.save_report(),
@@ -1077,17 +1099,22 @@ impl App {
                     let key = self.panel.hit(self.cursor.0 / dpi, self.cursor.1 / dpi);
                     if !matches!(key, Some(Key::Save | Key::Load | Key::Lcd | Key::Defaults | Key::Hidden)) {
                         self.panel.menu = None;
+                        // MORE closes with the list it holds open
+                        if key == Some(Key::More) {
+                            self.panel.state.more = false;
+                        }
                         self.redraw();
                         return;
                     }
                 }
             }
-            if self.panel.menu_hit(self.cursor.0 / dpi, self.cursor.1 / dpi).is_some() || self.cursor.1 >= top {
+            // the keys that open it, on the panel or in MORE, go on to toggle it
+            if self.panel.menu_hit(self.cursor.0 / dpi, self.cursor.1 / dpi).is_some() || (self.cursor.1 >= top && !in_more) {
                 return;
             }
         }
-        if self.cursor.1 < top {
-            // the top panel
+        if self.cursor.1 < top || in_more {
+            // the top panel, and MORE's drop-down
             let dpi = self.dpi();
             if button == MouseButton::Left
                 && let Some(key) = self.panel.hit(self.cursor.0 / dpi, self.cursor.1 / dpi)
@@ -1337,8 +1364,9 @@ impl App {
             None => {
                 let (top, bottom) = self.field();
                 let dpi = self.dpi();
+                let in_more = self.panel.in_more(self.cursor.0 / dpi, self.cursor.1 / dpi);
                 // ENGINE: no hovering over the desk behind it
-                if self.engine.on && self.cursor.1 >= top {
+                if self.engine.on && self.cursor.1 >= top && !in_more {
                     let hint = if let Some(h) = self.engine.hover(self.cursor, dpi) {
                         h
                     } else if self.cursor.1 <= bottom { "click: inspect · drag: pan · wheel: zoom (scroll over the lists) · F: fit · ?: legend · E: back to the desk".to_owned() } else { String::new() };
@@ -1380,7 +1408,7 @@ impl App {
                         ProfileHit::Latency(..) => (CursorIcon::Pointer, "click: 1 ms earlier or later (Shift: 10 ms); this port's sound is delayed by its latency offset".to_owned()),
                         ProfileHit::Inside => (CursorIcon::Default, String::new()),
                     }
-                } else if self.cursor.1 < top {
+                } else if self.cursor.1 < top || in_more {
                     match self.panel.hit(self.cursor.0 / dpi, self.cursor.1 / dpi) {
                         Some(Key::Cables) => (CursorIcon::EwResize, Key::Cables.hint().to_owned()),
                         Some(k) => (CursorIcon::Pointer, k.hint().to_owned()),
@@ -1391,7 +1419,7 @@ impl App {
                 } else {
                     (self.field_cursor(w), self.scene.hint_at(w.0, w.1, self.panel.state.locked))
                 };
-                let on_field = self.cursor.1 >= top && self.cursor.1 <= bottom && self.panel.menu.is_none() && in_list.is_none();
+                let on_field = self.cursor.1 >= top && self.cursor.1 <= bottom && self.panel.menu.is_none() && in_list.is_none() && !in_more;
                 self.set_hover(if on_field { self.scene.hover_at(w.0, w.1) } else { Hover::None });
                 if hint != self.hint {
                     self.hint = hint;
@@ -1455,6 +1483,7 @@ impl App {
                 }
                 KeyCode::Escape => {
                     self.panel.menu = None;
+                    self.panel.state.more = false;
                     self.engine.deselect();
                     self.redraw();
                 }
@@ -1501,6 +1530,7 @@ impl App {
             KeyCode::KeyR => self.panel_key(if self.scene.rack { Key::Desk } else { Key::Rack }),
             KeyCode::Escape => {
                 self.panel.menu = None;
+                self.panel.state.more = false;
                 self.profiles = None;
                 if self.cue.mode {
                     self.set_cue_mode(false);
@@ -1577,7 +1607,7 @@ impl App {
                 };
                 let (top, bottom) = self.field();
                 let dpi = self.dpi();
-                if self.cursor.1 < top {
+                if self.cursor.1 < top || self.panel.in_more(self.cursor.0 / dpi, self.cursor.1 / dpi) {
                     match self.panel.hit(self.cursor.0 / dpi, self.cursor.1 / dpi) {
                         // the wheel steps the cords switch, one click at a time
                         Some(Key::CueLevel) if f != 1.0 => {

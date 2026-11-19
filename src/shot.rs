@@ -139,7 +139,7 @@ fn compose(scene: &Scene, view: View, size: (u32, u32), dpi: f64, held: Option<(
 }
 
 fn new_panel(scene: &Scene) -> Panel {
-    Panel::new(panel::State { rack: scene.rack, engine: false, locked: false, align: scene.align, cables: 0, defaults: [scene.default_shown(true), scene.default_shown(false)], cue_led: false, cue_level: 70, lcd: ["NO PRESET".into(), "48 kHz · 1024 · 21.3 ms".into()], hidden: scene.hidden_devs.len(), flow: scene.flow, pressed: None })
+    Panel::new(panel::State { rack: scene.rack, engine: false, locked: false, align: scene.align, cables: 0, defaults: [scene.default_shown(true), scene.default_shown(false)], cue_led: false, cue_level: 70, lcd: ["NO PRESET".into(), "48 kHz · 1024 · 21.3 ms".into()], hidden: scene.hidden_devs.len(), flow: scene.flow, pressed: None, more: false })
 }
 
 fn status(scene: &Scene, width: f64, dpi: f64) -> Layer {
@@ -536,7 +536,7 @@ pub fn record(dir: &str) -> Result<(), String> {
 }
 
 /// `patchcord --render out.png engine [select=NODE] [tab=top|issues|objects|metadata|events]
-/// [itab=info|props|params|timing] [shut=bottom] [legend] [size=WxH]`: the ENGINE screen of the live graph, after the
+/// [itab=info|props|params|timing] [shut=bottom] [legend] [info] [size=WxH]`: the ENGINE screen of the live graph, after the
 /// profiler has run for two seconds (it only reads: nothing in PipeWire changes).
 fn render_engine(path: &str, opts: &[String]) -> Result<(), String> {
     use crate::ui::engine::Engine;
@@ -565,6 +565,9 @@ fn render_engine(path: &str, opts: &[String]) -> Result<(), String> {
     eng.demo(opt("select"), opt("tab"), opt("itab"), opt("shut"));
     if opts.iter().any(|o| o == "legend") {
         eng.toggle_legend();
+    }
+    if opts.iter().any(|o| o == "info") {
+        eng.open_info();
     }
     // the params, if asked for, come back from PipeWire
     for c in eng.outbox.drain(..) {

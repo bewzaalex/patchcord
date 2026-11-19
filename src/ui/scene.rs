@@ -99,6 +99,9 @@ pub struct DevView {
     face_scale: f64,
     /// a face being drawn (see `painter`): its sig, what it is drawn from, at what scale, its size
     face_want: Option<(u64, u64, f64, f64, f64)>,
+    /// its face on the other screen (the desk's in the rack, the rack's on the desk): what it was
+    /// drawn for, at what scale. The GPU keeps it, so going back shows it at once.
+    spare: Option<(u64, f64, Layer)>,
     /// a shadow being drawn: what for, its size
     shade_want: Option<(u64, f64, f64)>,
     /// the LCD, and what it was drawn from (its text, place and scale)
@@ -139,7 +142,7 @@ impl DevView {
 
     /// A device as first seen: at `at`, nothing drawn yet.
     fn new(dev: Device, split: Vec<bool>, geo: Geometry, (x, y): (f64, f64)) -> Self {
-        DevView { dev, split, defs: Vec::new(), counts: Vec::new(), geo, x, y, tx: x, ty: y, dx: x, dy: y, face: None, shade: None, face_sig: 0, face_scale: 0.0, face_want: None, shade_want: None, lcd: None, lcd_want: None, mix_want: HashMap::new(), mix_local: HashMap::new(), mix_note: None, bal: HashMap::new(), mix_pics: Vec::new(), glevel: HashMap::new(), gmeters: Vec::new() }
+        DevView { dev, split, defs: Vec::new(), counts: Vec::new(), geo, x, y, tx: x, ty: y, dx: x, dy: y, face: None, shade: None, face_sig: 0, face_scale: 0.0, face_want: None, spare: None, shade_want: None, lcd: None, lcd_want: None, mix_want: HashMap::new(), mix_local: HashMap::new(), mix_note: None, bal: HashMap::new(), mix_pics: Vec::new(), glevel: HashMap::new(), gmeters: Vec::new() }
     }
 
     /// How high the face is: a unit for each row of frames (one before it is first drawn).
@@ -591,7 +594,12 @@ impl Scene {
 
     /// The ids of every picture of the desk or rack (to keep on the GPU while ENGINE shows).
     pub fn layer_ids(&self) -> impl Iterator<Item = u64> + '_ {
-        self.devs.iter().flat_map(|d| d.layers().map(|l| l.id)).chain(self.jack_pics.iter().flatten().map(|l| l.id)).chain(self.rack_bg.iter().map(|(_, l)| l.id))
+        self.devs.iter().flat_map(|d| d.layers().map(|l| l.id)).chain(self.spare_ids()).chain(self.jack_pics.iter().flatten().map(|l| l.id)).chain(self.rack_bg.iter().map(|(_, l)| l.id))
+    }
+
+    /// The faces kept for the other screen: the GPU keeps them.
+    pub fn spare_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.devs.iter().filter_map(|d| d.spare.as_ref().map(|(_, _, l)| l.id)).chain(self.rack_bg.iter().filter(|_| self.rack_w.is_none()).map(|(_, l)| l.id))
     }
 
     /// Devices into the rack, or back to their places on the desk.
@@ -1302,10 +1310,9 @@ impl Scene {
                     }
                 }
             }
-            None => {
-                self.rack_bg = None;
-                self.rack_want = None;
-            }
+            // off the rack its frame is kept (the GPU too keeps it): back in the rack it shows at
+            // once, and is drawn again if it has to be
+            None => self.rack_want = None,
         }
         let links: HashMap<usize, usize> = {
             let mut m = HashMap::new();
@@ -1362,7 +1369,13 @@ impl Scene {
                 && want == done.sig
                 && done.key == painter::key("face", &d.dev.key)
             {
-                d.face = Some(Layer { id: next_id(), pm: done.pm, x: -SHADOW, y: -SHADOW, w, h });
+                let old = d.face.replace(Layer { id: next_id(), pm: done.pm, x: -SHADOW, y: -SHADOW, w, h });
+                // another screen's face is kept for going back
+                if d.face_sig != sig
+                    && let Some(old) = old
+                {
+                    d.spare = Some((d.face_sig, d.face_scale, old));
+                }
                 (d.face_sig, d.face_scale, d.face_want) = (sig, scale, None);
                 return;
             }
@@ -2385,9 +2398,30 @@ fn prepare_dev(d: &mut DevView, n: usize, c: &DevCtx, inbox: &mut painter::Inbox
     if (d.face.is_none() || want != painter::sig(d.face_sig, d.face_scale)) && d.face_want.map(|w| w.0) != Some(want) {
         // its geometry (where its jacks and knobs are) changes at once; its picture follows
         let (svg, geo) = face::face(&d.dev, &d.defs, &d.counts, &d.split, c.rack_w, c.accents);
+        let reshaped = d.face.is_some() && (geo.w, geo.h) != (d.geo.w, d.geo.h);
         d.geo = geo;
-        d.face_want = Some((want, sig, c.scale, d.geo.w + 2.0 * SHADOW, d.geo.h + 2.0 * SHADOW));
-        inbox.ask(painter::key("face", &d.dev.key), want, svg, c.scale);
+        // back to the other screen: its face as it was shows (scaled) until this one comes
+        if d.face_sig != sig
+            && let Some((ss, sc, sl)) = d.spare.take_if(|(ss, ..)| *ss == sig)
+        {
+            if let Some(old) = d.face.replace(sl) {
+                d.spare = Some((d.face_sig, d.face_scale, old));
+            }
+            (d.face_sig, d.face_scale) = (ss, sc);
+        }
+        let (w, h) = (d.geo.w + 2.0 * SHADOW, d.geo.h + 2.0 * SHADOW);
+        if reshaped && d.face_sig != sig {
+            // a new shape and none kept for it: drawn at once, an old face of another shape
+            // would show its jacks and knobs elsewhere
+            let old = d.face.replace(Layer { id: next_id(), pm: rasterize(c.opt, &svg, c.scale), x: -SHADOW, y: -SHADOW, w, h });
+            if let Some(old) = old {
+                d.spare = Some((d.face_sig, d.face_scale, old));
+            }
+            (d.face_sig, d.face_scale, d.face_want) = (sig, c.scale, None);
+        } else if want != painter::sig(d.face_sig, d.face_scale) {
+            d.face_want = Some((want, sig, c.scale, w, h));
+            inbox.ask(painter::key("face", &d.dev.key), want, svg, c.scale);
+        }
         d.gmeters.clear();
     }
     // each group's knobs and MUTE LED, drawn again when they move
@@ -2399,9 +2433,11 @@ fn prepare_dev(d: &mut DevView, n: usize, c: &DevCtx, inbox: &mut painter::Inbox
         let sig = h.finish();
         match (d.mix_pics.iter().position(|(g, s, _)| g == gi && *s == sig), d.mix_pics.iter().position(|(g, _, _)| g == gi)) {
             (Some(i), _) => pics.push(d.mix_pics.swap_remove(i)),
-            // the knobs as they were show until they are drawn as they are now
+            // the knobs as they were show until they are drawn as they are now, where they are now
             (None, Some(i)) => {
-                pics.push(d.mix_pics.swap_remove(i));
+                let mut p = d.mix_pics.swap_remove(i);
+                (p.2.x, p.2.y) = (m.x, m.y + MIX_Y);
+                pics.push(p);
                 if d.mix_want.get(gi).map(|w| w.0) != Some(sig) {
                     d.mix_want.insert(*gi, (sig, m.x, m.y + MIX_Y, m.w));
                     inbox.ask(painter::key("mix", (&d.dev.key, gi)), sig, face::mix_pic(m, vol, bal, mute, d.bal(*gi)), c.scale);
@@ -2447,6 +2483,10 @@ fn prepare_dev(d: &mut DevView, n: usize, c: &DevCtx, inbox: &mut painter::Inbox
     let card = d.dev.card.is_some();
     let x = d.geo.left + LCD_X;
     let lsig = painter::sig((&text, x.to_bits(), card), c.scale);
+    // the screen as it was shows where it is now until it is drawn again
+    if let Some((_, l)) = &mut d.lcd {
+        l.x = x;
+    }
     if d.lcd.as_ref().is_none_or(|(s, _)| *s != lsig) && d.lcd_want.map(|w| w.0) != Some(lsig) {
         let l: Vec<&str> = text.split('\n').collect();
         let svg = face::lcd([l[0], l[1], l[2]], card);

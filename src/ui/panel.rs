@@ -41,6 +41,8 @@ pub enum Key {
     /// CUE mode on and off, and the cue's level
     Cue,
     CueLevel,
+    /// the groups the window is too narrow for, dropped below the panel
+    More,
 }
 
 impl Key {
@@ -73,6 +75,7 @@ impl Key {
             Key::Defaults => "The default output and input, where new apps play and record: click to choose others or find them",
             Key::Cue => "Listen (cue): CUE mode on/off: hover a jack to hear it, click to keep it on; or hold Alt over the jacks",
             Key::CueLevel => "How loud the cue is: drag up/down or turn the wheel",
+            Key::More => "The keys the window is too narrow for",
         }
     }
 }
@@ -100,7 +103,42 @@ pub struct State {
     /// the light in the cords
     pub flow: bool,
     pub pressed: Option<Key>,
+    /// MORE's drop-down is open
+    pub more: bool,
 }
+
+impl State {
+    /// A key this screen can't use, greyed: the desk's keys in ENGINE, ALIGN in the rack.
+    pub fn off(&self, k: Key) -> bool {
+        (self.engine && k.desk_only()) || (self.rack && !self.engine && k == Key::Align)
+    }
+}
+
+/// A part of the panel: a group of keys, the logo or the screen (or, folded into MORE, one of
+/// the screen's halves).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum Part {
+    Logo,
+    Edit,
+    /// DESK · RACK · ENGINE, and LOCK · ALIGN while they are in its group
+    Layout,
+    LockAlign,
+    Cables,
+    View,
+    Cue,
+    Lcd,
+    LcdDefaults,
+    LcdPreset,
+}
+
+/// keys and where they are (x, y, w, h)
+type Keys = Vec<(Key, [f64; 4])>;
+
+/// the room between groups
+const GAP: f64 = 22.0;
+/// the screen is narrower than this: it folds into MORE
+const LCD_MIN: f64 = 260.0;
+const MORE_W: f64 = 70.0;
 
 pub struct Panel {
     pub state: State,
@@ -115,6 +153,12 @@ pub struct Panel {
     pub menu: Option<Menu>,
     menu_rects: Vec<(MenuHit, [f64; 4])>,
     menu_layer: Option<(u64, Layer)>,
+    /// what is folded into MORE, MORE's keys and its drop-down (with where it is), while open
+    folded: Vec<Part>,
+    more_rects: Vec<(Key, [f64; 4])>,
+    more_layer: Option<(u64, Layer)>,
+    /// MORE's drop-down being drawn on the painter's threads: what for, where
+    more_want: Option<(u64, [f64; 4])>,
 }
 
 /// The drop-down under the LCD: a name field to save a new preset, or the list of presets.
@@ -352,17 +396,29 @@ fn esc(t: &str) -> String {
 
 impl Panel {
     pub fn new(state: State) -> Self {
-        Panel { state, rects: Vec::new(), layer: None, want: None, inbox: Default::default(), menu: None, menu_rects: Vec::new(), menu_layer: None }
+        Panel { state, rects: Vec::new(), layer: None, want: None, inbox: Default::default(), menu: None, menu_rects: Vec::new(), menu_layer: None, folded: Vec::new(), more_rects: Vec::new(), more_layer: None, more_want: None }
     }
 
     /// Where a key is (x, y, w, h), once the panel has been drawn.
     pub fn rect(&self, key: Key) -> Option<[f64; 4]> {
-        self.rects.iter().find(|(k, _)| *k == key).map(|(_, r)| *r)
+        self.keys().find(|(k, _)| *k == key).map(|(_, r)| *r)
+    }
+
+    /// The keys on the panel and in MORE's drop-down while it is open.
+    fn keys(&self) -> impl Iterator<Item = &(Key, [f64; 4])> {
+        self.rects.iter().chain(self.more_rects.iter().filter(|_| self.state.more))
     }
 
     /// The key under a point in logical pixels.
     pub fn hit(&self, x: f64, y: f64) -> Option<Key> {
-        self.rects.iter().find(|(_, [rx, ry, rw, rh])| x >= *rx && x <= rx + rw && y >= *ry && y <= ry + rh).map(|(k, _)| *k)
+        self.keys().find(|(_, [rx, ry, rw, rh])| x >= *rx && x <= rx + rw && y >= *ry && y <= ry + rh).map(|(k, _)| *k)
+    }
+
+    /// A point in logical pixels is on MORE's open drop-down.
+    pub fn in_more(&self, x: f64, y: f64) -> bool {
+        // where it is, or will be in a moment
+        let at = self.more_want.map(|(_, at)| at).or_else(|| self.more_layer.as_ref().map(|(_, l)| [l.x, l.y, l.w, l.h]));
+        self.state.more && at.is_some_and(|[lx, ly, lw, lh]| x >= lx && x <= lx + lw && y >= ly && y <= ly + lh - SHADOW)
     }
 
     /// The panel as a layer `width` logical pixels wide, drawn at `dpi`.
@@ -373,6 +429,11 @@ impl Panel {
             {
                 self.layer = Some((sig, Layer { id: next_id(), pm: done.pm, x: 0.0, y: 0.0, w, h: H + SHADOW }));
                 self.want = None;
+            } else if let Some((sig, [x, y, w, h])) = self.more_want
+                && sig == done.sig
+            {
+                self.more_layer = Some((sig, Layer { id: next_id(), pm: done.pm, x, y, w, h }));
+                self.more_want = None;
             }
         }
         let mut h = std::hash::DefaultHasher::new();
@@ -381,14 +442,33 @@ impl Panel {
         if self.layer.as_ref().is_none_or(|(s, _)| *s != sig) && self.want.map(|w| w.0) != Some(sig) {
             // where the keys are, at once; their picture on the painter's threads (the first one
             // here: there is nothing to show meanwhile)
-            let (svg, rects) = self.svg(width);
+            let (svg, rects, folded) = self.svg(width);
             self.rects = rects;
+            self.folded = folded;
             if self.layer.is_none() {
                 let pm = rasterize(&text::svg_options(), &svg, dpi);
                 self.layer = Some((sig, Layer { id: next_id(), pm, x: 0.0, y: 0.0, w: width, h: H + SHADOW }));
             } else {
                 self.want = Some((sig, width));
                 self.inbox.ask(super::painter::key("panel", 0u8), sig, svg, dpi);
+            }
+        }
+        // MORE's drop-down, on the painter's threads too (the old one shows meanwhile); where its
+        // keys are, at once
+        if self.folded.is_empty() {
+            self.state.more = false;
+        }
+        if !self.state.more {
+            (self.more_layer, self.more_want) = (None, None);
+        } else {
+            let mut h = std::hash::DefaultHasher::new();
+            std::hash::Hash::hash(&(&self.state, &self.folded, width.to_bits(), dpi.to_bits()), &mut h);
+            let sig = std::hash::Hasher::finish(&h);
+            if self.more_layer.as_ref().is_none_or(|(s, _)| *s != sig) && self.more_want.map(|w| w.0) != Some(sig) {
+                let (svg, rects, at) = self.more_svg(width);
+                self.more_rects = rects;
+                self.more_want = Some((sig, at));
+                self.inbox.ask(super::painter::key("panel", 1u8), sig, svg, dpi);
             }
         }
         &self.layer.as_ref().unwrap().1
@@ -401,14 +481,14 @@ impl Panel {
 
     /// The layer's pixels went to the GPU.
     pub fn uploaded(&mut self) {
-        for (_, l) in [self.layer.as_mut(), self.menu_layer.as_mut()].into_iter().flatten() {
+        for (_, l) in [self.layer.as_mut(), self.more_layer.as_mut(), self.menu_layer.as_mut()].into_iter().flatten() {
             l.pm = None;
         }
     }
 
     /// The panel and drop-down layers as last prepared.
     pub fn layers(&self) -> impl Iterator<Item = &Layer> {
-        [self.layer.as_ref(), self.menu_layer.as_ref()].into_iter().flatten().map(|(_, l)| l)
+        [self.layer.as_ref(), self.more_layer.as_ref(), self.menu_layer.as_ref()].into_iter().flatten().map(|(_, l)| l)
     }
 
     /// What of the drop-down is under a point in logical pixels; None when it is outside it.
@@ -425,18 +505,21 @@ impl Panel {
             self.menu_layer = None;
             return None;
         };
+        // under its screen: the defaults' under theirs, the presets' against the right edge; below
+        // MORE's drop-down while that is open
+        let mw = if matches!(menu, Menu::Defaults { .. } | Menu::Hidden { .. }) { DEFAULTS_W } else { MENU_W };
+        let x = match (menu, self.rect(Key::Defaults), self.rect(Key::Hidden), self.rect(Key::Lcd)) {
+            (Menu::Defaults { .. }, Some([dx, ..]), _, _) => dx.min(width - 6.0 - mw).max(6.0),
+            (Menu::Hidden { .. }, _, Some([hx, ..]), _) => (hx - 20.0).min(width - 6.0 - mw).max(6.0),
+            (Menu::Load { .. } | Menu::Save { .. }, _, _, Some([lx, _, lw, _])) if self.state.more && self.more_rects.iter().any(|(k, _)| *k == Key::Lcd) => (lx + lw - mw).min(width - 6.0 - mw).max(6.0),
+            _ => width - 18.0 - mw,
+        };
+        let more_bottom = self.more_want.map(|(_, at)| at).or_else(|| self.more_layer.as_ref().map(|(_, l)| [l.x, l.y, l.w, l.h])).filter(|_| self.state.more).map(|[_, y, _, h]| y + h - SHADOW);
+        let y = more_bottom.unwrap_or(H) + 4.0;
         let mut h = std::hash::DefaultHasher::new();
-        std::hash::Hash::hash(&(menu, width.to_bits(), dpi.to_bits()), &mut h);
+        std::hash::Hash::hash(&(menu, width.to_bits(), dpi.to_bits(), x.to_bits(), y.to_bits()), &mut h);
         let sig = std::hash::Hasher::finish(&h);
         if self.menu_layer.as_ref().is_none_or(|(s, _)| *s != sig) {
-            // under its screen: the defaults' under theirs, the presets' against the right edge
-            let mw = if matches!(menu, Menu::Defaults { .. } | Menu::Hidden { .. }) { DEFAULTS_W } else { MENU_W };
-            let x = match (menu, self.rect(Key::Defaults), self.rect(Key::Hidden)) {
-                (Menu::Defaults { .. }, Some([dx, ..]), _) => dx.min(width - 6.0 - mw).max(6.0),
-                (Menu::Hidden { .. }, _, Some([hx, ..])) => (hx - 20.0).min(width - 6.0 - mw).max(6.0),
-                _ => width - 18.0 - mw,
-            };
-            let y = H + 4.0;
             let (svg, mh, rects) = menu_svg(menu);
             self.menu_rects = std::iter::once((MenuHit::Inside, [x, y, mw, mh])).chain(rects.into_iter().map(|(h, [rx, ry, rw, rh])| (h, [x + rx, y + ry, rw, rh]))).collect();
             let pm = rasterize(&text::svg_options(), &svg, dpi);
@@ -445,178 +528,358 @@ impl Panel {
         self.menu_layer.as_ref().map(|(_, l)| l)
     }
 
-    fn svg(&self, w: f64) -> (String, Vec<(Key, [f64; 4])>) {
-        let st = &self.state;
-        let mut rects = Vec::new();
+    /// The panel's SVG `w` wide, where its keys are, and the groups folded into MORE.
+    fn svg(&self, w: f64) -> (String, Keys, Vec<Part>) {
+        let (parts, attached, bare, folded, lcd_w) = self.plan(w);
         let mut o = String::new();
+        let mut rects = Vec::new();
         let mut x = 18.0;
-
-        // the maker's name, pressed into the metal
-        let logo_w = text::width(text::BLACK, "PATCHCORD", 26.0, 1.0) * 1.06;
-        let _ = write!(
-            o,
-            r##"<g transform="translate({x},34) scale(1.06,1)" font-size="26" font-weight="900" letter-spacing="1"><text y="1" fill="#fff" opacity=".35">PATCHCORD</text><text fill="#2a2b2e">PATCHCORD</text></g>{sub}"##,
-            sub = SECTION.text(x, 50.0, LABEL, "start", "PC-1 · PIPEWIRE PATCHBAY")
-        );
-        x += logo_w + 26.0;
-
-        // a group of keys with its name printed under them
-        let group = |o: &mut String, rects: &mut Vec<(Key, [f64; 4])>, x: &mut f64, keys: &[(Key, Option<&str>, Option<bool>)], label: &str| {
-            let x0 = *x;
-            for (i, (key, txt, led)) in keys.iter().enumerate() {
-                if i > 0 {
-                    *x += 13.0;
-                }
-                let kw = match txt {
-                    Some(t) => (text::width(text::BOLD, t, 10.5, 0.4) + 20.0).max(62.0),
-                    None => 38.0,
-                };
-                let pressed = st.pressed == Some(*key);
-                o.push_str(&key_svg(*x, kw, pressed));
-                let dy = 0.0;
-                match txt {
-                    Some(t) => {
-                        let tx = *x + kw / 2.0 + if led.is_some() { 4.0 } else { 0.0 };
-                        let _ = write!(o, r##"<text x="{tx}" y="{}" font-size="10.5" letter-spacing=".4" fill="#e6e7e8" text-anchor="middle">{t}</text>"##, KEY_Y + 19.0 + dy);
-                    }
-                    None => {
-                        let icon = ICONS.iter().find(|(k, _)| k == key).map_or("", |(_, s)| s);
-                        let _ = write!(
-                            o,
-                            r##"<g transform="translate({},{}) scale(.7083)" fill="none" stroke="#e6e7e8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{icon}</g>"##,
-                            *x + kw / 2.0 - 8.5 + if led.is_some() { 2.0 } else { 0.0 },
-                            KEY_Y + KEY_H / 2.0 - 8.5 + dy
-                        );
-                    }
-                }
-                if let Some(on) = led {
-                    o.push_str(&led_svg(*x + 8.0, KEY_Y + 7.0 + dy, *on, "#ff4a32"));
-                }
-                rects.push((*key, [*x - 3.0, KEY_Y - 3.0, kw + 6.0, KEY_H + 6.0]));
-                *x += kw;
-            }
-            o.push_str(&SECTION.text((x0 + *x) / 2.0, 54.0, LABEL, "middle", label));
-            *x += 22.0;
-        };
-        group(&mut o, &mut rects, &mut x, &[(Key::Undo, None, None), (Key::Redo, None, None), (Key::Save, None, None), (Key::Load, None, None)], "EDIT");
-        group(&mut o, &mut rects, &mut x, &[(Key::Desk, Some("DESK"), Some(!st.rack && !st.engine)), (Key::Rack, Some("RACK"), Some(st.rack && !st.engine)), (Key::Engine, Some("ENGINE"), Some(st.engine)), (Key::Lock, None, Some(st.locked)), (Key::Align, None, Some(st.align))], "LAYOUT");
-        // the cords switch: three click positions with their names printed around it
-        let (kx, ky) = (x + 44.0, KNOB_Y);
-        let mut ticks = String::new();
-        for (i, (name, anchor, dx, dy)) in [("SHOW", "end", -19.0, 0.0), ("FADE", "middle", 0.0, -20.5), ("HIDE", "start", 19.0, 0.0)]
-            .into_iter()
-            .enumerate()
-        {
-            let a = SWITCH[i].to_radians();
-            let _ = write!(ticks, r#"<path d="M{},{} L{},{}" stroke="{LABEL}" stroke-width="1.4"/>"#, kx + 15.0 * a.sin(), ky - 15.0 * a.cos(), kx + 16.8 * a.sin(), ky - 16.8 * a.cos());
-            // the labels stay as printed: the pointer shows the position
-            ticks.push_str(&SMALL.text(kx + dx * 1.15, ky + dy + 2.5, LABEL, anchor, name));
-            let w = SMALL.width(name) + 4.0;
-            let lx = match anchor {
-                "end" => kx + dx * 1.15 - w,
-                "middle" => kx - w / 2.0,
-                _ => kx + dx * 1.15 - 2.0,
-            };
-            rects.push((Key::CablesAt(i as u8), [lx, ky + dy - 6.0, w, 11.0]));
-        }
-        o.push_str(&ticks);
-        o.push_str(&knob_svg(kx, ky, SWITCH[st.cables.min(2) as usize], ""));
-        o.push_str(&SECTION.text(kx, 54.0, LABEL, "middle", "CABLES"));
-        rects.push((Key::Cables, [kx - 16.0, ky - 16.0, 32.0, 32.0]));
-        x += 88.0 + 22.0;
-
-        group(&mut o, &mut rects, &mut x, &[(Key::Arrange, None, None), (Key::Fit, None, None), (Key::Flow, None, Some(st.flow)), (Key::Hidden, None, None)], "VIEW");
-        // how many are hidden, small in the HIDDEN key's corner
-        if st.hidden > 0
-            && let Some((_, [hx, hy, hw, _])) = rects.iter().find(|(k, _)| *k == Key::Hidden)
-        {
-            let _ = write!(o, r##"<text x="{}" y="{}" font-size="9" font-family="Noto Sans Mono" fill="#f7bb62" text-anchor="end">{}</text>"##, hx + hw - 7.0, hy + 13.0, st.hidden);
-        }
-
-        // CUE: its key (a cyan LED) and, as big as the CABLES knob, the cue's LEVEL
-        let x0 = x;
-        let kw = 38.0;
-        o.push_str(&key_svg(x, kw, st.pressed == Some(Key::Cue)));
-        let icon = ICONS.iter().find(|(k, _)| *k == Key::Cue).map_or("", |(_, s)| s);
-        let _ = write!(
-            o,
-            r##"<g transform="translate({},{}) scale(.7083)" fill="none" stroke="#e6e7e8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{icon}</g>"##,
-            x + kw / 2.0 - 8.5 + 2.0,
-            KEY_Y + KEY_H / 2.0 - 8.5
-        );
-        o.push_str(&led_svg(x + 8.0, KEY_Y + 7.0, st.cue_led, "#5fd4ff"));
-        rects.push((Key::Cue, [x - 3.0, KEY_Y - 3.0, kw + 6.0, KEY_H + 6.0]));
-        x += kw + 13.0 + 18.0;
-        let (lx, ly) = (x, KEY_Y + KEY_H / 2.0);
-        let deg = -135.0 + 270.0 * st.cue_level.min(100) as f64 / 100.0;
-        let mut scale = String::new();
-        for i in 0..=8 {
-            let b = (-135.0 + 270.0 * i as f64 / 8.0_f64).to_radians();
-            let _ = write!(scale, r#"<path d="M{},{} L{},{}" stroke="{LABEL}" stroke-width="1.2"/>"#, lx + 15.5 * b.sin(), ly - 15.5 * b.cos(), lx + 17.5 * b.sin(), ly - 17.5 * b.cos());
-        }
-        o.push_str(&knob_svg(lx, ly, deg, &scale).replace("#ffb02e", "#5fd4ff"));
-        rects.push((Key::CueLevel, [lx - 18.0, ly - 18.0, 36.0, 36.0]));
-        x += 18.0;
-        o.push_str(&SECTION.text((x0 + x) / 2.0, 54.0, LABEL, "middle", "CUE · LEVEL"));
-        x += 22.0;
-
-        // the screen, against the right edge, as wide as there is room for: in two halves when
-        // there is room, the default output and input on the left, the preset and the clock on the
-        // right, a thin line between them; each half opens its own list
-        let room = w - 18.0 - x;
-        let both = room >= 2.0 * 130.0;
-        let sw = room.min(if both { 600.0 } else { 340.0 });
-        if sw >= 150.0 {
-            let sx = w - 18.0 - sw;
-            let _ = write!(
-                o,
-                r##"<rect x="{}" y="5" width="{}" height="50" rx="6" fill="#fff" opacity=".2"/><rect x="{}" y="6" width="{}" height="48" rx="5" fill="#121214"/>
-<rect x="{sx}" y="9" width="{sw}" height="42" rx="4" fill="url(#gPanelLcd)"/><rect x="{sx}" y="9" width="{sw}" height="42" rx="4" fill="none" stroke="#783200" stroke-opacity=".35" stroke-width="3"/>"##,
-                sx - 4.0,
-                sw + 8.0,
-                sx - 3.0,
-                sw + 6.0
-            );
-            let half = |o: &mut String, hx: f64, hw: f64, lines: [&str; 2], bold2: bool| {
-                let chars = ((hw - 24.0) / 6.95) as usize;
-                let line = |t: &str| {
-                    let n = t.chars().count();
-                    esc(&if n > chars { format!("{}…", t.chars().take(chars.saturating_sub(1)).collect::<String>()) } else { t.to_owned() })
-                };
-                let _ = write!(
-                    o,
-                    r##"<g font-family="Noto Sans Mono" font-size="11.5" fill="#3a2408" xml:space="preserve"><text x="{}" y="26">{}</text><text x="{}" y="43" font-weight="{}">{}</text></g>"##,
-                    hx + 12.0,
-                    line(lines[0]),
-                    hx + 12.0,
-                    if bold2 { "bold" } else { "normal" },
-                    line(lines[1])
-                );
-            };
-            if both {
-                let hw = sw / 2.0;
-                half(&mut o, sx, hw, [&format!("OUT ▸ {}", st.defaults[0]), &format!("IN  ▸ {}", st.defaults[1])], true);
-                let _ = write!(o, r##"<path d="M{},16 V44" stroke="#3a2408" stroke-opacity=".35" stroke-width="1.5"/>"##, sx + hw);
-                half(&mut o, sx + hw, hw, [&st.lcd[0], &st.lcd[1]], false);
-                rects.push((Key::Defaults, [sx, 9.0, hw, 42.0]));
-                rects.push((Key::Lcd, [sx + hw, 9.0, hw, 42.0]));
-            } else {
-                half(&mut o, sx, sw, [&st.lcd[0], &st.lcd[1]], false);
-                rects.push((Key::Lcd, [sx, 9.0, sw, 42.0]));
+        for p in parts {
+            // the screen against the right edge, as wide as there is room for
+            let at = if p == Part::Lcd { w - 18.0 - lcd_w } else { x };
+            let (s, r, pw) = self.part(p, at, attached, bare, lcd_w);
+            o += &s;
+            rects.extend(r);
+            if p != Part::Lcd {
+                x += pw + if p == Part::Logo { 26.0 } else { GAP };
             }
         }
-
-        // in ENGINE the desk's keys are off: greyed over with the panel's paint
-        if st.engine {
-            for (k, [rx, ry, rw, rh]) in &rects {
-                if k.desk_only() {
-                    let _ = write!(o, r##"<rect x="{rx}" y="{ry}" width="{rw}" height="{rh}" rx="5" fill="#8c8e91" opacity=".7"/>"##);
-                }
-            }
+        if !folded.is_empty() {
+            let mx = w - 10.0 - MORE_W;
+            o += &more_key(mx, self.state.more || self.state.pressed == Some(Key::More));
+            rects.push((Key::More, [mx - 3.0, KEY_Y - 3.0, MORE_W + 6.0, KEY_H + 6.0]));
         }
         let svg = format!(
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{th}" viewBox="0 0 {w} {th}" font-family="Noto Sans" font-weight="bold">
-<defs>
+{defs}
+<rect y="{H}" width="{w}" height="{SHADOW}" fill="url(#gDrop)"/>
+<rect width="{w}" height="{H}" fill="#8c8e91"/><rect width="{w}" height="{H}" fill="url(#pt)"/><rect width="{w}" height="{H}" fill="url(#gStrip)"/>
+<path d="M0,.5 H{w}" stroke="#fff" stroke-opacity=".35"/><path d="M0,{b} H{w}" stroke="#000" stroke-opacity=".5"/>
+{o}
+</svg>"##,
+            th = H + SHADOW,
+            defs = defs(),
+            b = H - 0.5,
+        );
+        (svg, rects, folded)
+    }
+
+    /// What the panel holds when `w` wide: its parts in order, whether LOCK and ALIGN stay in
+    /// LAYOUT's group, whether the grey keys are left out, what folds into MORE (in the panel's
+    /// order), and the screen's width. When the panel is too wide, first the logo goes, then the
+    /// grey keys (what this screen can't use), then groups fold into MORE from the right: the
+    /// screen, CUE · LEVEL, VIEW, CABLES, LOCK · ALIGN, EDIT. DESK · RACK · ENGINE stay.
+    fn plan(&self, w: f64) -> (Vec<Part>, bool, bool, Vec<Part>, f64) {
+        let width = |p: Part, attached: bool, bare: bool| self.part(p, 0.0, attached, bare, 0.0).2;
+        let main = [Part::Edit, Part::Layout, Part::Cables, Part::View, Part::Cue];
+        for (logo, bare) in [(true, false), (false, false), (false, true)] {
+            let mut parts: Vec<Part> = if logo { vec![Part::Logo] } else { Vec::new() };
+            parts.extend(main.iter().copied().filter(|p| width(*p, true, bare) > 0.0));
+            let used = 18.0 + parts.iter().map(|p| width(*p, true, bare) + if *p == Part::Logo { 26.0 } else { GAP }).sum::<f64>();
+            let room = w - 18.0 - used;
+            if room >= LCD_MIN {
+                parts.push(Part::Lcd);
+                return (parts, true, bare, Vec::new(), room.min(600.0));
+            }
+        }
+        let used = |parts: &[Part], attached: bool| {
+            18.0 + parts
+                .iter()
+                .map(|p| match width(*p, attached, true) {
+                    0.0 => 0.0,
+                    pw => pw + GAP,
+                })
+                .sum::<f64>()
+        };
+        let mut parts = main.to_vec();
+        let mut attached = true;
+        let mut folded = vec![Part::LcdDefaults, Part::LcdPreset];
+        for f in [Part::Cue, Part::View, Part::Cables, Part::LockAlign, Part::Edit] {
+            // MORE sits closer to its neighbours and the edge than groups do to each other
+            if used(&parts, attached) - GAP + 12.0 + MORE_W + 10.0 <= w {
+                break;
+            }
+            if f == Part::LockAlign {
+                attached = false;
+            } else {
+                parts.retain(|p| *p != f);
+            }
+            if width(f, false, true) > 0.0 {
+                folded.push(f);
+            }
+        }
+        parts.retain(|p| width(*p, attached, true) > 0.0);
+        folded.sort_by_key(|p| *p as u8);
+        (parts, attached, true, folded, 0.0)
+    }
+
+    /// A part of the panel drawn from `x`, on the panel's row: its SVG, where its keys are and its
+    /// width (none when all its keys are grey and `bare` leaves those out). `attached`: LOCK and
+    /// ALIGN are in LAYOUT's group; `lcd_w`: a screen's width.
+    fn part(&self, p: Part, x: f64, attached: bool, bare: bool, lcd_w: f64) -> (String, Keys, f64) {
+        let st = &self.state;
+        let mut o = String::new();
+        let mut rects = Vec::new();
+        let keep = |k: &(Key, Option<&str>, Option<bool>)| !(bare && st.off(k.0));
+        let lock_align = [(Key::Lock, None, Some(st.locked)), (Key::Align, None, Some(st.align))];
+        let pw = match p {
+            Part::Logo => {
+                // the maker's name, pressed into the metal
+                let _ = write!(
+                    o,
+                    r##"<g transform="translate({x},34) scale(1.06,1)" font-size="26" font-weight="900" letter-spacing="1"><text y="1" fill="#fff" opacity=".35">PATCHCORD</text><text fill="#2a2b2e">PATCHCORD</text></g>{sub}"##,
+                    sub = SECTION.text(x, 50.0, LABEL, "start", "PC-1 · PIPEWIRE PATCHBAY")
+                );
+                text::width(text::BLACK, "PATCHCORD", 26.0, 1.0) * 1.06
+            }
+            Part::Edit => group(st, &mut o, &mut rects, x, &[(Key::Undo, None, None), (Key::Redo, None, None), (Key::Save, None, None), (Key::Load, None, None)], "EDIT"),
+            Part::Layout => {
+                let mut keys = vec![(Key::Desk, Some("DESK"), Some(!st.rack && !st.engine)), (Key::Rack, Some("RACK"), Some(st.rack && !st.engine)), (Key::Engine, Some("ENGINE"), Some(st.engine))];
+                if attached {
+                    keys.extend(lock_align.into_iter().filter(keep));
+                }
+                group(st, &mut o, &mut rects, x, &keys, "LAYOUT")
+            }
+            Part::LockAlign if attached => 0.0,
+            Part::LockAlign => group(st, &mut o, &mut rects, x, &lock_align.into_iter().filter(keep).collect::<Vec<_>>(), ""),
+            Part::Cables if bare && st.off(Key::Cables) => 0.0,
+            Part::Cables => {
+                // the cords switch: three click positions with their names printed around it
+                let (kx, ky) = (x + 44.0, KNOB_Y);
+                for (i, (name, anchor, dx, dy)) in [("SHOW", "end", -19.0, 0.0), ("FADE", "middle", 0.0, -20.5), ("HIDE", "start", 19.0, 0.0)].into_iter().enumerate() {
+                    let a = SWITCH[i].to_radians();
+                    let _ = write!(o, r#"<path d="M{},{} L{},{}" stroke="{LABEL}" stroke-width="1.4"/>"#, kx + 15.0 * a.sin(), ky - 15.0 * a.cos(), kx + 16.8 * a.sin(), ky - 16.8 * a.cos());
+                    // the labels stay as printed: the pointer shows the position
+                    o.push_str(&SMALL.text(kx + dx * 1.15, ky + dy + 2.5, LABEL, anchor, name));
+                    let w = SMALL.width(name) + 4.0;
+                    let lx = match anchor {
+                        "end" => kx + dx * 1.15 - w,
+                        "middle" => kx - w / 2.0,
+                        _ => kx + dx * 1.15 - 2.0,
+                    };
+                    rects.push((Key::CablesAt(i as u8), [lx, ky + dy - 6.0, w, 11.0]));
+                }
+                o.push_str(&knob_svg(kx, ky, SWITCH[st.cables.min(2) as usize], ""));
+                o.push_str(&SECTION.text(kx, 54.0, LABEL, "middle", "CABLES"));
+                rects.push((Key::Cables, [kx - 16.0, ky - 16.0, 32.0, 32.0]));
+                88.0
+            }
+            Part::View => {
+                let keys: Vec<_> = [(Key::Arrange, None, None), (Key::Fit, None, None), (Key::Flow, None, Some(st.flow)), (Key::Hidden, None, None)].into_iter().filter(keep).collect();
+                let pw = group(st, &mut o, &mut rects, x, &keys, "VIEW");
+                // how many are hidden, small in the HIDDEN key's corner
+                if st.hidden > 0
+                    && let Some((_, [hx, hy, hw, _])) = rects.iter().find(|(k, _)| *k == Key::Hidden)
+                {
+                    let _ = write!(o, r##"<text x="{}" y="{}" font-size="9" font-family="Noto Sans Mono" fill="#f7bb62" text-anchor="end">{}</text>"##, hx + hw - 7.0, hy + 13.0, st.hidden);
+                }
+                pw
+            }
+            Part::Cue if bare && st.off(Key::Cue) => 0.0,
+            Part::Cue => {
+                // CUE: its key (a cyan LED) and, as big as the CABLES knob, the cue's LEVEL
+                let kw = 38.0;
+                o.push_str(&key_svg(x, kw, st.pressed == Some(Key::Cue)));
+                let icon = ICONS.iter().find(|(k, _)| *k == Key::Cue).map_or("", |(_, s)| s);
+                let _ = write!(
+                    o,
+                    r##"<g transform="translate({},{}) scale(.7083)" fill="none" stroke="#e6e7e8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{icon}</g>"##,
+                    x + kw / 2.0 - 8.5 + 2.0,
+                    KEY_Y + KEY_H / 2.0 - 8.5
+                );
+                o.push_str(&led_svg(x + 8.0, KEY_Y + 7.0, st.cue_led, "#5fd4ff"));
+                rects.push((Key::Cue, [x - 3.0, KEY_Y - 3.0, kw + 6.0, KEY_H + 6.0]));
+                let (lx, ly) = (x + kw + 13.0 + 18.0, KEY_Y + KEY_H / 2.0);
+                let deg = -135.0 + 270.0 * st.cue_level.min(100) as f64 / 100.0;
+                let mut scale = String::new();
+                for i in 0..=8 {
+                    let b = (-135.0 + 270.0 * i as f64 / 8.0_f64).to_radians();
+                    let _ = write!(scale, r#"<path d="M{},{} L{},{}" stroke="{LABEL}" stroke-width="1.2"/>"#, lx + 15.5 * b.sin(), ly - 15.5 * b.cos(), lx + 17.5 * b.sin(), ly - 17.5 * b.cos());
+                }
+                o.push_str(&knob_svg(lx, ly, deg, &scale).replace("#ffb02e", "#5fd4ff"));
+                rects.push((Key::CueLevel, [lx - 18.0, ly - 18.0, 36.0, 36.0]));
+                let pw = lx + 18.0 - x;
+                o.push_str(&SECTION.text(x + pw / 2.0, 54.0, LABEL, "middle", "CUE · LEVEL"));
+                pw
+            }
+            // the screen in two halves, the default output and input on the left, the preset and
+            // the clock on the right, a thin line between them; each half opens its own list. In
+            // MORE each half is a screen of its own.
+            Part::Lcd => screen(&mut o, &mut rects, x, lcd_w, &[(self.defaults_lines(), true, Key::Defaults), (st.lcd.clone(), false, Key::Lcd)]),
+            Part::LcdDefaults => screen(&mut o, &mut rects, x, lcd_w, &[(self.defaults_lines(), true, Key::Defaults)]),
+            Part::LcdPreset => screen(&mut o, &mut rects, x, lcd_w, &[(st.lcd.clone(), false, Key::Lcd)]),
+        };
+        // what this screen can't use is greyed over with the panel's paint
+        for (k, [rx, ry, rw, rh]) in &rects {
+            if st.off(*k) {
+                let _ = write!(o, r##"<rect x="{rx}" y="{ry}" width="{rw}" height="{rh}" rx="5" fill="#8c8e91" opacity=".7"/>"##);
+            }
+        }
+        (o, rects, pw)
+    }
+
+    fn defaults_lines(&self) -> [String; 2] {
+        [format!("OUT ▸ {}", self.state.defaults[0]), format!("IN  ▸ {}", self.state.defaults[1])]
+    }
+
+    /// MORE's drop-down: the folded groups under the panel `w` wide, as they look on it, in as
+    /// many rows as they need, against the right edge. Its SVG, where its keys are (in the
+    /// window) and where it is.
+    fn more_svg(&self, w: f64) -> (String, Keys, [f64; 4]) {
+        const PAD: f64 = 14.0;
+        const ROW: f64 = 60.0;
+        let maxw = (w - 12.0).max(160.0);
+        // the screen whole while it fits, as wide as its longest line needs; else its halves
+        let half = |lines: &[String; 2]| lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as f64 * 6.95 + 28.0;
+        let (hd, hp) = (half(&self.defaults_lines()), half(&self.state.lcd));
+        let joined = (2.0 * hd.max(hp)).clamp(LCD_MIN, 600.0);
+        let mut items: Vec<(Part, f64)> = Vec::new();
+        for &p in &self.folded {
+            match p {
+                Part::LcdPreset if items.last().is_some_and(|(q, _)| *q == Part::Lcd) => {}
+                Part::LcdDefaults if joined <= maxw - 2.0 * PAD => items.push((Part::Lcd, joined)),
+                Part::LcdDefaults => items.push((p, hd.min(maxw - 2.0 * PAD))),
+                Part::LcdPreset => items.push((p, hp.min(maxw - 2.0 * PAD))),
+                _ => items.push((p, 0.0)),
+            }
+        }
+        let mut placed = Vec::new();
+        let (mut x, mut row, mut dw) = (PAD, 0usize, 0.0f64);
+        for (p, lw) in items {
+            let pw = self.part(p, 0.0, false, true, lw).2;
+            if x > PAD && x + pw + PAD > maxw {
+                row += 1;
+                x = PAD;
+            }
+            placed.push((p, x, row, lw));
+            dw = dw.max(x + pw + PAD);
+            x += pw + GAP;
+        }
+        let dh = (row + 1) as f64 * ROW + 4.0;
+        let x0 = (w - 6.0 - dw).max(6.0);
+        let mut o = String::new();
+        let mut rects = Vec::new();
+        for (p, px, r, lw) in placed {
+            let dy = r as f64 * ROW;
+            let (s, rs, _) = self.part(p, px, false, true, lw);
+            let _ = write!(o, r#"<g transform="translate(0,{dy})">{s}</g>"#);
+            rects.extend(rs.into_iter().map(|(k, [rx, ry, rw, rh])| (k, [x0 + rx, H + dy + ry, rw, rh])));
+        }
+        let th = dh + SHADOW;
+        let svg = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="{dw}" height="{th}" viewBox="0 0 {dw} {th}" font-family="Noto Sans" font-weight="bold">
+{defs}
+<rect x="2" y="2" width="{sw}" height="{dh}" rx="6" fill="#000" opacity=".35"/>
+<rect width="{dw}" height="{dh}" rx="6" fill="#8c8e91"/><rect width="{dw}" height="{dh}" rx="6" fill="url(#pt)"/><rect width="{dw}" height="{dh}" rx="6" fill="url(#gStrip)"/>
+<rect x=".5" y="-6" width="{iw}" height="{ih}" rx="6" fill="none" stroke="#000" stroke-opacity=".5"/>
+{o}
+</svg>"##,
+            defs = defs(),
+            sw = dw - 2.0,
+            iw = dw - 1.0,
+            ih = dh + 5.5,
+        );
+        (svg, rects, [x0, H, dw, th])
+    }
+}
+
+/// A group of keys from `x0`, its name printed under them: its width.
+fn group(st: &State, o: &mut String, rects: &mut Vec<(Key, [f64; 4])>, x0: f64, keys: &[(Key, Option<&str>, Option<bool>)], label: &str) -> f64 {
+    if keys.is_empty() {
+        return 0.0;
+    }
+    let mut x = x0;
+    for (i, (key, txt, led)) in keys.iter().enumerate() {
+        if i > 0 {
+            x += 13.0;
+        }
+        let kw = match txt {
+            Some(t) => (text::width(text::BOLD, t, 10.5, 0.4) + 20.0).max(62.0),
+            None => 38.0,
+        };
+        o.push_str(&key_svg(x, kw, st.pressed == Some(*key)));
+        match txt {
+            Some(t) => {
+                let tx = x + kw / 2.0 + if led.is_some() { 4.0 } else { 0.0 };
+                let _ = write!(o, r##"<text x="{tx}" y="{}" font-size="10.5" letter-spacing=".4" fill="#e6e7e8" text-anchor="middle">{t}</text>"##, KEY_Y + 19.0);
+            }
+            None => {
+                let icon = ICONS.iter().find(|(k, _)| k == key).map_or("", |(_, s)| s);
+                let _ = write!(
+                    o,
+                    r##"<g transform="translate({},{}) scale(.7083)" fill="none" stroke="#e6e7e8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{icon}</g>"##,
+                    x + kw / 2.0 - 8.5 + if led.is_some() { 2.0 } else { 0.0 },
+                    KEY_Y + KEY_H / 2.0 - 8.5
+                );
+            }
+        }
+        if let Some(on) = led {
+            o.push_str(&led_svg(x + 8.0, KEY_Y + 7.0, *on, "#ff4a32"));
+        }
+        rects.push((*key, [x - 3.0, KEY_Y - 3.0, kw + 6.0, KEY_H + 6.0]));
+        x += kw;
+    }
+    if !label.is_empty() {
+        o.push_str(&SECTION.text((x0 + x) / 2.0, 54.0, LABEL, "middle", label));
+    }
+    x - x0
+}
+
+/// The amber screen from `sx`, `sw` wide, in as many halves as `halves` (two lines each, the
+/// second bold or not, and the key a click on it is): its width.
+fn screen(o: &mut String, rects: &mut Vec<(Key, [f64; 4])>, sx: f64, sw: f64, halves: &[([String; 2], bool, Key)]) -> f64 {
+    let _ = write!(
+        o,
+        r##"<rect x="{}" y="5" width="{}" height="50" rx="6" fill="#fff" opacity=".2"/><rect x="{}" y="6" width="{}" height="48" rx="5" fill="#121214"/>
+<rect x="{sx}" y="9" width="{sw}" height="42" rx="4" fill="url(#gPanelLcd)"/><rect x="{sx}" y="9" width="{sw}" height="42" rx="4" fill="none" stroke="#783200" stroke-opacity=".35" stroke-width="3"/>"##,
+        sx - 4.0,
+        sw + 8.0,
+        sx - 3.0,
+        sw + 6.0
+    );
+    let hw = sw / halves.len() as f64;
+    for (i, (lines, bold2, key)) in halves.iter().enumerate() {
+        let hx = sx + i as f64 * hw;
+        if i > 0 {
+            let _ = write!(o, r##"<path d="M{hx},16 V44" stroke="#3a2408" stroke-opacity=".35" stroke-width="1.5"/>"##);
+        }
+        let chars = ((hw - 24.0) / 6.95) as usize;
+        let line = |t: &str| {
+            let n = t.chars().count();
+            esc(&if n > chars { format!("{}…", t.chars().take(chars.saturating_sub(1)).collect::<String>()) } else { t.to_owned() })
+        };
+        let _ = write!(
+            o,
+            r##"<g font-family="Noto Sans Mono" font-size="11.5" fill="#3a2408" xml:space="preserve"><text x="{}" y="26">{}</text><text x="{}" y="43" font-weight="{}">{}</text></g>"##,
+            hx + 12.0,
+            line(&lines[0]),
+            hx + 12.0,
+            if *bold2 { "bold" } else { "normal" },
+            line(&lines[1])
+        );
+        rects.push((*key, [hx, 9.0, hw, 42.0]));
+    }
+    sw
+}
+
+/// The MORE key: its name and a chevron pointing down.
+fn more_key(x: f64, pressed: bool) -> String {
+    let mut o = key_svg(x, MORE_W, pressed);
+    let _ = write!(
+        o,
+        r##"<text x="{}" y="{}" font-size="10.5" letter-spacing=".4" fill="#e6e7e8" text-anchor="middle">MORE</text><path d="M{},{} l3.5,3.5 l3.5,-3.5" fill="none" stroke="#e6e7e8" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>"##,
+        x + MORE_W / 2.0 - 7.0,
+        KEY_Y + 19.0,
+        x + MORE_W - 22.0,
+        KEY_Y + KEY_H / 2.0 - 1.5
+    );
+    o
+}
+
+/// The panel's paint, gradients and the keys' shading.
+fn defs() -> String {
+    format!(
+        r##"<defs>
 <pattern id="pt" width="80" height="80" patternUnits="userSpaceOnUse"><image href="{paint}" width="80" height="80"/></pattern>
 <linearGradient id="gStrip" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".10"/><stop offset="1" stop-color="#000" stop-opacity=".18"/></linearGradient>
 <linearGradient id="gDrop" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#000" stop-opacity=".55"/><stop offset="1" stop-color="#000" stop-opacity="0"/></linearGradient>
@@ -627,19 +890,11 @@ impl Panel {
 <linearGradient id="capTop" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.13"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
 <radialGradient id="gKnob" cx=".38" cy=".3" r=".8"><stop offset="0" stop-color="#5a5b5f"/><stop offset="1" stop-color="#151618"/></radialGradient>
 <linearGradient id="gPanelLcd" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f7bb62"/><stop offset="1" stop-color="#e58f2c"/></linearGradient>
-</defs>
-<rect y="{H}" width="{w}" height="{SHADOW}" fill="url(#gDrop)"/>
-<rect width="{w}" height="{H}" fill="#8c8e91"/><rect width="{w}" height="{H}" fill="url(#pt)"/><rect width="{w}" height="{H}" fill="url(#gStrip)"/>
-<path d="M0,.5 H{w}" stroke="#fff" stroke-opacity=".35"/><path d="M0,{b} H{w}" stroke="#000" stroke-opacity=".5"/>
-{o}
-</svg>"##,
-            th = H + SHADOW,
-            paint = paint_uri(),
-            b = H - 0.5,
-        );
-        (svg, rects)
-    }
+</defs>"##,
+        paint = paint_uri()
+    )
 }
+
 
 /// The drop-down, in the LCD's amber: its SVG, height and hit areas (relative to its corner).
 fn menu_svg(menu: &Menu) -> (String, f64, Vec<(MenuHit, [f64; 4])>) {
@@ -863,10 +1118,21 @@ pub fn cue_badge(dpi: f64) -> Layer {
 }
 
 /// The status bar: what PipeWire has on the left, a hint for what is under the pointer on the right.
+/// When they would meet, the hint goes, then the left text ends in "…".
 pub fn status(w: f64, left: &str, right: &str, dpi: f64) -> Layer {
+    let width = |t: &str| text::width(text::MONO, t, 11.5, 0.0);
+    let right = if width(left) + 24.0 + width(right) > w - 28.0 { "" } else { right };
+    let mut left = left.to_owned();
+    if width(&left) > w - 28.0 {
+        let mut n = left.chars().count();
+        while n > 1 && width(&left) > w - 28.0 {
+            n -= 1;
+            left = format!("{}…", left.chars().take(n).collect::<String>().trim_end());
+        }
+    }
     let svg = format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{STATUS_H}" viewBox="0 0 {w} {STATUS_H}" font-family="Noto Sans Mono" font-size="11.5"><rect width="{w}" height="{STATUS_H}" fill="#0e0f10"/><path d="M0,.5 H{w}" stroke="#000"/><text x="14" y="15" fill="#7d8085">{}</text><text x="{}" y="15" fill="#a8abae" text-anchor="end">{}</text></svg>"##,
-        esc(left),
+        esc(&left),
         w - 14.0,
         esc(right)
     );
@@ -901,3 +1167,65 @@ pub fn notice(msg: &str, dpi: f64) -> Layer {
     Layer { id: next_id(), pm: rasterize(&text::svg_options(), &svg, dpi), x: 0.0, y: 0.0, w, h: 34.0 }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(rack: bool, engine: bool) -> State {
+        State { rack, engine, locked: false, align: true, cables: 0, lcd: ["NO PRESET".into(), "48 kHz · 1024 · 21.3 ms".into()], defaults: ["JLab GO Work 2".into(), "Ryzen HD Audio Controller".into()], cue_led: false, cue_level: 70, hidden: 2, flow: true, pressed: None, more: false }
+    }
+
+    /// what folds, at a width, on each screen
+    fn folded(rack: bool, engine: bool, w: f64) -> (Vec<Part>, Vec<Part>) {
+        let p = Panel::new(state(rack, engine));
+        let (parts, ..) = p.plan(w);
+        (parts, p.plan(w).3)
+    }
+
+    #[test]
+    fn a_wide_window_has_everything_and_a_narrow_one_folds_from_the_right() {
+        let (parts, more) = folded(false, false, 1700.0);
+        assert_eq!(parts.first(), Some(&Part::Logo));
+        assert!(parts.contains(&Part::Lcd) && more.is_empty());
+        // the logo goes first
+        let (parts, more) = folded(false, false, 1350.0);
+        assert!(!parts.contains(&Part::Logo) && parts.contains(&Part::Lcd) && more.is_empty(), "{parts:?} {more:?}");
+        // a rack's width: DESK · RACK · ENGINE stay, EDIT too; the rest in MORE in the panel's order
+        let (parts, more) = folded(false, false, 540.0);
+        assert_eq!(parts, vec![Part::Edit, Part::Layout]);
+        assert_eq!(more, vec![Part::LockAlign, Part::Cables, Part::View, Part::Cue, Part::LcdDefaults, Part::LcdPreset]);
+        // ENGINE has no grey keys to fold: only the screen
+        let (parts, more) = folded(false, true, 700.0);
+        assert!(parts.contains(&Part::View) && !parts.contains(&Part::Cables), "{parts:?}");
+        assert_eq!(more, vec![Part::LcdDefaults, Part::LcdPreset]);
+        // in the rack ALIGN is off: grey, then gone
+        let (_, more) = folded(true, false, 540.0);
+        assert_eq!(more[0], Part::LockAlign);
+        let mut p = Panel::new(state(true, false));
+        let _ = p.layer(540.0, 1.0);
+        p.state.more = true;
+        let _ = p.layer(540.0, 1.0);
+        assert!(p.rect(Key::Lock).is_some() && p.rect(Key::Align).is_none());
+    }
+
+    /// PATCHCORD_PANELS=dir draws the panel at several widths, MORE open, to look at.
+    #[test]
+    fn pictures() {
+        let Ok(dir) = std::env::var("PATCHCORD_PANELS") else { return };
+        for (name, rack, engine) in [("desk", false, false), ("rack", true, false), ("engine", false, true)] {
+            for w in [1500.0, 1100.0, 900.0, 700.0, 540.0, 420.0] {
+                let mut p = Panel::new(state(rack, engine));
+                let _ = p.layer(w, 2.0);
+                let (svg, ..) = p.svg(w);
+                rasterize(&text::svg_options(), &svg, 2.0).unwrap().save_png(format!("{dir}/{name}-{w}.png")).unwrap();
+                if !p.folded.is_empty() {
+                    p.state.more = true;
+                    let _ = p.layer(w, 2.0);
+                    let (svg, ..) = p.more_svg(w);
+                    rasterize(&text::svg_options(), &svg, 2.0).unwrap().save_png(format!("{dir}/{name}-{w}-more.png")).unwrap();
+                }
+            }
+        }
+    }
+}
