@@ -13,7 +13,10 @@ hangs, swings and settles like a real one.
 ![Linux](https://img.shields.io/badge/Linux-Wayland_%7C_X11-fcc624?logo=linux&logoColor=black)
 ![PipeWire](https://img.shields.io/badge/PipeWire-1.0+-4a86c5)
 
-<img src="docs/screenshots/demo.gif" width="900" alt="Patching cords between devices on the desk, dragging a device into line, and switching to the rack and back">
+<img src="docs/screenshots/demo.gif" width="900" alt="Patching cords between devices on the desk, dragging a device into line, the rack, and ENGINE with an app's details">
+
+<a href="docs/screenshots/rack.png"><img src="docs/screenshots/rack.png" width="440" alt="The devices in a 19-inch rack"></a>
+<a href="docs/screenshots/engine.png"><img src="docs/screenshots/engine.png" width="440" alt="ENGINE: PipeWire's real nodes, ports and links, grouped by driver, with an app's details and the TOP table"></a>
 
 </div>
 
@@ -21,7 +24,9 @@ Patchcord shows the live PipeWire graph, audio and MIDI, with signal meters and 
 device. You patch it with the mouse, on a desk or in a 19" rack, and keep your setups as presets.
 It also does what pavucontrol does, built into the panels: the volume (or recording gain),
 balance and mute of each app and each device beside its jacks, a sound card's profile and ports,
-and the default output and input on the top panel. What comes next is in the [issues](https://github.com/bewzaalex/patchcord/issues). The design is the
+and the default output and input on the top panel. ENGINE shows what PipeWire really has under
+the panels: every node, port and link, grouped by the driver that clocks them, with timings,
+xruns and what looks wrong. What comes next is in the [issues](https://github.com/bewzaalex/patchcord/issues). The design is the
 interactive mockup in [docs/design/mockup](docs/design/mockup/index.html).
 
 ## Installation
@@ -179,8 +184,9 @@ audio, its own SIG meter (what comes in, or what goes out, after its volume or g
 
 | | |
 | --- | --- |
-| Drag a device | on the desk it stops at other devices and slides along them, and sticks lightly to their edges and centres, with a guide line (G: place freely); in RACK, drag it up or down to change the order |
+| Drag a device | on the desk it stops at other devices and slides along them, and sticks lightly to their edges and centres, with a guide line (G: place freely; ALIGN is off in the rack); in RACK, drag it up or down to change the order |
 | R, or DESK / RACK | devices on a desk, or in a 19" rack (each keeps its desk place) |
+| MORE ▾ | in a narrow window the top panel makes room: the logo goes first, then the keys the screen can't use, then groups fold into MORE from the right. MORE drops them below the panel as they are |
 | A, or ARRANGE | devices with cords in columns by signal flow (sources left), ordered so cords cross less; the unused ones after them, kind by kind (sound cards, apps, MIDI), in rows shaped to the window so the faces come out as big as they can |
 | F | fit everything in the window |
 | L | lock devices in place |
@@ -188,6 +194,22 @@ audio, its own SIG meter (what comes in, or what goes out, after its volume or g
 | Drag empty space, or right/middle drag · wheel | pan · zoom |
 | Ctrl+S / Ctrl+O, or the LCD | save a new preset / pick one from the list |
 | Esc · Ctrl+Q | close a list, leave CUE mode · quit |
+
+### ENGINE: what PipeWire really has
+
+ENGINE (E) shows PipeWire's own graph, read-only, for when you want to know what is really going
+on: what the panels leave out, which clock drives what, and why something crackles.
+
+| | |
+| --- | --- |
+| Blocks | a block per node, grouped under the driver that clocks it (NOT RUNNING: nothing clocks it now, no CPU used). Coloured by what it is: device, app, system, MIDI, video, Patchcord's own meters. Its ports are ears on its edges, inputs left, outputs right; a light shows if it runs, idles, sleeps or had xruns |
+| Links | in the colour of the block they come out of; faded when paused, dashed when they only listen (meters), red when the ends share no format. A stereo pair runs side by side, its distance kept |
+| Click | a node, port or link turns amber with what belongs to it, and its details open on the right: INFO, PROPS, PARAMS, TIMING, where it is on the desk (SHOW ON DESK goes there), its ports and links |
+| ALSO SHOW | Patchcord's meters, MIDI, what isn't running, PipeWire's internal drivers, on and off |
+| The strip | the clock, the quantum, the DSP load with its last 45 seconds, xruns, then (when there is room) drivers, server, session, allowed rates and objects; in a narrow window those are behind **i**. HEALTH counts errors, warnings and notes |
+| DIAGNOSTICS | the tables below: TOP (as `pw-top`: each driver and its nodes, the last half second's timings), ISSUES (what looks wrong, worst first, with what to do), OBJECTS, METADATA, EVENTS. **SAVE REPORT** writes it all to a text file in your home folder for a bug report, without your user and host names, MAC addresses or the titles of what plays |
+| ? or LEGEND | how to read the graph: colours, lights, links, tags, groups |
+| Drag · wheel · F · Esc | pan · zoom · fit · deselect; E or DESK / RACK goes back |
 
 Settings and presets are plain text files in `~/.config/patchcord`: `settings.txt` (cords, lock,
 lining up, colours, the cord lights, desk or rack, window size, where devices sit, the rack's
@@ -202,9 +224,14 @@ draws the current graph to a PNG without opening a window, with its live signal 
 rack, with a few cords added to the picture only (`demo`, for screenshots), every stereo jack
 split, the pointer on a jack, a cord's end in the hand, a drop-down or a card's list open, only
 some devices, or at a given size (`PATCHCORD_SCALE` sets the scale, 1.5 by default).
+`patchcord --render out.png engine [select=NODE] [tab=top|issues|objects|metadata|events]
+[itab=info|props|params|timing] [shut=bottom] [legend] [info] [size=WxH]` draws ENGINE the same
+way, after letting PipeWire's profiler run for two seconds; MAC addresses in names are masked.
 `patchcord --record DIR` plays a short scripted session on the current graph and saves it as
 frames for the README's animation; neither changes anything in PipeWire. `PATCHCORD_DEBUG=1`
-prints which GPU it uses and PipeWire's errors that are otherwise expected noise.
+prints which GPU it uses and PipeWire's errors that are otherwise expected noise;
+`PATCHCORD_FRAMES=1` prints every slow frame and what took the time (or `PATCHCORD_FRAMES=FILE`
+writes it to a file), for reports about the app feeling slow.
 
 ### Bluetooth headsets: when the microphone switches on
 

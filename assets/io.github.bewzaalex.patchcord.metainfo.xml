@@ -32,11 +32,15 @@
   <screenshots>
     <screenshot type="default">
       <caption>Devices on the desk, patched with cords</caption>
-      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.4.0/docs/screenshots/desk.png</image>
+      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.5.0/docs/screenshots/desk.png</image>
     </screenshot>
     <screenshot>
       <caption>The same devices in a rack</caption>
-      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.4.0/docs/screenshots/rack.png</image>
+      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.5.0/docs/screenshots/rack.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>ENGINE: PipeWire's real graph, with an app's details and timings</caption>
+      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.5.0/docs/screenshots/engine.png</image>
     </screenshot>
   </screenshots>
   <description>
@@ -57,9 +61,28 @@
       <li>Devices on a desk, or in a 19" rack; hide the ones you don't use</li>
       <li>Presets of connections, layouts, volumes and profiles, undo and redo</li>
       <li>Hover a jack or cord for its full PipeWire names</li>
+      <li>ENGINE: PipeWire's real nodes, ports and links by the driver that clocks them, with timings, xruns, diagnostics and a report for bug tickets</li>
     </ul>
   </description>
   <releases>
+    <release version="0.5.0" date="2026-11-19">
+      <url type="details">https://github.com/bewzaalex/patchcord/releases/tag/v0.5.0</url>
+      <description>
+        <p>ENGINE shows what PipeWire really has; and the app is faster, lighter and fits narrow windows.</p>
+        <ul>
+          <li>ENGINE (E): PipeWire's real nodes, ports and links, grouped by the driver that clocks them and coloured by what they are; click one for its details, its timing and where it is on the desk</li>
+          <li>A strip with the clock, quantum, DSP load, xruns and health, and diagnostics below: TOP as pw-top, ISSUES with what to do about them, OBJECTS, METADATA and EVENTS</li>
+          <li>SAVE REPORT writes all of it to a text file for a bug report, without your user and host names, MAC addresses or the titles of what plays</li>
+          <li>A legend (?) explains ENGINE's colours, lights, links and tags</li>
+          <li>Narrow windows: the top panel folds what doesn't fit into MORE, and ENGINE shows what matters most first</li>
+          <li>Faster: cords are drawn by the GPU, sharp at any zoom; pictures are drawn in the background, so zooming, dragging and switching screens no longer stall; the desk and the rack switch at once</li>
+          <li>Less memory: it is given back after big pictures</li>
+          <li>Signal meters show the signal itself, before the software volume</li>
+          <li>The hover and found glows are gone, and ALIGN is off in the rack, where it does nothing</li>
+          <li>PATCHCORD_FRAMES=1 prints slow frames and what took the time, for reports about speed</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-11-18">
       <url type="details">https://github.com/bewzaalex/patchcord/releases/tag/v0.4.0</url>
       <description>

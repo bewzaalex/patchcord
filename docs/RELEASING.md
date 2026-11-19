@@ -34,14 +34,20 @@ newer C library and PipeWire. Their contents are set in `Cargo.toml` under
    cfg=$(mktemp -d)
    XDG_CONFIG_HOME=$cfg PATCHCORD_SCALE=1.5 cargo run --release -- --render docs/screenshots/desk.png
    XDG_CONFIG_HOME=$cfg PATCHCORD_SCALE=1.5 cargo run --release -- --render docs/screenshots/rack.png rack
+   XDG_CONFIG_HOME=$cfg PATCHCORD_SCALE=1.5 cargo run --release -- --render docs/screenshots/engine.png engine select=APP tab=top size=2400x1500
    rm -rf $cfg
    for f in docs/screenshots/*.png; do magick $f -strip -define png:compression-level=9 $f; done
    ```
 
+   `APP` is the name of an app that plays (its node is chosen and its details open). The desk and
+   the rack come out at least 1520 units wide, so the top panel shows whole, logo and all; ENGINE
+   masks MAC addresses in names (Bluetooth devices are named by them). The README shows the rack
+   and ENGINE small under the animation, and the metainfo lists all three.
+
    The README's animation is a short scripted session, played on your live graph (nothing is
    linked in PipeWire; the meters show what really plays): an app patched into speakers or headphones it isn't patched to yet, MIDI
-   from Midi-Bridge to BLE MIDI, a device dragged into line, the rack and back. So start an app
-   playing first; a step whose devices aren't there is skipped:
+   from Midi-Bridge to BLE MIDI, a device dragged into line, the rack and back, then ENGINE with
+   an app's details. So start an app playing first; a step whose devices aren't there is skipped:
 
    ```sh
    cfg=$(mktemp -d) frames=$(mktemp -d)
@@ -69,10 +75,10 @@ newer C library and PipeWire. Their contents are set in `Cargo.toml` under
      -font $f/NotoSans-Black.ttf -fill '#f3f3f3' -pointsize 64 -annotate +54+250 'Patchcord' \
      -font $f/NotoSans-Bold.ttf -fill '#c9ccd1' -pointsize 25 -annotate +56+300 'A PipeWire patchbay that looks' -annotate +56+332 'like a rack of real gear' \
      -font $f/NotoSans-Bold.ttf -fill '#9a9da2' -pointsize 19 -annotate +76+392 'Patch cords that hang and swing' \
-     -annotate +76+424 'Live meters, volume, cue' -annotate +76+456 'Desk or 19" rack, presets, undo' \
-     -fill '#f0a64a' -draw "circle 61,386 65,386" -draw "circle 61,418 65,418" -draw "circle 61,450 65,450" \
-     -font $f/NotoSansMono-Bold.ttf -fill '#f0a64a' -pointsize 16 -annotate +56+540 'LINUX · PIPEWIRE · OPEN SOURCE' \
-     -font $f/NotoSansMono-Regular.ttf -fill '#7d8085' -pointsize 15 -annotate +56+568 'github.com/bewzaalex/patchcord' \
+     -annotate +76+424 'Live meters, volume, cue' -annotate +76+456 'Desk or 19" rack, presets, undo' -annotate +76+488 'ENGINE: the real graph, timings' \
+     -fill '#f0a64a' -draw "circle 61,386 65,386" -draw "circle 61,418 65,418" -draw "circle 61,450 65,450" -draw "circle 61,482 65,482" \
+     -font $f/NotoSansMono-Bold.ttf -fill '#f0a64a' -pointsize 16 -annotate +56+560 'LINUX · PIPEWIRE · OPEN SOURCE' \
+     -font $f/NotoSansMono-Regular.ttf -fill '#7d8085' -pointsize 15 -annotate +56+588 'github.com/bewzaalex/patchcord' \
      -depth 8 -strip docs/screenshots/social-preview.png
    rm -rf $cfg $t
    ```
