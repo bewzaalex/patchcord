@@ -760,6 +760,54 @@ pub fn cue_disc_pic() -> String {
     format!(r##"<svg xmlns="http://www.w3.org/2000/svg" width="{s}" height="{s}" viewBox="0 0 {s} {s}"><circle cx="{CUE_PIC}" cy="{CUE_PIC}" r="21.1" fill="#5fd4ff"/><circle cx="{CUE_PIC}" cy="{CUE_PIC}" r="20.7" fill="none" stroke="#000" stroke-opacity=".35" stroke-width=".8"/></svg>"##)
 }
 
+/// Half a jack kept on: the left (FL) or the right (FR) half of the disc under a stereo jack, when
+/// only one of its two channels is kept on (from ENGINE).
+pub fn cue_half_pic(right: bool) -> String {
+    let s = 2.0 * CUE_PIC;
+    let (c, r) = (CUE_PIC, 21.1);
+    let sweep = right as u8;
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{s}" height="{s}" viewBox="0 0 {s} {s}"><path d="M{c},{} A{r},{r} 0 0 {sweep} {c},{} Z" fill="#5fd4ff"/><path d="M{c},{} A{},{} 0 0 {sweep} {c},{}" fill="none" stroke="#000" stroke-opacity=".35" stroke-width=".8"/></svg>"##,
+        c - r,
+        c + r,
+        c - r + 0.4,
+        r - 0.4,
+        r - 0.4,
+        c + r - 0.4
+    )
+}
+
+/// How far the R jack of a split stereo frame sits under its L jack.
+pub const SPLIT_DY: f64 = ROWS[1] - ROWS[0];
+
+/// A split pair (L over R) both kept on, or both listened to: one disc, or one ring with one
+/// badge, round the two, so that their marks don't run into each other. Centred on the L jack,
+/// `SPLIT_DY` longer down.
+pub fn cue_pair_pic(ring: bool, red: bool) -> String {
+    let (w, h) = (2.0 * CUE_PIC, 2.0 * CUE_PIC + SPLIT_DY);
+    let c = if red { "#ff503c" } else { "#5fd4ff" };
+    let body = if ring {
+        let (bx, by) = (CUE_PIC + 17.0, CUE_PIC - 17.0);
+        format!(
+            r##"<rect x="{}" y="{}" width="40" height="{}" rx="20" fill="none" stroke="{c}" stroke-width="2.2"/><circle cx="{bx}" cy="{by}" r="8.5" fill="#121315" stroke="{c}" stroke-width="1.4"/><g transform="translate({bx},{by}) scale(.4583) translate(-12,-12.5)"><path d="M4 15v-3a8 8 0 0 1 16 0v3" fill="none" stroke="{c}" stroke-width="2.4"/><rect x="3" y="14" width="4.5" height="7" fill="{c}"/><rect x="16.5" y="14" width="4.5" height="7" fill="{c}"/></g>"##,
+            CUE_PIC - 20.0,
+            CUE_PIC - 20.0,
+            40.0 + SPLIT_DY
+        )
+    } else {
+        format!(
+            r##"<rect x="{}" y="{}" width="42.2" height="{}" rx="21.1" fill="{c}"/><rect x="{}" y="{}" width="41.4" height="{}" rx="20.7" fill="none" stroke="#000" stroke-opacity=".35" stroke-width=".8"/>"##,
+            CUE_PIC - 21.1,
+            CUE_PIC - 21.1,
+            42.2 + SPLIT_DY,
+            CUE_PIC - 20.7,
+            CUE_PIC - 20.7,
+            41.4 + SPLIT_DY
+        )
+    };
+    format!(r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">{body}</svg>"##)
+}
+
 /// A jack listened to: a ring round it and the headphones of the CUE key on a badge at its top
 /// right; red for one that would feed back.
 pub fn cue_ring_pic(red: bool) -> String {

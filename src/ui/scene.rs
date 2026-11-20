@@ -73,11 +73,20 @@ const JACK_PICS: usize = 1;
 pub const CUE_PICS: usize = JACK_PICS + 3 * face::ACCENTS.len();
 /// Where the target rings start in `Scene::jack_pics`: green, then gold.
 pub const TARGET_PICS: usize = CUE_PICS + 3;
+/// Where the half discs start (left, right): one channel of a stereo jack kept on.
+pub const HALF_PICS: usize = TARGET_PICS + 2;
+/// Where a split pair's marks start: the disc, the ring, the red ring.
+pub const PAIR_PICS: usize = HALF_PICS + 2;
 
 /// A jack picture as a layer centred on its jack: the cue's marks and the target rings are
 /// larger than a jack.
 fn pic_layer(i: usize, pm: Option<Pixmap>) -> Layer {
-    let h = if i >= TARGET_PICS { face::TARGET_PIC } else if i >= CUE_PICS { face::CUE_PIC } else { PIC };
+    if i >= PAIR_PICS {
+        // centred on the L jack, reaching down past the R one
+        let c = face::CUE_PIC;
+        return Layer { id: next_id(), pm, x: -c, y: -c, w: 2.0 * c, h: 2.0 * c + face::SPLIT_DY };
+    }
+    let h = if i >= HALF_PICS { face::CUE_PIC } else if i >= TARGET_PICS { face::TARGET_PIC } else if i >= CUE_PICS { face::CUE_PIC } else { PIC };
     Layer { id: next_id(), pm, x: -h, y: -h, w: 2.0 * h, h: 2.0 * h }
 }
 /// pixels per world unit for the faces' shadows, whatever the zoom
@@ -292,7 +301,7 @@ pub struct Scene {
     /// round a jack heard, and the red ring of one that would feed back; then the rings round
     /// the jacks a cord's end in the hand may go into (`TARGET_PICS`): green, and gold for the
     /// one it is pulled to
-    pub jack_pics: [Option<Layer>; TARGET_PICS + 2],
+    pub jack_pics: [Option<Layer>; PAIR_PICS + 3],
     /// counts what PipeWire said (but the levels) and the devices made from it: what is worked
     /// out from them is worked out again when it moves on
     pub rev: u64,
@@ -1350,6 +1359,7 @@ impl Scene {
                 svgs.extend([JackKind::Mono, JackKind::Stereo, JackKind::Midi].into_iter().map(|kind| face::jack_pic_ring(kind, c)));
             }
             svgs.extend([face::cue_disc_pic(), face::cue_ring_pic(false), face::cue_ring_pic(true), face::target_ring_pic(false), face::target_ring_pic(true)]);
+            svgs.extend([face::cue_half_pic(false), face::cue_half_pic(true), face::cue_pair_pic(false, false), face::cue_pair_pic(true, false), face::cue_pair_pic(true, true)]);
             if self.jack_pics.iter().any(Option::is_none) {
                 let opt = &self.opt;
                 let pms: Vec<Option<Pixmap>> = std::thread::scope(|sc| svgs.iter().map(|svg| sc.spawn(move || rasterize(opt, svg, scale))).collect::<Vec<_>>().into_iter().map(|t| t.join().ok().flatten()).collect());
@@ -1735,9 +1745,25 @@ impl Scene {
         v
     }
 
-    /// What listening to a jack brings into the cue: (node, port, channel) of each output port
-    /// heard: an output jack's own ports; for an input jack, what is linked into it.
+    /// What listening to a jack (or, from ENGINE, a port: `port_key`) brings into the cue: (node,
+    /// port, channel) of each output port heard: an output jack's own ports; for an input jack,
+    /// what is linked into it. A port is one channel: FL left, FR right, anything else both.
     pub fn cue_sources(&self, key: &str) -> Vec<crate::pw::CueSource> {
+        if let Some(id) = port_of_key(key) {
+            let Some(p) = self.graph.props_of(id) else { return Vec::new() };
+            let ch = match p.get("audio.channel").map(String::as_str) {
+                Some("FL") => Some(0),
+                Some("FR") => Some(1),
+                _ => None,
+            };
+            if !self.listenable(id) {
+                return Vec::new();
+            }
+            if p.get("port.direction").map(String::as_str) == Some("out") {
+                return self.graph.port_node(id).map(|n| vec![(n, id, ch)]).unwrap_or_default();
+            }
+            return self.graph.links().iter().filter(|l| l.in_port == id).filter_map(|l| Some((self.graph.port_node(l.out_port)?, l.out_port, ch))).collect();
+        }
         let Some((d, j)) = self.jack(key) else { return Vec::new() };
         let ch = |p: &crate::graph::Port| match p.channel.as_str() {
             "FL" => Some(0),
@@ -1793,6 +1819,10 @@ impl Scene {
     /// Listening to a jack of the default output, or of its monitor, would feed what it plays
     /// back into it.
     pub fn cue_blocked(&self, key: &str) -> bool {
+        if let Some(id) = port_of_key(key) {
+            let node = self.graph.port_node(id);
+            return self.default_name(true).is_some_and(|n| node.and_then(|node| self.graph.node_name(node)) == Some(n.as_str()));
+        }
         let Some((d, j)) = self.jack(key) else { return false };
         let Some(node) = j.ports.first().and_then(|id| d.dev.groups.iter().flat_map(|g| &g.ports).find(|p| p.id == *id)).map(|p| p.node) else { return false };
         self.default_name(true).is_some_and(|n| self.graph.node_name(node) == Some(n.as_str()))
@@ -1800,18 +1830,72 @@ impl Scene {
 
     /// How the status bar names a jack: "fooyin · OUTPUT", "Ryzen … · PLAYBACK L".
     pub fn jack_title(&self, key: &str) -> String {
+        if let Some(id) = port_of_key(key) {
+            let node = self.graph.port_node(id);
+            let desc = node.and_then(|n| self.graph.props_of(n)).and_then(|p| p.get("node.description").or(p.get("node.name"))).map_or("?", String::as_str);
+            let name = self.graph.props_of(id).and_then(|p| p.get("port.name")).map_or("?", String::as_str);
+            return format!("{desc} · {name}");
+        }
         let Some((d, j)) = self.jack(key) else { return "?".into() };
         let g = d.dev.groups.get(j.group);
         let split = d.defs.iter().filter(|x| x.group == j.group).count() > 1;
         format!("{} · {}{}", d.dev.name, g.map_or("", |g| g.label.as_str()), if split { format!(" {}", j.label) } else { String::new() })
     }
 
-    /// The jack (or a plug's jack) under a world point.
-    pub fn jack_key_at(&self, x: f64, y: f64) -> Option<String> {
-        match self.hover_at(x, y) {
-            Hover::Jack(k) => Some(k),
-            _ => None,
+    /// Which half of a stereo jack a port of it is (false: the left, FL; true: the right, FR);
+    /// none for a jack of one port.
+    pub fn port_side(&self, jack: &str, port: u32) -> Option<bool> {
+        let (_, j) = self.jack(jack)?;
+        (j.ports.len() == 2).then(|| j.ports.iter().position(|p| *p == port) == Some(1))
+    }
+
+    /// The other jack of a split stereo frame (L's R, R's L), and whether this one is the L.
+    pub fn split_pair(&self, jack: &str) -> Option<(String, bool)> {
+        let (d, j) = self.jack(jack)?;
+        if j.ports.len() != 1 || !d.dev.groups.get(j.group).is_some_and(|g| g.stereo) {
+            return None;
         }
+        let both: Vec<&face::JackDef> = d.defs.iter().filter(|x| x.group == j.group).collect();
+        if both.len() != 2 {
+            return None;
+        }
+        let first = both[0].key == jack;
+        Some((if first { both[1] } else { both[0] }.key.clone(), first))
+    }
+
+    /// The jack a heard key shows on: a jack itself, or the jack a port heard from ENGINE is on
+    /// (none: a port of a device not on the desk, or of no jack).
+    pub fn cue_jack<'a>(&'a self, key: &'a str) -> Option<&'a str> {
+        match port_of_key(key) {
+            Some(id) => self.port_jack.get(&id).map(String::as_str),
+            None => Some(key),
+        }
+    }
+
+    /// Whether a port can be listened to: sound (no MIDI, no video), and not one of Patchcord's
+    /// own (its meters, the cue).
+    pub fn listenable(&self, port: u32) -> bool {
+        let audio = self.graph.props_of(port).and_then(|p| p.get("format.dsp")).is_some_and(|f| f.contains("audio"));
+        let node = self.graph.port_node(port).and_then(|n| self.graph.node_name(n));
+        audio && node.is_some_and(|n| !n.starts_with(crate::pw::METER_PREFIX) && !n.starts_with(crate::pw::CUE_NODE))
+    }
+
+    /// The jack with a slot (a mult's spare too) nearest a world point, within `r`: in CUE mode
+    /// its hole (`HOLE`) patches and the ring round it (`RING`) listens.
+    pub fn jack_near(&self, x: f64, y: f64, r: f64) -> Option<String> {
+        let mut best: Option<(f64, &String)> = None;
+        for (key, &(di, ji)) in &self.jacks {
+            let n = face::slots(self.devs[di].counts.get(ji).copied().unwrap_or(0));
+            for s in 0..n {
+                if let Some((sx, sy)) = self.slot_pos(key, s) {
+                    let d = (sx as f64 - x).hypot(sy as f64 - y);
+                    if d <= r && best.is_none_or(|(bd, _)| d < bd) {
+                        best = Some((d, key));
+                    }
+                }
+            }
+        }
+        best.map(|(_, k)| k.clone())
     }
 
     /// Where a jack is (its first jack's centre), in world units.
@@ -2638,6 +2722,20 @@ pub fn rasterize(opt: &usvg::Options, doc: &str, scale: f64) -> Option<Pixmap> {
     Some(pm)
 }
 
+/// A jack's black hole, in world units: in CUE mode it patches.
+pub const HOLE: f64 = 5.5;
+/// The ring round a jack heard (the cue's mark), in world units: in CUE mode all of it listens.
+pub const RING: f64 = 21.1;
+
+/// The key a port heard from ENGINE goes by among the jacks heard, and back.
+pub fn port_key(port: u32) -> String {
+    format!("port:{port}")
+}
+
+pub fn port_of_key(key: &str) -> Option<u32> {
+    key.strip_prefix("port:")?.parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2833,5 +2931,34 @@ mod tests {
                 lit = next;
             }
         }
+    }
+
+    /// A port listened to from ENGINE: an output port is heard itself, in its own ear (FL left,
+    /// FR right, MONO both); an input port, what is linked into it, in the input's ear; MIDI and
+    /// Patchcord's own ports not at all.
+    #[test]
+    fn ports_are_heard_in_their_own_ear() {
+        use crate::pw::{Event, Kind};
+        let mut s = Scene::new();
+        let props = |kv: &[(&str, &str)]| kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<crate::pw::Props>();
+        let mut ev = Vec::new();
+        for (id, name, class) in [(10, "vivaldi", "Stream/Output/Audio"), (20, "recorder", "Stream/Input/Audio"), (30, "patchcord-meter-1", "Stream/Input/Audio"), (40, "midi", "Midi/Bridge")] {
+            let p = props(&[("node.name", name), ("node.description", name), ("media.class", class)]);
+            ev.push(Event::Added { id, kind: Kind::Node, props: p.clone() });
+            ev.push(Event::Info { id, props: p, state: Some("running") });
+        }
+        for (id, node, dir, ch, fmt) in [(11, "10", "out", "FL", "32 bit float mono audio"), (12, "10", "out", "FR", "32 bit float mono audio"), (21, "20", "in", "FR", "32 bit float mono audio"), (31, "30", "in", "FL", "32 bit float mono audio"), (41, "40", "out", "", "8 bit raw midi")] {
+            ev.push(Event::Added { id, kind: Kind::Port, props: props(&[("node.id", node), ("port.direction", dir), ("audio.channel", ch), ("port.name", "p"), ("format.dsp", fmt)]) });
+        }
+        let l = props(&[("link.output.node", "10"), ("link.output.port", "11"), ("link.input.node", "20"), ("link.input.port", "21")]);
+        ev.push(Event::Added { id: 50, kind: Kind::Link, props: l });
+        ev.push(Event::Synced);
+        s.apply(ev);
+        assert_eq!(s.cue_sources(&port_key(12)), vec![(10, 12, Some(1))], "an output port: itself, FR in the right ear");
+        assert_eq!(s.cue_sources(&port_key(21)), vec![(10, 11, Some(1))], "an input port: what comes in, in the input's ear");
+        assert!(s.cue_sources(&port_key(31)).is_empty() && !s.listenable(31), "a meter's port: Patchcord's own");
+        assert!(s.cue_sources(&port_key(41)).is_empty() && !s.listenable(41), "MIDI: nothing to hear");
+        assert_eq!(port_of_key(&port_key(12)), Some(12));
+        assert_eq!(port_of_key("device:x/out/0"), None);
     }
 }

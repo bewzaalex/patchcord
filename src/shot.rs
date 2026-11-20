@@ -651,10 +651,10 @@ pub fn record(dir: &str) -> Result<(), String> {
 fn compose_engine(eng: &mut ui::engine::Engine, (w, h): (u32, u32), dpi: f64, version: &str, panel: &mut Panel) -> Pixmap {
     let mut out = ui::app::background(w, h);
     eng.finish((w, h), dpi, version);
-    for (l, x, y, lw, lh, clip) in eng.sprites((w, h), dpi, version) {
+    for (l, x, y, lw, lh, clip, alpha) in eng.sprites((w, h), dpi, version) {
         let Some(pm) = &l.pm else { continue };
         let (sx, sy) = (lw as f32 / pm.width() as f32, lh as f32 / pm.height() as f32);
-        let paint = PixmapPaint { quality: FilterQuality::Bilinear, ..Default::default() };
+        let paint = PixmapPaint { quality: FilterQuality::Bilinear, opacity: alpha, ..Default::default() };
         // a body cut to its view
         let mask = clip.and_then(|[cx, cy, cw, ch]| {
             let mut m = resvg::tiny_skia::Mask::new(w, h)?;

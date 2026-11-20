@@ -74,7 +74,7 @@ impl Key {
             Key::Hidden => "Hidden devices: click to show them again (a device's HIDE key, or H over it, hides an unused one)",
             Key::Lcd => "Presets",
             Key::Defaults => "The default output and input, where new apps play and record: click to choose others or find them",
-            Key::Cue => "Listen (cue): CUE mode on/off: hover a jack to hear it, click to keep it on; or hold Alt over the jacks",
+            Key::Cue => "Listen (cue): CUE mode on/off: hover a jack to hear it, click to keep it on, patch through its hole (in ENGINE click a port); or hold Alt",
             Key::CueLevel => "How loud the cue is: drag up/down or turn the wheel",
             Key::More => "The keys the window is too narrow for",
         }

@@ -78,7 +78,22 @@ enum Hit {
 
 /// A picture to draw: the layer, where (x, y, w, h in window pixels), and where it may draw if
 /// not everywhere.
-pub type Pic<'a> = (&'a Layer, f64, f64, f64, f64, Option<[f64; 4]>);
+/// A picture to draw: (layer, x, y, w, h) in window pixels, where it may draw (if not
+/// everywhere), its opacity.
+pub type Pic<'a> = (&'a Layer, f64, f64, f64, f64, Option<[f64; 4]>, f32);
+
+/// How long the blocks take to glide to where a new layout puts them.
+const GLIDE: Duration = Duration::from_millis(300);
+
+/// The graph going from one layout to the next: the old picture, cut into its blocks, each
+/// gliding from where it was to where it is now, and the new one fading in under them.
+struct Glide {
+    start: Instant,
+    old: Layer,
+    /// each node's place (x, y) and height in the old picture, and its place now
+    from: HashMap<u32, (f64, f64, f64)>,
+    to: HashMap<u32, (f64, f64)>,
+}
 
 /// A scrolled body, the details' or the tables': drawn apart from its frame, a slice of it about
 /// two views tall round what shows, so scrolling only moves the picture and clips it; a new
@@ -392,6 +407,11 @@ pub struct Engine {
     // what is drawn
     lay: Layout,
     graph_layer: Option<(u64, f64, Layer)>,
+    /// each node's place (x, y) and height in the graph's picture, and in the one asked for
+    graph_pos: HashMap<u32, (f64, f64, f64)>,
+    want_pos: HashMap<u32, (f64, f64, f64)>,
+    /// the blocks gliding to a new layout
+    glide: Option<Glide>,
     /// the graph being drawn on the painter's threads: its sig, what it is drawn from, the
     /// view's scale then, its size
     graph_want: Option<(u64, u64, f64, f64, f64)>,
@@ -427,6 +447,10 @@ pub struct Engine {
     /// the ports of the jacks kept on in the cue, filled in its colour, with those linked into
     /// it: also the ones it leaves out (heard in the output listened on already, or asleep)
     pub cue_kept: Vec<u32>,
+    /// in CUE mode, the port under the pointer, and whether it would feed back: framed (cyan,
+    /// or red) where a click would listen, a small picture over the graph
+    pub port_hover: Option<(u32, bool)>,
+    hover_pic: Option<(u64, Layer)>,
     /// the details and the tables being drawn on the painter's threads: what for, where
     insp_want: Option<(u64, [f64; 4])>,
     bottom_want: Option<(u64, [f64; 4])>,
@@ -493,6 +517,9 @@ impl Engine {
             built: None,
             lay: Layout::default(),
             graph_layer: None,
+            graph_pos: HashMap::new(),
+            want_pos: HashMap::new(),
+            glide: None,
             graph_want: None,
             inbox: painter::Inbox::default(),
             strip: None,
@@ -513,6 +540,8 @@ impl Engine {
             info_open: false,
             private: false,
             cue_kept: Vec::new(),
+            port_hover: None,
+            hover_pic: None,
             insp_want: None,
             bottom_want: None,
             strip_want: None,
@@ -532,6 +561,7 @@ impl Engine {
             self.dirty = true;
             // drawn again: while the desk was shown the GPU let their textures go
             self.graph_layer = None;
+            self.glide = None;
             (self.strip, self.strip_want) = (None, None);
             (self.insp, self.insp_want) = (None, None);
             (self.bottom, self.bottom_want) = (None, None);
@@ -1586,7 +1616,11 @@ impl Engine {
             let r = self.view.s.min(cap);
             let want = painter::sig(sig, r);
             self.graph_want = Some((want, sig, self.view.s, self.lay.w.max(10.0), self.lay.h.max(10.0)));
+            self.want_pos = self.lay.pos.iter().map(|(id, &(x, y))| (*id, (x, y, self.model.node(*id).map_or(60.0, node_h)))).collect();
             self.inbox.ask(painter::key("graph", 0u8), want, self.graph_svg(false), r);
+        }
+        if self.glide.as_ref().is_some_and(|g| g.start.elapsed() >= GLIDE) {
+            self.glide = None;
         }
         lap(&mut self.spent, "engine.graph");
         // the numbers over it, each a small picture drawn again when it changes
@@ -1750,35 +1784,63 @@ impl Engine {
             }
         }
 
+        // the frame round the port a click would listen to
+        let vs = self.view.s;
+        let hover = self.port_hover.map(|h| (h, hash_str(&format!("{h:?}{:?}", self.lay.pos.get(&self.model.port_node.get(&h.0).copied().unwrap_or(0))), vs)));
+        self.hover_pic = match (hover, self.hover_pic.take()) {
+            (Some((_, sig)), Some(p)) if p.0 == sig => Some(p),
+            (Some((h, sig)), _) => self.port_frame(h.0, h.1, vs).map(|l| (sig, l)),
+            (None, _) => None,
+        };
         let v = self.view;
         let mut out = Vec::new();
+        // the graph; going to a new layout, the old one's blocks glide over it as it fades in
+        let glide = self.glide.as_ref().map(|g| (g, (g.start.elapsed().as_secs_f64() / GLIDE.as_secs_f64()).min(1.0)));
         if let Some((_, _, l)) = &self.graph_layer {
-            out.push((l, v.x, v.y, l.w * v.s, l.h * v.s, None));
+            let a = glide.map_or(1.0, |(_, t)| ((t - 0.5) / 0.5).clamp(0.0, 1.0));
+            out.push((l, v.x, v.y, l.w * v.s, l.h * v.s, None, (a * a * (3.0 - 2.0 * a)) as f32));
+        }
+        if let Some((g, t)) = glide {
+            let e = t * t * (3.0 - 2.0 * t);
+            // (a little round each block: the dots of its ports stand out of it)
+            const PAD: f64 = 6.0;
+            for (id, &(ox, oy, h)) in &g.from {
+                // a block that went fades where it was
+                let ((cx, cy), alpha) = match g.to.get(id) {
+                    Some(&(nx, ny)) => ((ox + (nx - ox) * e, oy + (ny - oy) * e), 1.0 - (t - 0.85).max(0.0) / 0.15),
+                    None => ((ox, oy), 1.0 - e),
+                };
+                let clip = [v.x + (cx - PAD) * v.s, v.y + (cy - PAD) * v.s, (NW + 2.0 * PAD) * v.s, (h + 2.0 * PAD) * v.s];
+                out.push((&g.old, v.x + (cx - ox) * v.s, v.y + (cy - oy) * v.s, g.old.w * v.s, g.old.h * v.s, Some(clip), alpha.clamp(0.0, 1.0) as f32));
+            }
         }
         for (_, l) in self.nums.values() {
-            out.push((l, l.x * v.s + v.x, l.y * v.s + v.y, l.w * v.s, l.h * v.s, None));
+            out.push((l, l.x * v.s + v.x, l.y * v.s + v.y, l.w * v.s, l.h * v.s, None, 1.0));
+        }
+        if let Some((_, l)) = &self.hover_pic {
+            out.push((l, l.x * v.s + v.x, l.y * v.s + v.y, l.w * v.s, l.h * v.s, None, 1.0));
         }
         for l in [&self.overlay, &self.overlay_b, &self.legend, &self.strip].into_iter().flatten().map(|(_, l)| l) {
-            out.push((l, l.x * dpi, l.y * dpi, l.w * dpi, l.h * dpi, None));
+            out.push((l, l.x * dpi, l.y * dpi, l.w * dpi, l.h * dpi, None, 1.0));
         }
         // the details and the tables: each its frame, then its body slid to where it is
         // scrolled and cut to its view, then its scrollbar
         for (i, frame, a) in [(0, &self.insp, insp_a), (1, &self.bottom, bottom_a)] {
             let Some((_, l)) = frame else { continue };
-            out.push((l, l.x * dpi, l.y * dpi, l.w * dpi, l.h * dpi, None));
+            out.push((l, l.x * dpi, l.y * dpi, l.w * dpi, l.h * dpi, None, 1.0));
             if let Some((_, s0, b)) = &self.bodies[i].layer {
                 let (top, by) = self.body_at[i];
                 let view = [a[0] * dpi, (a[1] + top) * dpi, a[2] * dpi, (a[3] - top).max(0.0) * dpi];
-                out.push((b, a[0] * dpi, ((a[1] + by + s0) * dpi).round(), b.w * dpi, b.h * dpi, Some(view)));
+                out.push((b, a[0] * dpi, ((a[1] + by + s0) * dpi).round(), b.w * dpi, b.h * dpi, Some(view), 1.0));
             }
             if let Some(bar) = self.bars[i] {
                 for (px, r) in [(&self.bar_px[0], bar.track), (&self.bar_px[1], bar.thumb)] {
-                    out.push((px, r[0] * dpi, r[1] * dpi, r[2] * dpi, r[3] * dpi, None));
+                    out.push((px, r[0] * dpi, r[1] * dpi, r[2] * dpi, r[3] * dpi, None, 1.0));
                 }
             }
         }
         if let Some((_, l)) = &self.info {
-            out.push((l, l.x * dpi, l.y * dpi, l.w * dpi, l.h * dpi, None));
+            out.push((l, l.x * dpi, l.y * dpi, l.w * dpi, l.h * dpi, None, 1.0));
         }
         out
     }
@@ -2857,6 +2919,44 @@ impl Engine {
         self.legend_open = !self.legend_open;
     }
 
+    /// The frame round port `id` where a click would listen to it (red: it would feed back), in
+    /// the port's own shape and round its dot: a small picture at the port, in world units.
+    fn port_frame(&self, id: u32, bad: bool, scale: f64) -> Option<Layer> {
+        let n = self.model.node(*self.model.port_node.get(&id)?)?;
+        let &(nx, ny) = self.lay.pos.get(&n.id)?;
+        let (out, i, p) = n.ins.iter().enumerate().map(|(i, p)| (false, i, p)).chain(n.outs.iter().enumerate().map(|(i, p)| (true, i, p))).find(|(_, _, p)| p.id == id)?;
+        let w = ear_w(&port_label(n, p));
+        let py = ny + port_y(i);
+        // the picture: from a little outside the dot to a little past the ear
+        let (x0, y0, pw, ph) = if out { (nx + NW - w - 4.0, py - 9.0, w + 12.0, 18.0) } else { (nx - 8.0, py - 9.0, w + 12.0, 18.0) };
+        let (px, ly) = ((if out { nx + NW } else { nx }) - x0, py - y0);
+        let d = if out {
+            format!("M{},{} H{} A6.5,6.5 0 0 0 {},{} H{} Z", px - 0.75, ly - 6.5, px - w + 6.5, px - w + 6.5, ly + 6.5, px - 0.75)
+        } else {
+            format!("M{},{} H{} A6.5,6.5 0 0 1 {},{} H{} Z", px + 0.75, ly - 6.5, px + w - 6.5, px + w - 6.5, ly + 6.5, px + 0.75)
+        };
+        let f = if bad { "#ff503c" } else { CUE };
+        let svg = format!(r##"<svg xmlns="http://www.w3.org/2000/svg" width="{pw}" height="{ph}" viewBox="0 0 {pw} {ph}"><path d="{d}" fill="none" stroke="{f}" stroke-width="1.6"/><circle cx="{px}" cy="{ly}" r="5.6" fill="none" stroke="{f}" stroke-width="1.4"/></svg>"##);
+        Some(Layer { id: next_id(), pm: rasterize(&text::svg_options(), &svg, scale), x: x0, y: y0, w: pw, h: ph })
+    }
+
+    /// Whether window pixel `p` is over the graph itself (not over a panel or chip on it).
+    pub fn over_graph(&self, p: (f64, f64), size: (u32, u32), dpi: f64) -> bool {
+        let (lx, ly) = (p.0 / dpi, p.1 / dpi);
+        self.in_graph(p, (size.0 as f64, size.1 as f64), dpi) && !self.hits.iter().any(|(_, [x, y, w, h])| lx >= *x && lx <= x + w && ly >= *y && ly <= y + h)
+    }
+
+    /// The port under window pixel `p`, on the graph (not under a panel over it).
+    pub fn port_at(&self, p: (f64, f64), size: (u32, u32), dpi: f64) -> Option<u32> {
+        if !self.over_graph(p, size, dpi) {
+            return None;
+        }
+        match self.graph_hit(((p.0 - self.view.x) / self.view.s, (p.1 - self.view.y) / self.view.s)) {
+            Some(Sel::Port(id)) => Some(id),
+            _ => None,
+        }
+    }
+
     /// What is under a point of the graph (world units): a port, a node, or a link.
     fn graph_hit(&self, (x, y): (f64, f64)) -> Option<Sel> {
         let lay = &self.lay;
@@ -2935,6 +3035,14 @@ impl Engine {
             && want == done.sig
             && done.key == painter::key("graph", 0u8)
         {
+            let pos = std::mem::take(&mut self.want_pos);
+            // blocks that moved (the layout changed, not only the zoom): they glide there
+            let moved = pos.iter().any(|(id, p)| self.graph_pos.get(id).is_some_and(|q| (p.0 - q.0).abs() + (p.1 - q.1).abs() > 1.0));
+            let old = self.graph_layer.take();
+            if moved && let Some((_, _, old)) = old {
+                self.glide = Some(Glide { start: Instant::now(), old, from: std::mem::take(&mut self.graph_pos), to: pos.iter().map(|(id, p)| (*id, (p.0, p.1))).collect() });
+            }
+            self.graph_pos = pos;
             self.graph_layer = Some((sig, vs, Layer { id: next_id(), pm: done.pm, x: 0.0, y: 0.0, w, h }));
             self.graph_want = None;
             return;
@@ -2963,7 +3071,7 @@ impl Engine {
 
     /// Whether a re-raster after zooming is still to come (the app keeps drawing until then).
     pub fn settling(&self) -> bool {
-        self.zoomed.is_some_and(|t| t.elapsed() < Duration::from_millis(400)) || self.inbox.busy()
+        self.zoomed.is_some_and(|t| t.elapsed() < Duration::from_millis(400)) || self.inbox.busy() || self.glide.is_some()
     }
 
     /// Fits the graph into its part of the window.
