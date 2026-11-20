@@ -15,8 +15,32 @@ use crate::graph::Dir;
 use crate::pw::{Cmd, Connection, Event};
 use crate::ui::cord::Held;
 use crate::ui::panel::{self, Key, Panel};
-use crate::ui::scene::{Hover, Layer, Scene, View, rasterize};
+use crate::ui::scene::{Hover, Layer, Scene, TARGET_PICS, View, rasterize};
+use crate::ui::engine::mask_macs;
 use crate::ui::{self, ease};
+
+/// What PipeWire said, with no MAC addresses: the pictures are for others to see, and Bluetooth
+/// devices are named by theirs.
+fn masked(ev: Event) -> Event {
+    let props = |p: crate::pw::Props| p.into_iter().map(|(k, v)| (k, mask_macs(&v))).collect();
+    match ev {
+        Event::Added { id, kind, props: p } => Event::Added { id, kind, props: props(p) },
+        Event::Info { id, props: p, state } => Event::Info { id, props: props(p), state },
+        Event::Setting { key, value } => Event::Setting { key, value: mask_macs(&value) },
+        Event::Meta { id, subject, key, ty, value } => Event::Meta { id, subject, key, ty, value: value.map(|v| mask_macs(&v)) },
+        ev => ev,
+    }
+}
+
+/// The next event within `t`, masked.
+fn next(conn: &Connection, t: Duration) -> Option<Event> {
+    conn.events.recv_timeout(t).ok().map(masked)
+}
+
+/// The events waiting, masked.
+fn waiting(conn: &Connection) -> Vec<Event> {
+    conn.events.try_iter().map(masked).collect()
+}
 
 /// A scene on the live graph, with all devices shown, and the connection to PipeWire it came from.
 fn live_scene() -> Result<(Scene, Connection, Duration), String> {
@@ -24,10 +48,10 @@ fn live_scene() -> Result<(Scene, Connection, Duration), String> {
     let mut scene = Scene::new();
     let started = Instant::now();
     while !scene.graph.synced {
-        let ev = conn.events.recv_timeout(Duration::from_secs(5)).map_err(|_| "PipeWire did not answer in 5 s")?;
+        let ev = next(&conn, Duration::from_secs(5)).ok_or("PipeWire did not answer in 5 s")?;
         scene.apply([ev]);
     }
-    scene.apply(conn.events.try_iter().collect::<Vec<_>>());
+    scene.apply(waiting(&conn));
     Ok((scene, conn, started.elapsed()))
 }
 
@@ -120,11 +144,19 @@ fn compose(scene: &Scene, view: View, size: (u32, u32), dpi: f64, held: Option<(
             out.fill_rect(r, &amber, Transform::identity(), None);
         }
     }
-    let rings: Vec<((f32, f32), bool)> = match (held, &targets) {
-        (Some((_, magnet)), Some(t)) => t.iter().filter_map(|k| scene.spare(k).map(|p| (p, Some(k.as_str()) == magnet))).collect(),
-        _ => Vec::new(),
-    };
-    if let Some((pm, x, y)) = scene.cord_layer(view, (w, h), &rings, &[], 1.0, true) {
+    // the rings round the jacks a cord's end in the hand may go into, under the cords (as in
+    // the window, at the top of their pulse)
+    if let (Some((_, magnet)), Some(t)) = (held, &targets) {
+        for k in t {
+            if let Some((x, y)) = scene.spare(k)
+                && let Some(l) = &scene.jack_pics[TARGET_PICS + (Some(k.as_str()) == magnet) as usize]
+                && let Some(pm) = &l.pm
+            {
+                draw(&mut out, pm, (x as f64 + l.x, y as f64 + l.y, l.w, l.h), 1.0);
+            }
+        }
+    }
+    if let Some((pm, x, y)) = scene.cord_layer(view, (w, h)) {
         out.draw_pixmap(x, y, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
     }
     panel.layer(w as f64 / dpi, dpi);
@@ -270,7 +302,7 @@ pub fn render(path: &str, opts: &[String]) -> Result<(), String> {
         && let Some(d) = scene.devs.iter().filter(|d| d.dev.card.is_some() && d.dev.name.starts_with(name)).max_by_key(|d| d.dev.model.contains("BLUETOOTH"))
         && let (Some(card), Some([kx, ky, _, kh])) = (&d.dev.card, d.geo.profile)
     {
-        let (l, _) = panel::profile_menu(&d.dev.name, card, s);
+        let (l, _) = panel::profile_menu(card, s);
         if let Some(pm) = &l.pm {
             let (px, py) = ((d.x + kx) * view.s + view.x, (d.y + ky + kh) * view.s + view.y + 4.0 * s);
             out.draw_pixmap(px.round() as i32, py.round() as i32, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
@@ -282,7 +314,7 @@ pub fn render(path: &str, opts: &[String]) -> Result<(), String> {
         && let Some([kx, ky, _, kh]) = scene.devs[di].geo.port
     {
         let d = &scene.devs[di];
-        let (l, _) = panel::port_menu(&d.dev.name, &scene.port_sections(di), s);
+        let (l, _) = panel::port_menu(&scene.port_sections(di), s);
         if let Some(pm) = &l.pm {
             let (px, py) = ((d.x + kx) * view.s + view.x, (d.y + ky + kh) * view.s + view.y + 4.0 * s);
             out.draw_pixmap(px.round() as i32, py.round() as i32, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
@@ -400,7 +432,7 @@ impl Rec {
     /// (its graph stays as it was, so the cords in the picture stay).
     fn pump(&mut self) {
         let mut lv = Vec::new();
-        for ev in self.conn.events.try_iter() {
+        for ev in waiting(&self.conn) {
             self.eng.apply(&ev);
             if matches!(ev, Event::Levels(_)) {
                 lv.push(ev);
@@ -558,11 +590,11 @@ pub fn record(dir: &str) -> Result<(), String> {
     let mut eng = ui::engine::Engine::new();
     eng.private = true;
     while !scene.graph.synced {
-        let ev = conn.events.recv_timeout(Duration::from_secs(5)).map_err(|_| "PipeWire did not answer in 5 s")?;
+        let ev = next(&conn, Duration::from_secs(5)).ok_or("PipeWire did not answer in 5 s")?;
         eng.apply(&ev);
         scene.apply([ev]);
     }
-    let rest: Vec<Event> = conn.events.try_iter().collect();
+    let rest = waiting(&conn);
     for ev in &rest {
         eng.apply(ev);
     }
@@ -619,11 +651,18 @@ pub fn record(dir: &str) -> Result<(), String> {
 fn compose_engine(eng: &mut ui::engine::Engine, (w, h): (u32, u32), dpi: f64, version: &str, panel: &mut Panel) -> Pixmap {
     let mut out = ui::app::background(w, h);
     eng.finish((w, h), dpi, version);
-    for (l, x, y, lw, lh) in eng.sprites((w, h), dpi, version) {
+    for (l, x, y, lw, lh, clip) in eng.sprites((w, h), dpi, version) {
         let Some(pm) = &l.pm else { continue };
         let (sx, sy) = (lw as f32 / pm.width() as f32, lh as f32 / pm.height() as f32);
         let paint = PixmapPaint { quality: FilterQuality::Bilinear, ..Default::default() };
-        out.draw_pixmap(0, 0, pm.as_ref(), &paint, Transform::from_row(sx, 0.0, 0.0, sy, x.round() as f32, y.round() as f32), None);
+        // a body cut to its view
+        let mask = clip.and_then(|[cx, cy, cw, ch]| {
+            let mut m = resvg::tiny_skia::Mask::new(w, h)?;
+            let r = resvg::tiny_skia::Rect::from_xywh(cx as f32, cy as f32, cw as f32, ch as f32)?;
+            m.fill_path(&resvg::tiny_skia::PathBuilder::from_rect(r), resvg::tiny_skia::FillRule::Winding, false, Transform::identity());
+            Some(m)
+        });
+        out.draw_pixmap(0, 0, pm.as_ref(), &paint, Transform::from_row(sx, 0.0, 0.0, sy, x.round() as f32, y.round() as f32), mask.as_ref());
     }
     panel.layer(w as f64 / dpi, dpi);
     for l in panel.layers() {
@@ -651,7 +690,7 @@ fn render_engine(path: &str, opts: &[String]) -> Result<(), String> {
     let start = Instant::now();
     let mut asked = false;
     while start.elapsed() < Duration::from_millis(2600) {
-        let Ok(ev) = conn.events.recv_timeout(Duration::from_millis(100)) else { continue };
+        let Some(ev) = next(&conn, Duration::from_millis(100)) else { continue };
         eng.apply(&ev);
         scene.apply([ev]);
         if scene.graph.synced && !asked {
@@ -679,7 +718,7 @@ fn render_engine(path: &str, opts: &[String]) -> Result<(), String> {
     }
     let t = Instant::now();
     while t.elapsed() < Duration::from_millis(400) {
-        if let Ok(ev) = conn.events.recv_timeout(Duration::from_millis(50)) {
+        if let Some(ev) = next(&conn, Duration::from_millis(50)) {
             eng.apply(&ev);
         }
     }
@@ -742,6 +781,10 @@ fn render_specimen(path: &str) -> Result<(), String> {
         (122, 120, "out", "Midi Through Port-0", "", false, true),
         (126, 125, "in", "in", "", false, true),
         (131, 130, "out", "capture_1", "", false, false),
+        (151, 150, "in", "input_FL", "FL", false, false),
+        (152, 150, "in", "input_FR", "FR", false, false),
+        (156, 155, "out", "output_FL", "FL", false, false),
+        (157, 155, "out", "output_FR", "FR", false, false),
     ];
     node(&mut g, 50, "alsa_output.usb-Focusrite_Scarlett_2i2.analog-stereo", "Scarlett 2i2", "Audio/Sink", "running");
     node(&mut g, 60, "Firefox", "Firefox", "Stream/Output/Audio", "running");
@@ -759,6 +802,9 @@ fn render_specimen(path: &str) -> Result<(), String> {
     node(&mut g, 120, "Midi-Bridge", "Midi-Bridge", "Midi/Bridge", "suspended");
     node(&mut g, 125, "synth", "Synth", "Midi/Bridge", "suspended");
     node(&mut g, 130, "v4l2_input.webcam", "Webcam", "Video/Source", "suspended");
+    // the cue: Firefox's left channel kept on, played into the Scarlett
+    node(&mut g, 150, "patchcord-cue", "Patchcord cue · in", "Stream/Input/Audio", "running");
+    node(&mut g, 155, "patchcord-cue-out", "Patchcord cue · out", "Stream/Output/Audio", "running");
     node(&mut g, 140, "Dummy-Driver", "Dummy-Driver", "", "suspended");
     node(&mut g, 141, "Freewheel-Driver", "Freewheel-Driver", "", "suspended");
     for &(id, n, dir, name, ch, mon, midi) in ports {
@@ -786,6 +832,11 @@ fn render_specimen(path: &str) -> Result<(), String> {
         (210, 120, 122, 125, 126, false, "active"),
         (211, 60, 61, 75, 76, true, "active"),
         (212, 60, 62, 75, 77, true, "active"),
+        (213, 60, 61, 150, 151, true, "active"),
+        (214, 155, 156, 50, 51, false, "active"),
+        (215, 155, 157, 50, 52, false, "active"),
+        // across bands: Spotify (idle) recorded by the Recorder (on the RØDE's clock)
+        (216, 115, 116, 105, 106, true, "paused"),
     ];
     for &(id, on, op, inn, ip, passive, state) in links {
         let p = props(&[("link.output.node", &on.to_string()), ("link.output.port", &op.to_string()), ("link.input.node", &inn.to_string()), ("link.input.port", &ip.to_string()), ("link.passive", &passive.to_string())]);
@@ -800,10 +851,12 @@ fn render_specimen(path: &str) -> Result<(), String> {
         n
     };
     let drivers = vec![
-        DriverTiming { node: t(50, "Scarlett 2i2", 52, 48000, 0), quantum: 1024, rate: 48000, load: 0.06, xruns: 0, end_ns: 420_000, end_max_ns: 1_300_000, followers: vec![t(60, "Firefox", 31, 48000, 0), t(65, "fooyin", 44, 44100, 3), t(70, "patchcord-meter-1", 12, 48000, 0), t(75, "patchcord-meter-2", 11, 48000, 0), t(80, "Broken app", 9, 48000, 0)] },
+        DriverTiming { node: t(50, "Scarlett 2i2", 52, 48000, 0), quantum: 1024, rate: 48000, load: 0.06, xruns: 0, end_ns: 420_000, end_max_ns: 1_300_000, followers: vec![t(60, "Firefox", 31, 48000, 0), t(65, "fooyin", 44, 44100, 3), t(70, "patchcord-meter-1", 12, 48000, 0), t(75, "patchcord-meter-2", 11, 48000, 0), t(80, "Broken app", 9, 48000, 0), t(150, "patchcord-cue", 7, 48000, 0), t(155, "patchcord-cue-out", 8, 48000, 0)] },
         DriverTiming { node: t(90, "RØDE NT-USB", 18, 48000, 0), quantum: 512, rate: 48000, load: 0.02, xruns: 0, end_ns: 150_000, end_max_ns: 400_000, followers: vec![t(95, "OBS", 61, 48000, 0), t(100, "bluez_capture_internal", 16, 48000, 0), t(105, "Recorder", 22, 48000, 0)] },
     ];
     let mut eng = Engine::new();
+    // fooyin kept on too, though it plays in the output listened on already: filled all the same
+    eng.cue_kept = vec![66, 67];
     eng.apply(&Event::Profile(drivers.clone()));
     eng.apply(&Event::Profile(drivers));
     let devs = g.devices();

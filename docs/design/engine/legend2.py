@@ -17,7 +17,7 @@ def head(x, y, s):
     t(x, y, s, 9.5, "#e58f2c", True, True, ls=1.2)
 
 
-COLOURS = [("#4f86d9", "device"), ("#9b6bd6", "app"), ("#2fb0a6", "system"), ("#e08a3c", "MIDI"), ("#d9578f", "video"), ("#5fa36a", "Patchcord")]
+COLOURS = [("#4f86d9", "device"), ("#9b6bd6", "app"), ("#2fb0a6", "system"), ("#e08a3c", "MIDI"), ("#d9578f", "video"), ("#5fa36a", "Patchcord"), ("#5fd4ff", "cue")]
 LIGHTS = [("#5cff7a", "running"), ("#ffb02e", "idle"), ("#4a4c50", "asleep"), ("#ff4a32", "xruns")]
 LINKS = [('stroke="#9b6bd6" stroke-width="2"', "active"), ('stroke="#9b6bd6" stroke-width="1.6" stroke-opacity=".45"', "paused"),
          ('stroke="#9b6bd6" stroke-width="1.2" stroke-dasharray="3 4"', "passive: listens only"), ('stroke="#ff4a32" stroke-width="2"', "error: no common format")]
@@ -93,10 +93,10 @@ def legend_card():
     c1, c2, c3, top, cwid = 16, 206, 412, 54, 176
     section(c1, top, "COLOURS", cwid)
     for i, (c, s_) in enumerate(COLOURS):
-        colour(c1 + (i // 3) * 88, top + 24 + (i % 3) * 18, c, s_)
-    section(c1, top + 96, "LIGHTS", cwid)
+        colour(c1 + (i // 4) * 88, top + 24 + (i % 4) * 18, c, s_)
+    section(c1, top + 100, "LIGHTS", cwid)
     for i, (c, s_) in enumerate(LIGHTS):
-        light(c1 + (i // 2) * 88, top + 120 + (i % 2) * 18, c, s_)
+        light(c1 + (i // 2) * 88, top + 124 + (i % 2) * 18, c, s_)
     t(c1, top + 172, "inputs left, outputs right", 10, "#7d8085")
     section(c2, top, "LINKS", 190)
     for i, (st, s_) in enumerate(LINKS):

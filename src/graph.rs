@@ -298,7 +298,8 @@ impl Graph {
             Event::Added { id, kind, props } => {
                 if *kind == Kind::Node {
                     // what was there before we connected is old enough already
-                    let t = if self.synced { Instant::now() } else { Instant::now() - YOUNG };
+                    let now = Instant::now();
+                    let t = if self.synced { now } else { now.checked_sub(YOUNG).unwrap_or(now) };
                     self.born.insert(*id, t);
                 }
                 self.objects.insert(*id, (*kind, props.clone()));
@@ -439,6 +440,11 @@ impl Graph {
             .collect();
         v.sort_by_key(|l| l.id);
         v
+    }
+
+    /// How many links there are (as `links`, without listing them).
+    pub fn link_count(&self) -> usize {
+        self.of(Kind::Link).filter(|(_, p)| p.contains_key("link.output.port") && p.contains_key("link.input.port")).count()
     }
 
     /// The part of a node's volumes applied in software (a stream's are all software; a card's may

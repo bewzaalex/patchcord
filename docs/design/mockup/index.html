@@ -2455,7 +2455,7 @@ const ENG = { on: false, sel: null, tab: 'top', itab: 'info', otype: 'Node', vie
   show: { patchcord: true, midi: true, idle: true, drivers: false }, ids: new Map([['n:Dummy-Driver', 29], ['n:Freewheel-Driver', 30]]), next: 42,
   meterNo: new Map(), err: new Map(), prof: new Map(), hist: new Map(), gload: new Map(), load: [], events: [], prevL: null, prevS: null,
   m: null, objs: null, sig: '', t0: Date.now(), lastXrun: new Map() };
-const MAC = 'C0:28:8D:4E:12:9A', MAC_ = MAC.replace(/:/g, '_');
+const MAC = '00:11:22:33:44:55', MAC_ = MAC.replace(/:/g, '_');
 const eid = (k) => { if (!ENG.ids.has(k)) { ENG.ids.set(k, ENG.next); ENG.next += ENG.ids.size % 5 ? 1 : 3; } return ENG.ids.get(k); };
 // how each app talks to PipeWire: its process, its API, the rate it plays at, the latency it asks for
 const APPS = {

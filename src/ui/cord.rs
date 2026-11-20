@@ -20,7 +20,8 @@ pub const RATE: f32 = 120.0;
 /// putting a cord at rest: steps, and the velocity kept per step (much less than swinging)
 const REST_STEPS: usize = 200;
 const REST_DAMP: f32 = 0.9;
-/// how far a jack moves in one frame to count as a jump (not a device gliding along)
+/// how far a jack moves on its device in one frame to count as a jump (its mult closed up or
+/// opened, the desk became the rack); a device gliding along carries its jacks without a jump
 const JUMP: f32 = 12.0;
 
 #[derive(Clone, Copy, Default, Debug)]
@@ -35,6 +36,13 @@ impl P {
     fn at(x: f32, y: f32) -> Self {
         P { x, y, px: x, py: y }
     }
+}
+
+/// Where a cord's end goes: its jack's slot, and the corner of the jack's device.
+#[derive(Clone, Copy, Debug)]
+pub struct Slot {
+    pub at: (f32, f32),
+    pub dev: (f32, f32),
 }
 
 /// One end of a cord: in a jack, in the hand, or dropped.
@@ -55,13 +63,16 @@ pub struct End {
     pub y: f32,
     /// placed on its jack at least once (after that it glides when the jack moves)
     placed: bool,
+    /// where its jack sits on its device (the jack less the device's corner), to tell a jack that
+    /// jumps from one carried along
+    rel: (f32, f32),
     /// the jack it was pulled out of, while in the hand
     pub orig: Option<String>,
 }
 
 impl End {
     fn new(jack: Option<String>, kind: JackKind, slot: u64) -> Self {
-        End { jack, held: false, free: false, slot, rank: 0, kind, x: 0.0, y: 0.0, placed: false, orig: None }
+        End { jack, held: false, free: false, slot, rank: 0, kind, x: 0.0, y: 0.0, placed: false, rel: (0.0, 0.0), orig: None }
     }
     pub fn seated(&self) -> bool {
         self.jack.is_some() && !self.held && !self.free
@@ -208,9 +219,10 @@ impl Cord {
         self.dying.is_some() || self.grab.is_some() || self.a.held || self.b.held || self.pts.iter().any(|p| (p.x - p.px).abs() + (p.y - p.py).abs() > 0.02)
     }
 
-    /// One frame: `dt` seconds. `slot_pos` finds where a jack's n-th slot is; `snap` puts ends in
-    /// jacks straight in place (while a device is dragged) instead of gliding there.
-    pub fn frame(&mut self, dt: f32, steps: usize, slot_pos: &impl Fn(&str, usize) -> Option<(f32, f32)>, hand: Option<(f32, f32)>, held: Option<Held>, snap: bool) {
+    /// One frame: `dt` seconds. `slot_pos` finds where a jack's n-th slot is, and the corner of
+    /// its device; `snap` puts ends in jacks straight in place (while a device is dragged) instead
+    /// of gliding there.
+    pub fn frame(&mut self, dt: f32, steps: usize, slot_pos: &impl Fn(&str, usize) -> Option<Slot>, hand: Option<(f32, f32)>, held: Option<Held>, snap: bool) {
         self.pending = (self.pending - dt).max(0.0);
         let dying = self.dying.is_some();
         // how far each end in a jack moved with its device this frame, and where the ends and the
@@ -232,13 +244,15 @@ impl Cord {
                 (e.x, e.y) = (p.x, p.y);
             } else if let Some(j) = &e.jack
                 && !dying
-                && let Some((x, y)) = slot_pos(j, e.rank)
+                && let Some(Slot { at: (x, y), dev }) = slot_pos(j, e.rank)
             {
-                // a device in the hand carries its cords along, swinging; a jack that jumps (its mult
-                // closed up or opened, the desk became the rack) takes its cords to rest at once
-                let was = (e.x, e.y, e.placed);
-                (e.x, e.y, e.placed) = (x, y, true);
-                if was.2 && !snap && (x - was.0).abs() + (y - was.1).abs() > JUMP {
+                // a device that moves (in the hand, or gliding) carries its cords along, swinging; a
+                // jack that jumps on its device (its mult closed up or opened, the desk became the
+                // rack) takes its cords to rest at once
+                let was = (e.x, e.y, e.placed, e.rel);
+                let rel = (x - dev.0, y - dev.1);
+                (e.x, e.y, e.placed, e.rel) = (x, y, true, rel);
+                if was.2 && !snap && (rel.0 - was.3.0).abs() + (rel.1 - was.3.1).abs() > JUMP {
                     jumped = true;
                 } else if was.2 {
                     carried[end_b as usize] = (e.x - was.0, e.y - was.1);
@@ -428,7 +442,11 @@ mod tests {
     /// Settles a cord between two jacks, one of them moving along `path` (as a device glides).
     fn settle(ja: (f32, f32), jb: (f32, f32), path: &[(f32, f32)]) -> Cord {
         let pos = std::cell::Cell::new(ja);
-        let slot = |k: &str, _n: usize| Some(if k == "a" { pos.get() } else { jb });
+        // the jack is carried along by its device: the two move together
+        let slot = |k: &str, _n: usize| {
+            let at = if k == "a" { pos.get() } else { jb };
+            Some(Slot { at, dev: at })
+        };
         let mut c = Cord::new(1, (1, 2), ("a".into(), JackKind::Stereo, ja), ("b".into(), JackKind::Stereo, jb), [0, 200, 0]);
         for &to in path {
             for _ in 0..60 {
@@ -512,7 +530,8 @@ mod tests {
     fn a_cord_appears_at_rest() {
         let ja = std::cell::Cell::new((400.0f32, 300.0f32));
         let jb = (900.0, 420.0);
-        let slot = |k: &str, _n: usize| Some(if k == "a" { ja.get() } else { jb });
+        // the jack jumps on a device that stays
+        let slot = |k: &str, _n: usize| Some(Slot { at: if k == "a" { ja.get() } else { jb }, dev: (0.0, 0.0) });
         let mut c = Cord::new(1, (1, 2), ("a".into(), JackKind::Stereo, ja.get()), ("b".into(), JackKind::Stereo, jb), [0, 200, 0]);
         for jump in [None, Some((150.0, 500.0))] {
             if let Some(to) = jump {
@@ -535,7 +554,7 @@ mod tests {
     #[test]
     fn a_new_cord_comes_out_without_a_loop() {
         let ja = (400.0, 300.0);
-        let slot = move |_: &str, _n: usize| Some(ja);
+        let slot = move |_: &str, _n: usize| Some(Slot { at: ja, dev: (0.0, 0.0) });
         for (dx, dy) in [(300.0, 0.0), (250.0, 200.0), (-250.0, 150.0), (20.0, 300.0), (-20.0, 300.0), (150.0, -200.0)] {
             let mut c = Cord::fresh(1, 1, "a".into(), JackKind::Stereo, ja, [0, 200, 0], true);
             let mut worst = 0;

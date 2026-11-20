@@ -18,7 +18,7 @@ use super::face::{BalKnob, LCD_CH};
 use super::gpu::{Gpu, Sprite};
 use super::panel::{self, Key, Menu, MenuHit, Panel, ProfileHit};
 use crate::config::{self, Preset, Settings};
-use super::scene::{Hover, Layer, Scene, View, next_id};
+use super::scene::{CUE_PICS, Hover, Layer, Scene, TARGET_PICS, View, next_id};
 use crate::graph::VOL_MAX;
 use crate::pw::{Cmd, Connection};
 
@@ -90,10 +90,11 @@ struct Cue {
     /// 0…1, as the knob shows it (the volume is its cube)
     level: f64,
     /// what PipeWire was last told
-    sent: Option<(Vec<crate::pw::CueSource>, u32, bool)>,
+    sent: Option<(Vec<crate::pw::CueSource>, u32)>,
+    /// what that was worked out from: the jacks heard, the scene's `rev`, the level
+    from: Option<(Vec<String>, u64, u32)>,
     badge: Option<(u64, Layer)>,
 }
-
 
 /// A second click this soon, this close, is a double-click.
 const DOUBLE: Duration = Duration::from_millis(350);
@@ -131,7 +132,7 @@ pub struct App {
     rescale_at: Option<Instant>,
     bg: Option<(u64, Pixmap)>,
     /// the background being drawn for a new window size, on a thread of its own
-    bg_job: Option<((u32, u32), std::sync::mpsc::Receiver<Pixmap>)>,
+    bg_job: Option<std::sync::mpsc::Receiver<Pixmap>>,
     /// one pixel of the alignment guides' colour, stretched into each line
     guide: (u64, Pixmap),
     last: Instant,
@@ -149,6 +150,8 @@ pub struct App {
     notice: Option<(Instant, Layer)>,
     /// since when the pointer is over what it is over, and that thing's tooltip once shown
     hover_since: Instant,
+    /// a touchpad's scrolling, gathered into wheel clicks for what steps (knobs, switches)
+    wheel_px: f64,
     tip: Option<Layer>,
     /// a card's profile list, open under its PROFILE key
     profiles: Option<ProfileList>,
@@ -202,14 +205,17 @@ impl App {
             prof: super::prof::Prof::new(),
             next_frame: now,
             last_press: (now, (0.0, 0.0)),
-            panel: Panel::new(panel::State { rack: false, engine: false, locked: settings.lock, align: settings.align, cables: settings.cables, lcd: [String::new(), String::new()], defaults: [String::new(), String::new()], cue_led: false, cue_level: 70, hidden: 0, flow: true, pressed: None, more: false }),
+            panel: Panel::new(panel::State { rack: false, engine: false, locked: settings.lock, align: settings.align, cables: settings.cables, lcd: [String::new(), String::new()], defaults: [String::new(), String::new()], cue_led: false, cue_level: settings.cue_level.min(100), hidden: 0, flow: true, pressed: None, more: false }),
             hint: String::new(),
             status: None,
             notice: None,
             hover_since: now,
+            wheel_px: 0.0,
             tip: None,
             profiles: None,
-            cue: Cue { level: 0.7, ..Default::default() },
+            // as it was left (at full the cue plays what it hears as loud as it is: the level
+            // only takes away)
+            cue: Cue { level: settings.cue_level.min(100) as f64 / 100.0, ..Default::default() },
             settings,
             presets,
             current,
@@ -229,6 +235,7 @@ impl App {
         s.rack_order = self.scene.rack_order.clone();
         s.hidden = self.scene.hidden.clone();
         s.preset = self.current.map(|i| self.presets[i].name.clone());
+        s.cue_level = (self.cue.level * 100.0).round().clamp(0.0, 100.0) as u8;
         if let Some(sf) = &self.win {
             let size = sf.window.inner_size().to_logical::<f64>(sf.window.scale_factor());
             s.window = Some((size.width.round() as u32, size.height.round() as u32));
@@ -355,13 +362,10 @@ impl App {
             self.panel.menu = None;
             return self.redraw();
         }
-        self.panel.menu = Some(self.defaults_menu());
+        self.panel.menu = Some(defaults_menu(&self.scene));
         self.redraw();
     }
 
-    fn defaults_menu(&self) -> Menu {
-        defaults_menu(&self.scene)
-    }
 
     /// Opens the list of hidden devices (`toggle`: or closes it), or draws it again.
     fn open_hidden(&mut self, toggle: bool) {
@@ -395,24 +399,37 @@ impl App {
         v
     }
 
-    /// Where to draw the rings of the jacks heard: (position, pinned, would feed back).
-    fn cue_marks(&self) -> Vec<((f32, f32), bool, bool)> {
-        self.cue_heard().iter().filter_map(|k| Some((self.scene.jack_pos(k)?, self.cue.pins.contains(k), self.scene.cue_blocked(k)))).collect()
+    /// Where to draw the marks of the jacks heard: (device, position, kept on, would feed back).
+    fn cue_marks(&self) -> Vec<(usize, (f32, f32), bool, bool)> {
+        self.cue_heard().iter().filter_map(|k| Some((self.scene.jack_dev(k)?, self.scene.jack_pos(k)?, self.cue.pins.contains(k), self.scene.cue_blocked(k)))).collect()
     }
 
     /// Tells PipeWire what to hear, when that changed (the jacks, what is linked into an input
     /// jack, the default output, the level).
     fn cue_sync(&mut self) {
-        let heard: Vec<String> = self.cue_heard().into_iter().filter(|k| !self.scene.cue_blocked(k)).collect();
-        let sources = self.scene.cue_mix(&heard);
-        // in CUE mode the cue stays, between one jack and the next
-        let keep = self.cue.mode;
         let level = (self.cue.level.powi(3) as f32).to_bits();
-        let want = (sources, level, keep);
+        // (every frame: only worked out again when something it comes from moved on)
+        let from = (self.cue_heard(), self.scene.rev, level);
+        if self.cue.from.as_ref() == Some(&from) {
+            return;
+        }
+        let heard: Vec<String> = from.0.iter().filter(|k| !self.scene.cue_blocked(k)).cloned().collect();
+        self.cue.from = Some(from);
+        // only what plays now (what sleeps has nothing to hear, and the cue's playing side would
+        // keep the output awake for silence); with nothing to hear the cue goes, CUE mode or not
+        let sources: Vec<crate::pw::CueSource> = self.scene.cue_mix(&heard).into_iter().filter(|s| self.scene.graph.state_of(s.0) == Some("running")).collect();
+        let want = (sources, level);
         if self.cue.sent.as_ref() != Some(&want) {
-            self.conn.send(Cmd::Cue { sources: want.0.clone(), level: f32::from_bits(level), keep });
+            self.conn.send(Cmd::Cue { sources: want.0.clone(), level: f32::from_bits(level) });
             self.cue.sent = Some(want);
         }
+    }
+
+    /// When the next step of the scrolling of long names is due (counted from the start).
+    fn next_step(&self, now: Instant) -> Option<Instant> {
+        let marquee = self.scene.devs.iter().any(|d| d.dev.name.chars().count() > LCD_CH);
+        let ms = (now - self.start).as_millis() as u64;
+        marquee.then(|| now + MARQUEE - Duration::from_millis(ms % MARQUEE.as_millis() as u64))
     }
 
     /// The status bar while listening.
@@ -422,13 +439,7 @@ impl App {
         {
             return format!("can't listen to {}: it is the output you listen on (it would feed back)", self.scene.jack_title(h));
         }
-        let heard: Vec<String> = self
-            .cue_heard()
-            .iter()
-            .filter(|k| !self.scene.cue_blocked(k))
-            .map(|k| if self.scene.cue_already_heard(k) { format!("{} (already in the output you listen on)", self.scene.jack_title(k)) } else { self.scene.jack_title(k) })
-            .collect();
-        let what = if heard.is_empty() { "move over a jack to listen to it".to_owned() } else { format!("CUE ▸ {} · in the default output at {:.0}%", heard.join(" + "), self.cue.level * 100.0) };
+        let what = self.cue_what().unwrap_or_else(|| "move over a jack to listen to it".to_owned());
         if self.cue.mode {
             let click = match &self.cue.hover {
                 Some(h) if self.cue.pins.contains(h) => "  ·  click: stop it",
@@ -441,16 +452,29 @@ impl App {
         }
     }
 
-    /// CUE mode on or off; off, every jack heard stops.
+    /// What is heard, for the status bar: "CUE ▸ fooyin · OUTPUT · in the default output at 70%".
+    fn cue_what(&self) -> Option<String> {
+        let heard: Vec<String> = self
+            .cue_heard()
+            .iter()
+            .filter(|k| !self.scene.cue_blocked(k))
+            .map(|k| if self.scene.cue_already_heard(k) { format!("{} (already in the output you listen on)", self.scene.jack_title(k)) } else { self.scene.jack_title(k) })
+            .collect();
+        (!heard.is_empty()).then(|| format!("CUE ▸ {} · in the default output at {:.0}%", heard.join(" + "), self.cue.level * 100.0))
+    }
+
+    /// CUE mode on or off; either way it starts afresh: every jack heard stops.
     fn set_cue_mode(&mut self, on: bool) {
         self.cue.mode = on;
-        if !on {
-            self.cue.pins.clear();
-            if !self.cue.probing {
-                self.cue.hover = None;
-            }
+        self.cue.pins.clear();
+        if !self.cue.probing || self.engine.on {
+            self.cue.hover = None;
         }
-        self.say(if on { "CUE: hover a jack to hear it, click to keep it on" } else { "Cue off" });
+        self.say(match (on, self.engine.on) {
+            (true, false) => "CUE: hover a jack to hear it, click to keep it on",
+            (true, true) => "CUE: on the desk or the rack, hover a jack to hear it, click to keep it on",
+            (false, _) => "Cue off",
+        });
         self.redraw();
     }
 
@@ -544,7 +568,21 @@ impl App {
         if self.engine.on == on {
             return;
         }
+        // what is in the hand is let go first, where the switch can't hide it: a plug falls
+        // without going into a jack nearby
+        if let Some(Drag::Plug { magnet, .. }) = &mut self.drag {
+            *magnet = None;
+        }
+        if self.drag.is_some() {
+            self.release();
+        }
+        self.panel.state.pressed = None;
         self.engine.set_on(on);
+        // ENGINE shows the cue and doesn't take what is under the pointer: nothing is probed
+        if on {
+            self.cue.probing = false;
+            self.cue.hover = None;
+        }
         self.profiles = None;
         self.panel.menu = None;
         self.set_hover(Hover::None);
@@ -670,6 +708,9 @@ impl App {
         self.prof.mark("view");
         let moving = self.scene.tick(dt, hand, held, matches!(self.drag, Some(Drag::Device { .. })));
         self.prof.mark("tick");
+        for (what, d) in &self.scene.spent {
+            self.prof.add(what, *d);
+        }
 
         // faces are drawn at one scale; after zooming, sharp ones replace the stretched ones. Not
         // below half the screen's: zoomed out far they are only made smaller, so zooming back in
@@ -694,7 +735,7 @@ impl App {
         self.prof.mark("faces");
         // the background for a new window size: drawn on a thread (the old one stretches meanwhile),
         // the first one here
-        if let Some((_, rx)) = &self.bg_job
+        if let Some(rx) = &self.bg_job
             && let Ok(pm) = rx.try_recv()
         {
             self.bg = Some((next_id(), pm));
@@ -709,7 +750,7 @@ impl App {
             let _ = std::thread::Builder::new().name("patchcord-background".into()).spawn(move || {
                 let _ = tx.send(background(w, h));
             });
-            self.bg_job = Some((self.size, rx));
+            self.bg_job = Some(rx);
             self.prof.mark("background");
         }
         // the panel, the status bar and a notice, over the field
@@ -721,9 +762,8 @@ impl App {
         self.panel.state.engine = self.engine.on;
         self.panel.state.lcd = self.lcd();
         self.panel.state.defaults = [true, false].map(|output| self.scene.default_shown(output));
-        // the CUE LED: lit in CUE mode, blinking while only probing with Alt
-        let heard = self.cue_heard().iter().any(|k| !self.scene.cue_blocked(k));
-        self.panel.state.cue_led = self.cue.mode || (heard && ((now - self.start).as_millis() / 250).is_multiple_of(2));
+        // the CUE LED: lit in CUE mode
+        self.panel.state.cue_led = self.cue.mode;
         self.panel.state.cue_level = (self.cue.level * 100.0).round() as u8;
         self.panel.state.hidden = self.scene.hidden_devs.len();
         self.panel.state.flow = self.scene.flow;
@@ -744,7 +784,7 @@ impl App {
         self.prof.mark("cue");
         // the open defaults list follows what is the default
         if let Some(Menu::Defaults { .. }) = &self.panel.menu {
-            let m = self.defaults_menu();
+            let m = defaults_menu(&self.scene);
             if self.panel.menu.as_ref() != Some(&m) {
                 self.panel.menu = Some(m);
             }
@@ -754,11 +794,19 @@ impl App {
         self.prof.mark("panel");
         self.panel.menu_layer(width, dpi);
         self.prof.mark("menu");
-        if self.engine.on {
+        if self.engine.on && self.engine.due() {
             let devices: Vec<&crate::graph::Device> = self.scene.devs.iter().map(|d| &d.dev).chain(self.scene.hidden_devs.iter()).collect();
             let hidden: std::collections::HashSet<String> = self.scene.hidden_devs.iter().map(|d| d.key.clone()).collect();
             self.engine.build(&self.scene.graph, &devices, &hidden, &self.scene.settings);
             self.prof.mark("engine.build");
+        }
+        if self.engine.on {
+            // the ports of the jacks kept on, all of them: also those the cue leaves out (heard
+            // in the output already, or asleep)
+            let mut kept: Vec<u32> = self.cue_heard().iter().filter(|k| !self.scene.cue_blocked(k)).flat_map(|k| self.scene.cue_sources(k)).map(|s| s.1).collect();
+            kept.sort_unstable();
+            kept.dedup();
+            self.engine.cue_kept = kept;
         }
         let left = if self.engine.on {
             self.engine.tab_hint_at(self.cursor, dpi).map_or_else(|| self.engine.summary(), str::to_owned)
@@ -767,7 +815,7 @@ impl App {
                 "PipeWire {} · {} devices · {} links · {} cords",
                 self.scene.version.as_deref().unwrap_or("?"),
                 self.scene.devs.len(),
-                self.scene.graph.links().len(),
+                self.scene.graph.link_count(),
                 self.scene.cords.iter().filter(|c| c.live()).count()
             )
         };
@@ -789,17 +837,15 @@ impl App {
         self.place_profiles(dpi);
         self.prof.mark("profiles");
         let pulse = 0.5 + 0.5 * ((now - self.start).as_secs_f32() * 6.0).sin();
-        let cue = self.cue_marks();
-        // the rings and cue marks on the CPU; the cords themselves are triangles for the GPU
-        let cords = if self.engine.on { None } else { self.scene.cord_layer(self.view, self.size, &rings, &cue, pulse, false) };
-        self.prof.mark("rings");
+        // the jacks heard: pictures made once, a disc under a jack kept on and a ring over it
+        let cue = if self.engine.on { Vec::new() } else { self.cue_marks() };
+        // the cords are triangles for the GPU
         let mesh = (!self.engine.on).then(|| super::mesh::cords(&self.scene.cords, |c| self.scene.cord_alpha(c), self.view));
         self.prof.mark("cords");
-        let cord_id = next_id();
 
         // the badge beside the pointer while listening, over the field
         let (ftop, fbottom) = self.field();
-        let show_badge = (self.cue.probing || self.cue.mode) && self.cursor.1 >= ftop && self.cursor.1 <= fbottom && self.drag.is_none();
+        let show_badge = (self.cue.probing || self.cue.mode) && !self.engine.on && self.cursor.1 >= ftop && self.cursor.1 <= fbottom && self.drag.is_none();
         if show_badge {
             let raster = (self.dpi() * 1e6).round() as u64;
             if self.cue.badge.as_ref().is_none_or(|(s, _)| *s != raster) {
@@ -812,13 +858,13 @@ impl App {
         let mut sprites: Vec<Sprite> = Vec::new();
         if let Some((id, pm)) = &self.bg {
             // stretched over the window while one for its new size is drawn
-            sprites.push(Sprite { id: *id, pm: Some(pm), x: 0.0, y: 0.0, w: self.size.0 as f64, h: self.size.1 as f64, alpha: 1.0 });
+            sprites.push(Sprite { id: *id, pm: Some(pm), x: 0.0, y: 0.0, w: self.size.0 as f64, h: self.size.1 as f64, alpha: 1.0, clip: None });
         }
         let engine_on = self.engine.on;
         if engine_on {
             self.prof.mark("badge");
-            for (l, x, y, w, h) in self.engine.sprites(self.size, dpi, &version) {
-                sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: x.round(), y: y.round(), w, h, alpha: 1.0 });
+            for (l, x, y, w, h, clip) in self.engine.sprites(self.size, dpi, &version) {
+                sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: x.round(), y: y.round(), w, h, alpha: 1.0, clip });
             }
             self.prof.mark("engine.pictures");
         }
@@ -826,7 +872,7 @@ impl App {
             && self.scene.rack
             && let Some((_, l)) = &self.scene.rack_bg
         {
-            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: l.x * v.s + v.x, y: l.y * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha: 1.0 });
+            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: l.x * v.s + v.x, y: l.y * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha: 1.0, clip: None });
         }
         let targets = match &self.drag {
             Some(Drag::Plug { targets, .. }) => Some(targets.as_slice()),
@@ -834,12 +880,19 @@ impl App {
         };
         for (di, d) in self.scene.devs.iter().enumerate().filter(|_| !engine_on) {
             for l in d.layers() {
-                sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (d.x + l.x) * v.s + v.x, y: (d.y + l.y) * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha: 1.0 });
+                sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (d.x + l.x) * v.s + v.x, y: (d.y + l.y) * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha: 1.0, clip: None });
+            }
+            // the jacks of it kept on: their discs, under the jacks
+            let disc = self.scene.jack_pics[CUE_PICS].as_ref();
+            for (_, (x, y), _, _) in cue.iter().filter(|m| m.0 == di && m.2 && !m.3) {
+                if let Some(l) = disc {
+                    sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (*x as f64 + l.x) * v.s + v.x, y: (*y as f64 + l.y) * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha: 1.0, clip: None });
+                }
             }
             // its jacks, over the face
             for (pic, x, y, alpha) in self.scene.jack_sprites(di, targets) {
                 if let Some(l) = &self.scene.jack_pics[pic] {
-                    sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (x + l.x) * v.s + v.x, y: (y + l.y) * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha });
+                    sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (x + l.x) * v.s + v.x, y: (y + l.y) * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha, clip: None });
                 }
             }
         }
@@ -849,32 +902,42 @@ impl App {
             let (x, y) = (x0 * v.s + v.x, y0 * v.s + v.y);
             let (w, h) = (((x1 - x0) * v.s).max(lw), ((y1 - y0) * v.s).max(lw));
             let (x, y) = if x0 == x1 { (x - lw / 2.0, y) } else { (x, y - lw / 2.0) };
-            sprites.push(Sprite { id: self.guide.0, pm: Some(&self.guide.1), x, y, w, h, alpha: 0.85 });
+            sprites.push(Sprite { id: self.guide.0, pm: Some(&self.guide.1), x, y, w, h, alpha: 0.85, clip: None });
         }
-        if let Some((pm, x, y)) = &cords {
-            sprites.push(Sprite { id: cord_id, pm: Some(pm), x: *x as f64, y: *y as f64, w: pm.width() as f64, h: pm.height() as f64, alpha: 1.0 });
+        // the rings round the jacks a cord's end in the hand may go into
+        for ((x, y), hot) in &rings {
+            if let Some(l) = &self.scene.jack_pics[TARGET_PICS + *hot as usize] {
+                let alpha = if *hot { 1.0 } else { 0.6 + 0.4 * pulse };
+                sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (*x as f64 + l.x) * v.s + v.x, y: (*y as f64 + l.y) * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha, clip: None });
+            }
+        }
+        // the rings of the jacks heard, with their headphones
+        for (_, (x, y), _, bad) in &cue {
+            if let Some(l) = &self.scene.jack_pics[CUE_PICS + 1 + *bad as usize] {
+                sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (*x as f64 + l.x) * v.s + v.x, y: (*y as f64 + l.y) * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha: 1.0, clip: None });
+            }
         }
         // the cords, over the faces and the rings, under the notices and the panel
         let cords_at = sprites.len();
         let (fw, fh) = (self.size.0 as f64, self.size.1 as f64);
         if let Some((_, l)) = &self.notice {
-            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: ((fw - l.w * dpi) / 2.0).round(), y: ((panel::H + 14.0) * dpi).round(), w: l.w * dpi, h: l.h * dpi, alpha: 1.0 });
+            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: ((fw - l.w * dpi) / 2.0).round(), y: ((panel::H + 14.0) * dpi).round(), w: l.w * dpi, h: l.h * dpi, alpha: 1.0, clip: None });
         }
         if let Some((_, l)) = &self.status {
-            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: 0.0, y: fh - l.h * dpi, w: l.w * dpi, h: l.h * dpi, alpha: 1.0 });
+            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: 0.0, y: fh - l.h * dpi, w: l.w * dpi, h: l.h * dpi, alpha: 1.0, clip: None });
         }
         for l in self.panel.layers() {
-            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (l.x * dpi).round(), y: (l.y * dpi).round(), w: l.w * dpi, h: l.h * dpi, alpha: 1.0 });
+            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (l.x * dpi).round(), y: (l.y * dpi).round(), w: l.w * dpi, h: l.h * dpi, alpha: 1.0, clip: None });
         }
         if let Some(pl) = &self.profiles
             && !engine_on
             && let Some(l) = &pl.layer
         {
-            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: pl.at.0, y: pl.at.1, w: l.w * dpi, h: l.h * dpi, alpha: 1.0 });
+            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: pl.at.0, y: pl.at.1, w: l.w * dpi, h: l.h * dpi, alpha: 1.0, clip: None });
         }
         if show_badge && let Some((_, l)) = &self.cue.badge {
             // below and right of the pointer's tip, clear of the arrow
-            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (self.cursor.0 + 12.0 * dpi).round(), y: (self.cursor.1 + 14.0 * dpi).round(), w: l.w * dpi, h: l.h * dpi, alpha: 1.0 });
+            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (self.cursor.0 + 12.0 * dpi).round(), y: (self.cursor.1 + 14.0 * dpi).round(), w: l.w * dpi, h: l.h * dpi, alpha: 1.0, clip: None });
         }
         if let Some(l) = &self.tip {
             // below and right of the pointer; kept inside the window, above the pointer near the bottom
@@ -882,12 +945,12 @@ impl App {
             let x = (self.cursor.0 + 14.0 * dpi).min(fw - w - 4.0 * dpi).max(4.0 * dpi);
             let below = self.cursor.1 + 22.0 * dpi;
             let y = if below + h > fh - panel::STATUS_H * dpi { self.cursor.1 - h - 10.0 * dpi } else { below };
-            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: x.round(), y: y.round(), w, h, alpha: 1.0 });
+            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: x.round(), y: y.round(), w, h, alpha: 1.0, clip: None });
         }
         self.prof.mark("sprites");
-        // while ENGINE shows, the GPU keeps the desk's pictures: back on the desk they are there
-        // and the devices' faces for the other screen (desk or rack) always
-        let keep: std::collections::HashSet<u64> = if engine_on { self.scene.layer_ids().collect() } else { self.scene.spare_ids().collect() };
+        // while ENGINE shows, the GPU keeps the desk's pictures: back on the desk they are there;
+        // the devices' faces for the other screen (desk or rack) and the jacks' pictures always
+        let keep: std::collections::HashSet<u64> = if engine_on { self.scene.layer_ids().collect() } else { self.scene.pic_ids().collect() };
         let [wait, upload, draw] = sf.gpu.draw(&sprites, mesh.as_ref().map(|m| (cords_at, m)), &keep);
         self.prof.mark("gpu");
         self.prof.add("gpu.wait", wait);
@@ -926,7 +989,7 @@ impl App {
             self.prof.mark("give_back");
         }
         self.send_engine();
-        self.animating = (self.engine.on && self.engine.settling()) || !self.cue_heard().is_empty() || moving || self.view_to.is_some() || self.drag.is_some() || self.rescale_at.is_some() || self.notice.is_some() || faces_waiting || self.panel.busy() || self.bg_job.is_some() || self.scene.noting() || (self.scene.hover != Hover::None && self.tip.is_none() && now - self.hover_since < 2 * TIP_DELAY);
+        self.animating = (self.engine.on && self.engine.settling()) || moving || self.view_to.is_some() || self.drag.is_some() || self.rescale_at.is_some() || self.notice.is_some() || faces_waiting || self.panel.busy() || self.bg_job.is_some() || self.scene.noting() || (self.scene.hover != Hover::None && self.tip.is_none() && now - self.hover_since < 2 * TIP_DELAY);
         self.prof.mark("rest");
         let (engine, rack, s, cords, devs) = (self.engine.on, self.scene.rack, self.view.s, self.scene.cords.len(), self.scene.devs.len());
         let (drag, zoom) = (self.drag.is_some(), self.rescale_at.is_some() || faces_waiting);
@@ -956,7 +1019,7 @@ impl App {
             self.profiles = None;
             return;
         };
-        let (Some(card), Some([kx, ky, kw, kh])) = (&d.dev.card, if pl.port { d.geo.port } else { d.geo.profile }) else {
+        let (Some(card), Some([kx, ky, _, kh])) = (&d.dev.card, if pl.port { d.geo.port } else { d.geo.profile }) else {
             self.profiles = None;
             return;
         };
@@ -965,14 +1028,13 @@ impl App {
         std::hash::Hash::hash(&(format!("{card:?}{sections:?}"), &d.dev.name, dpi.to_bits()), &mut h);
         let sig = std::hash::Hasher::finish(&h);
         if pl.sig != sig || pl.layer.is_none() {
-            let (layer, hits) = if pl.port { panel::port_menu(&d.dev.name, &sections, dpi) } else { panel::profile_menu(&d.dev.name, card, dpi) };
+            let (layer, hits) = if pl.port { panel::port_menu(&sections, dpi) } else { panel::profile_menu(card, dpi) };
             (pl.sig, pl.layer, pl.hits) = (sig, Some(layer), hits);
         }
         // under the key, its left edge at the key's, kept inside the window
         let v = self.view;
         let x = (d.x + kx) * v.s + v.x;
         let y = (d.y + ky + kh) * v.s + v.y + 4.0 * dpi;
-        let _ = kw;
         let w = panel::PROFILE_W * dpi;
         pl.at = (x.min(self.size.0 as f64 - w - 6.0 * dpi).max(6.0 * dpi).round(), y.round());
     }
@@ -1000,7 +1062,7 @@ impl App {
                     Some(Action::Report) => self.save_report(),
                     Some(Action::Desk(key)) => {
                         self.set_engine(false);
-                        if let Some(di) = self.scene.devs.iter().position(|d| d.dev.key == key) {
+                        if let Some(di) = self.scene.dev_index(&key) {
                             self.find_device(di);
                         }
                     }
@@ -1024,14 +1086,14 @@ impl App {
                     return;
                 }
                 Some(ProfileHit::Port(gi, index)) => {
-                    if let Some(di) = self.scene.devs.iter().position(|d| d.dev.key == pl.key) {
+                    if let Some(di) = self.scene.dev_index(&pl.key) {
                         self.scene.set_port(di, gi, index);
                     }
                     return self.after_patch();
                 }
                 Some(ProfileHit::Latency(gi, step)) => {
                     // 1 ms a click, 10 with Shift
-                    if let Some(di) = self.scene.devs.iter().position(|d| d.dev.key == pl.key) {
+                    if let Some(di) = self.scene.dev_index(&pl.key) {
                         let now = self.scene.port_sections(di).into_iter().find(|s| s.group == gi).map_or(0, |s| s.latency_ns);
                         let ms = if self.mods.shift_key() { 10 } else { 1 };
                         self.scene.set_latency(di, gi, now + step * ms * 1_000_000);
@@ -1247,10 +1309,12 @@ impl App {
                 self.save_settings();
             }
             Some(Drag::Switch { moved, .. }) => {
-                if !moved {
+                // (clicked: the key saves; dragged: saved here)
+                if moved {
+                    self.save_settings();
+                } else {
                     self.panel_key(Key::Cables);
                 }
-                self.save_settings();
             }
             // a press without a turn: it comes back up, out if it was in, in if it was out
             Some(Drag::Bal { key, gi, was, turned, .. }) => {
@@ -1258,6 +1322,8 @@ impl App {
                     d.bal.insert(gi, if turned || was == BalKnob::In { BalKnob::Out } else { BalKnob::In });
                 }
             }
+            // the cue's level, remembered
+            Some(Drag::CueLevel { .. }) => self.save_settings(),
             _ => {}
         }
         self.panel.state.pressed = None;
@@ -1298,7 +1364,7 @@ impl App {
             }
             Some(Drag::Cord { .. }) => self.redraw(),
             Some(Drag::Engine) => {
-                if self.engine.drag(self.cursor) {
+                if self.engine.drag(self.cursor, self.dpi()) {
                     self.redraw();
                 }
             }
@@ -1315,7 +1381,7 @@ impl App {
                 let raw = (raw + (last - self.cursor.1) / self.dpi() * VOL_MAX / KNOB_TRAVEL * fine).clamp(0.0, VOL_MAX);
                 let (key, gi) = (key.clone(), *gi);
                 self.drag = Some(Drag::Knob { key: key.clone(), gi, last: self.cursor.1, raw });
-                if let Some(di) = self.scene.devs.iter().position(|d| d.dev.key == key) {
+                if let Some(di) = self.scene.dev_index(&key) {
                     self.scene.set_volume((di, gi), if (raw - 1.0).abs() < 0.04 { 1.0 } else { raw });
                 }
                 self.after_patch();
@@ -1327,7 +1393,7 @@ impl App {
                 if was != BalKnob::Out || (!turned && (self.cursor.1 - y0).abs() / dpi < 3.0) {
                     return;
                 }
-                let Some(di) = self.scene.devs.iter().position(|d| d.dev.key == key) else { return };
+                let Some(di) = self.scene.dev_index(&key) else { return };
                 if !turned {
                     // turning, not pressing: it comes back up without a click
                     turned = true;
@@ -1369,6 +1435,11 @@ impl App {
                 if self.engine.on && self.cursor.1 >= top && !in_more {
                     let hint = if let Some(h) = self.engine.hover(self.cursor, dpi) {
                         h
+                    } else if self.cursor.1 <= bottom
+                        && let Some(what) = self.cue_what()
+                    {
+                        // ENGINE shows the cue; it is played with on the desk
+                        format!("{what}  ·  the CUE key stops it")
                     } else if self.cursor.1 <= bottom { "click: inspect · drag: pan · wheel: zoom (scroll over the lists) · F: fit · ?: legend · E: back to the desk".to_owned() } else { String::new() };
                     if hint != self.hint {
                         self.hint = hint;
@@ -1379,14 +1450,15 @@ impl App {
                     }
                     return;
                 }
-                // listening: the jack under the pointer is heard while it is there
-                if (self.cue.probing || self.cue.mode) && self.cursor.1 >= top && self.cursor.1 <= bottom && self.profile_hit().is_none() && self.panel.menu.is_none() {
-                    let k = self.scene.jack_key_at(w.0, w.1);
+                // listening: the jack under the pointer is heard while it is there (and nothing
+                // once the pointer leaves the field)
+                if self.cue.probing || self.cue.mode {
+                    let k = self.probe_at();
                     if k != self.cue.hover {
                         self.cue.hover = k;
                         self.redraw();
                     }
-                    if self.cue.hover.is_some() || self.cue.probing {
+                    if self.on_field() && (self.cue.hover.is_some() || self.cue.probing) {
                         let hint = self.cue_hint();
                         if hint != self.hint {
                             self.hint = hint;
@@ -1430,6 +1502,24 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Whether the pointer is on the patch field itself: not on the panel, the status line, MORE,
+    /// a menu or the open profile list.
+    fn on_field(&self) -> bool {
+        let (top, bottom) = self.field();
+        let dpi = self.dpi();
+        self.cursor.1 >= top && self.cursor.1 <= bottom && !self.panel.in_more(self.cursor.0 / dpi, self.cursor.1 / dpi) && self.panel.menu.is_none() && self.profile_hit().is_none()
+    }
+
+    /// The jack listened to under the pointer: only on the field (a jack behind the panel or a
+    /// menu isn't heard).
+    fn probe_at(&self) -> Option<String> {
+        if !self.on_field() {
+            return None;
+        }
+        let w = self.world(self.cursor);
+        self.scene.jack_key_at(w.0, w.1)
     }
 
     /// What the pointer is over changed: its cords light up, and its tooltip waits a moment.
@@ -1485,6 +1575,9 @@ impl App {
                     self.panel.menu = None;
                     self.panel.state.more = false;
                     self.engine.deselect();
+                    if self.cue.mode {
+                        self.set_cue_mode(false);
+                    }
                     self.redraw();
                 }
                 _ => {}
@@ -1591,7 +1684,12 @@ impl App {
                 self.cursor = (position.x, position.y);
                 self.moved();
             }
-            WindowEvent::CursorLeft { .. } => self.set_hover(Hover::None),
+            WindowEvent::CursorLeft { .. } => {
+                self.set_hover(Hover::None);
+                if self.cue.hover.take().is_some() {
+                    self.redraw();
+                }
+            }
             WindowEvent::MouseInput { state, button, .. } => match state {
                 ElementState::Pressed => self.press(button),
                 ElementState::Released => self.release(),
@@ -1605,19 +1703,35 @@ impl App {
                     MouseScrollDelta::LineDelta(_, y) => 1.12f64.powf(y as f64),
                     MouseScrollDelta::PixelDelta(p) => (p.y * 0.0015).exp(),
                 };
+                // what steps takes a click of the wheel, or a touchpad's worth of one: a touchpad
+                // sends many small events, each of them a step would run to the end at once
+                let clicks = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => {
+                        self.wheel_px = 0.0;
+                        if y > 0.0 { 1 } else if y < 0.0 { -1 } else { 0 }
+                    }
+                    MouseScrollDelta::PixelDelta(p) => {
+                        const CLICK: f64 = 40.0;
+                        self.wheel_px += p.y;
+                        let n = (self.wheel_px / CLICK).trunc();
+                        self.wheel_px -= n * CLICK;
+                        n as i32
+                    }
+                };
+                let up = clicks.signum() as f64;
                 let (top, bottom) = self.field();
                 let dpi = self.dpi();
                 if self.cursor.1 < top || self.panel.in_more(self.cursor.0 / dpi, self.cursor.1 / dpi) {
                     match self.panel.hit(self.cursor.0 / dpi, self.cursor.1 / dpi) {
                         // the wheel steps the cords switch, one click at a time
-                        Some(Key::CueLevel) if f != 1.0 => {
-                            self.cue.level = (self.cue.level + if f > 1.0 { 0.05 } else { -0.05 }).clamp(0.0, 1.0);
+                        Some(Key::CueLevel) if clicks != 0 => {
+                            self.cue.level = (self.cue.level + clicks as f64 * 0.05).clamp(0.0, 1.0);
                             self.hint = format!("cue level {:.0}%", self.cue.level * 100.0);
+                            self.save_settings();
                             self.redraw();
                         }
-                        Some(Key::Cables | Key::CablesAt(_)) if f != 1.0 => {
-                            let step = if f > 1.0 { 1 } else { -1 };
-                            self.scene.cables = (self.scene.cables as i32 + step).clamp(0, 2) as u8;
+                        Some(Key::Cables | Key::CablesAt(_)) if clicks != 0 => {
+                            self.scene.cables = (self.scene.cables as i32 + clicks.signum()).clamp(0, 2) as u8;
                             self.save_settings();
                             self.redraw();
                         }
@@ -1629,33 +1743,33 @@ impl App {
                 } else if self.cursor.1 <= bottom {
                     // over an app's VOLUME knob, or its BAL knob when out, the wheel turns it
                     let w = self.world(self.cursor);
-                    let up = if f > 1.0 { 1.0 } else { -1.0 };
                     let fine = self.mods.shift_key();
-                    if f == 1.0 {
-                    } else if let Some((di, gi)) = self.scene.knob_at(w.0, w.1) {
-                        let v = self.scene.devs[di].mix(gi).map_or(1.0, |m| m.0);
-                        self.scene.set_volume((di, gi), v + up * if fine { 0.01 } else { 0.05 });
-                        self.after_patch();
+                    if let Some((di, gi)) = self.scene.knob_at(w.0, w.1) {
+                        if clicks != 0 {
+                            let v = self.scene.devs[di].mix(gi).map_or(1.0, |m| m.0);
+                            self.scene.set_volume((di, gi), v + up * if fine { 0.01 } else { 0.05 });
+                            self.after_patch();
+                        }
                     } else if let Some((di, gi)) = self.scene.bal_at(w.0, w.1) {
-                        if self.scene.devs[di].bal(gi) == BalKnob::Out {
+                        if clicks != 0 && self.scene.devs[di].bal(gi) == BalKnob::Out {
                             let b = self.scene.devs[di].mix(gi).map_or(0.0, |m| m.1);
                             self.scene.set_balance((di, gi), b + up * if fine { 0.02 } else { 0.1 });
                             self.after_patch();
                         }
-                    } else {
+                    } else if f != 1.0 {
                         self.zoom(f);
                     }
                 }
             }
             WindowEvent::ModifiersChanged(m) => {
                 self.mods = m.state();
-                // holding Alt probes: the jack under the pointer is heard while Alt is held
-                let alt = self.mods.alt_key();
+                // holding Alt probes: the jack under the pointer is heard while Alt is held (on
+                // the desk and the rack: ENGINE only shows the cue)
+                let alt = self.mods.alt_key() && !self.engine.on;
                 if alt != self.cue.probing {
                     self.cue.probing = alt;
                     if alt {
-                        let w = self.world(self.cursor);
-                        self.cue.hover = self.scene.jack_key_at(w.0, w.1);
+                        self.cue.hover = self.probe_at();
                         self.hint = self.cue_hint();
                     } else if !self.cue.mode {
                         self.cue.hover = None;
@@ -1728,9 +1842,7 @@ impl ApplicationHandler<()> for App {
             } else {
                 event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_frame));
             }
-        } else if self.scene.devs.iter().any(|d| d.dev.name.chars().count() > LCD_CH) {
-            let ms = (now - self.start).as_millis() as u64;
-            let next = now + MARQUEE - Duration::from_millis(ms % MARQUEE.as_millis() as u64);
+        } else if let Some(next) = self.next_step(now) {
             event_loop.set_control_flow(ControlFlow::WaitUntil(next));
             if let Some(sf) = &self.win
                 && next - now < Duration::from_millis(5)
@@ -1753,7 +1865,6 @@ impl ApplicationHandler<()> for App {
     }
 }
 
-/// The patch field: dark, a little lighter towards the top middle, with a fine dot grid.
 /// Desktop app ID (also the .desktop file and icon name). Wayland has no window icons:
 /// the compositor finds the icon through the installed `<APP_ID>.desktop` file.
 const APP_ID: &str = "io.github.bewzaalex.patchcord";
@@ -1764,6 +1875,7 @@ fn with_app_id(attrs: winit::window::WindowAttributes) -> winit::window::WindowA
     WindowAttributesExtX11::with_name(attrs, APP_ID, APP_ID)
 }
 
+/// The patch field: dark, a little lighter towards the top middle, with a fine dot grid.
 pub fn background(w: u32, h: u32) -> Pixmap {
     let mut pm = Pixmap::new(w.max(1), h.max(1)).expect("background");
     pm.fill(Color::from_rgba8(0x15, 0x16, 0x18, 255));

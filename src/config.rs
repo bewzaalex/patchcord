@@ -32,11 +32,13 @@ pub struct Settings {
     pub rack_order: Vec<String>,
     /// devices hidden by hand, by device key
     pub hidden: Vec<String>,
+    /// the cue's LEVEL knob, 0…100
+    pub cue_level: u8,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { cables: 0, lock: false, align: true, accents: true, flow: true, rack: false, window: None, preset: None, pos: BTreeMap::new(), rack_order: Vec::new(), hidden: Vec::new() }
+        Settings { cables: 0, lock: false, align: true, accents: true, flow: true, rack: false, window: None, preset: None, pos: BTreeMap::new(), rack_order: Vec::new(), hidden: Vec::new(), cue_level: 100 }
     }
 }
 
@@ -136,7 +138,8 @@ impl Settings {
                 "flow" => s.flow = on(&v),
                 "layout" => s.rack = v == "rack",
                 "window" => {
-                    s.window = v.split_once('x').and_then(|(w, h)| Some((w.trim().parse().ok()?, h.trim().parse().ok()?)));
+                    // (a window too small to use is forgotten)
+                    s.window = v.split_once('x').and_then(|(w, h)| Some((w.trim().parse().ok()?, h.trim().parse().ok()?))).filter(|&(w, h): &(u32, u32)| w >= 200 && h >= 150);
                 }
                 "preset" => s.preset = Some(v).filter(|v| !v.is_empty()),
                 "pos" => {
@@ -146,6 +149,7 @@ impl Settings {
                 }
                 "rack" => s.rack_order.push(v),
                 "hide" => s.hidden.push(v),
+                "cue_level" => s.cue_level = v.parse::<u8>().map_or(100, |l| l.min(100)),
                 _ => {}
             }
         }
@@ -156,6 +160,7 @@ impl Settings {
         let mut t = String::from("# Patchcord settings. Written by Patchcord; edit while it is not running.\n");
         let onoff = |b: bool| if b { "on" } else { "off" };
         t += &format!("cables = {}\nlock = {}\nalign = {}\naccents = {}\nflow = {}\nlayout = {}\n", CABLES[self.cables.min(2) as usize], onoff(self.lock), onoff(self.align), onoff(self.accents), onoff(self.flow), if self.rack { "rack" } else { "desk" });
+        t += &format!("cue_level = {}\n", self.cue_level.min(100));
         if let Some((w, h)) = self.window {
             t += &format!("window = {w}x{h}\n");
         }
@@ -219,6 +224,8 @@ pub fn load_presets() -> Vec<Preset> {
                 let f = fields(&v);
                 if let [k, g, dir, vol, bal, m] = &f[..]
                     && let (Ok(vol), Ok(bal)) = (vol.parse::<f64>(), bal.parse::<f64>())
+                    && vol.is_finite()
+                    && bal.is_finite()
                 {
                     p.mix.insert((k.clone(), g.clone(), dir.clone()), (vol / 100.0, bal / 100.0, on(m)));
                 }
@@ -303,7 +310,7 @@ mod tests {
         // SAFETY: the only test that touches the environment
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
 
-        let mut s = Settings { cables: 2, lock: true, align: false, accents: false, flow: false, rack: true, window: Some((1600, 900)), preset: Some("HOME STUDIO".into()), pos: BTreeMap::new(), rack_order: vec!["node:Midi-Bridge".into(), "device:alsa_card.pci-0000_63_00.6".into()], hidden: vec!["node:BLE MIDI 1".into()] };
+        let mut s = Settings { cables: 2, lock: true, align: false, accents: false, flow: false, rack: true, window: Some((1600, 900)), preset: Some("HOME STUDIO".into()), pos: BTreeMap::new(), rack_order: vec!["node:Midi-Bridge".into(), "device:alsa_card.pci-0000_63_00.6".into()], hidden: vec!["node:BLE MIDI 1".into()], cue_level: 35 };
         s.pos.insert("device:bluez_card.C9_C1_60_6A_FD_E3".into(), (40.0, 214.0));
         s.pos.insert("node:VLC media player (LibVLC 4.0.0-dev)".into(), (-12.0, 388.0));
         s.save();

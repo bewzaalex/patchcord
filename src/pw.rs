@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use pipewire as pw;
 use pw::spa;
@@ -21,8 +21,8 @@ pub type Props = BTreeMap<String, String>;
 
 /// The prefix of the meter streams' node names: Patchcord hides its own nodes.
 pub const METER_PREFIX: &str = "patchcord-meter-";
-/// The cue's loopback: what is listened to goes into its recording side (`patchcord-cue`) and
-/// comes out of its playing side (`patchcord-cue-out`) in the default output. Both are hidden.
+/// The cue: what is listened to goes into its recording side (`patchcord-cue`) and comes out of
+/// its playing side (`patchcord-cue-out`) in the default output. Both are hidden on the desk.
 pub const CUE_NODE: &str = "patchcord-cue";
 const CUE_OUT: &str = "patchcord-cue-out";
 
@@ -213,9 +213,8 @@ pub enum Cmd {
     /// Make a node the default output or input (`default.configured.audio.sink` / `.source`).
     SetDefault { key: String, node_name: String },
     /// Listen: these output ports (node, port, channel: 0 left, 1 right, None both) in the
-    /// default output, at `level` (linear). No sources: nothing is heard, and the cue goes unless
-    /// `keep` (CUE mode is on: it stays for the next jack).
-    Cue { sources: Vec<CueSource>, level: f32, keep: bool },
+    /// default output, at `level` (linear). No sources: nothing is heard, and the cue goes.
+    Cue { sources: Vec<CueSource>, level: f32 },
     /// Run the profiler (ENGINE is open) or stop it: it costs a little on every cycle.
     Profile(bool),
     /// Read a node's params (formats, props, latency…) for ENGINE's inspector.
@@ -308,7 +307,7 @@ fn profile_param(index: u32) -> Option<Vec<u8>> {
         id: spa::param::ParamType::Profile.as_raw(),
         properties: vec![prop(PROFILE_INDEX, Value::Int(index as i32)), prop(PROFILE_SAVE, Value::Bool(true))],
     };
-    Some(spa::pod::serialize::PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &Value::Object(obj)).ok()?.0.into_inner())
+    pod_bytes(obj)
 }
 
 // keys of a props object (spa/param/props.h)
@@ -382,7 +381,7 @@ fn route_param(index: u32, device: i32, volumes: Option<Vec<f32>>, mute: Option<
     }
     properties.push(prop(ROUTE_SAVE, Value::Bool(true)));
     let obj = spa::pod::Object { type_: spa::utils::SpaTypes::ObjectParamRoute.as_raw(), id: spa::param::ParamType::Route.as_raw(), properties };
-    Some(spa::pod::serialize::PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &Value::Object(obj)).ok()?.0.into_inner())
+    pod_bytes(obj)
 }
 
 /// A node's volumes and mute, from its props param (None when it has no channel volumes).
@@ -410,49 +409,160 @@ fn mix_param(volumes: Vec<f32>, mute: bool) -> Option<Vec<u8>> {
         id: spa::param::ParamType::Props.as_raw(),
         properties: vec![prop(PROP_CHANNEL_VOLUMES, Value::ValueArray(ValueArray::Float(volumes))), prop(PROP_MUTE, Value::Bool(mute))],
     };
-    Some(spa::pod::serialize::PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &Value::Object(obj)).ok()?.0.into_inner())
+    pod_bytes(obj)
 }
 
-/// The cue: a loopback of Patchcord's (PipeWire's loopback module, as `pw-loopback`), made while
-/// something is listened to. Its recording side takes in what is heard, on passive links, on the
-/// clock of what it hears; its playing side plays into the default output, on that output's
-/// clock; a little buffer between them bridges the two. So listening never joins the two clocks
-/// (which switched an app's driver, and made some apps stop), and never makes anything play.
+/// The cue: two streams of Patchcord's, made while something is listened to. The recording
+/// one (`CUE_NODE`) takes in what is heard on passive links, as a meter does: it runs on the
+/// clock of what it hears when that runs, and wakes nothing. The playing one (`CUE_OUT`) plays
+/// into the default output on that output's clock. Between them a little buffer: the playing
+/// side takes from it what it has and plays silence when it has nothing, so it never waits on
+/// the other (PipeWire's loopback did: its playing side, made to wait for its recording side,
+/// held the output up for a whole cycle when what it heard had no clock running), and the two
+/// clocks never join. Both sides at 48 kHz, PipeWire resampling each to its own clock. Both run
+/// on PipeWire's real-time thread (on Patchcord's main loop the playing side missed cycles: xruns),
+/// the buffer shared through a lock neither holds for more than a cycle's copy.
 #[derive(Default)]
 struct Cue {
-    module: Option<std::ptr::NonNull<pw::sys::pw_impl_module>>,
-    /// its recording side (and its input ports, by channel) and its playing side
+    /// the links into its recording side (dropped first)
+    links: HashMap<(u32, u32), pw::link::Link>,
+    streams: Option<CueStreams>,
+    /// its recording side's node and input ports (by channel: 0 left, 1 right)
     node: Option<u32>,
     inputs: BTreeMap<u32, u32>,
-    out: Option<u32>,
-    links: HashMap<(u32, u32), pw::link::Link>,
-    /// what is wanted: sources and level
-    want: (Vec<CueSource>, f32),
+    /// what is wanted heard
+    want: Vec<CueSource>,
+    /// how loud, as the playing side multiplies it in (linear, as f32 bits)
+    level: Arc<std::sync::atomic::AtomicU32>,
 }
 
-impl Drop for Cue {
+/// The cue's two streams, alive together.
+struct CueStreams {
+    _capture: CueSide,
+    _playback: CueSide,
+}
+
+/// One of the cue's streams and its listener: the listener goes first (see `Bound`), also when
+/// the other side fails to start and this one is dropped on its own.
+struct CueSide {
+    listener: Option<pw::stream::StreamListener<()>>,
+    stream: pw::stream::StreamRc,
+}
+
+impl Drop for CueSide {
+    /// Off the real-time thread first (its process callback can't run while it goes), then the
+    /// listener, then the stream.
     fn drop(&mut self) {
-        self.links.clear();
-        if let Some(m) = self.module.take() {
-            // SAFETY: the module was loaded by `start` on this thread and is destroyed once
-            unsafe { pw::sys::pw_impl_module_destroy(m.as_ptr()) };
-        }
+        let _ = self.stream.disconnect();
+        self.listener.take();
     }
 }
 
+/// What the cue's recording side heard, for its playing side: stereo frames, and whether it is
+/// playing them out (it waits for a cushion of two of its cycles first, and again after it ran
+/// dry, so that the two sides' jitter doesn't break the sound up).
+#[derive(Default)]
+struct CueBuf {
+    frames: std::collections::VecDeque<[f32; 2]>,
+    playing: bool,
+}
+
+/// At most this much heard and not yet played (half a second at 48 kHz): beyond it the oldest
+/// goes (the two clocks drift apart, or the playing side stalled).
+const CUE_MAX: usize = 24_000;
+
 impl Cue {
-    /// Loads the loopback.
-    fn start(&mut self, context: &pw::context::ContextRc) -> Result<(), String> {
-        let args = format!(
-            r#"{{ node.description = "Patchcord cue" audio.position = [ FL FR ]
-  capture.props = {{ node.name = "{CUE_NODE}" media.class = "Stream/Input/Audio" node.autoconnect = false node.passive = true }}
-  playback.props = {{ node.name = "{CUE_OUT}" node.description = "Patchcord cue" media.class = "Stream/Output/Audio" }} }}"#
-        );
-        let name = std::ffi::CString::new("libpipewire-module-loopback").expect("name");
-        let args = std::ffi::CString::new(args).map_err(|e| e.to_string())?;
-        // SAFETY: the context is alive, the strings outlive the call, and no properties are passed
-        let m = unsafe { pw::sys::pw_context_load_module(context.as_raw_ptr(), name.as_ptr(), args.as_ptr(), std::ptr::null_mut()) };
-        self.module = Some(std::ptr::NonNull::new(m).ok_or("the loopback module did not load")?);
+    /// Makes its two streams.
+    fn start(&mut self, core: &pw::core::CoreRc) -> Result<(), pw::Error> {
+        // room for all it may hold, made here: the real-time thread never allocates
+        let buf = Arc::new(std::sync::Mutex::new(CueBuf { frames: std::collections::VecDeque::with_capacity(CUE_MAX + 8192), playing: false }));
+        let capture = {
+            let props = pw::properties::properties! {
+                "media.type" => "Audio",
+                "media.category" => "Capture",
+                "node.name" => CUE_NODE,
+                "node.description" => "Patchcord cue · in",
+                // it only listens: never keeps anything awake, never moved by the session
+                "stream.monitor" => "true",
+                "node.passive" => "true",
+                "node.dont-reconnect" => "true",
+            };
+            let stream = pw::stream::StreamRc::new(core.clone(), CUE_NODE, props)?;
+            let listener = stream
+                .add_local_listener_with_user_data(())
+                .process({
+                    let buf = buf.clone();
+                    move |stream, _| {
+                        let Some(mut buffer) = stream.dequeue_buffer() else { return };
+                        let Some(d) = buffer.datas_mut().first_mut() else { return };
+                        let Some(bytes) = chunk_bytes(d) else { return };
+                        let Ok(mut b) = buf.lock() else { return };
+                        // the oldest goes first, so it never holds more than CUE_MAX
+                        let over = (b.frames.len() + bytes.len() / 8).saturating_sub(CUE_MAX).min(b.frames.len());
+                        b.frames.drain(..over);
+                        for f in bytes.chunks_exact(8).take(CUE_MAX) {
+                            b.frames.push_back([f32::from_le_bytes([f[0], f[1], f[2], f[3]]), f32::from_le_bytes([f[4], f[5], f[6], f[7]])]);
+                        }
+                    }
+                })
+                .register()?;
+            let pod = stereo_format()?;
+            let mut params = [spa::pod::Pod::from_bytes(&pod).ok_or(pw::Error::CreationFailed)?];
+            let side = CueSide { listener: Some(listener), stream };
+            side.stream.connect(spa::utils::Direction::Input, None, pw::stream::StreamFlags::MAP_BUFFERS | pw::stream::StreamFlags::RT_PROCESS, &mut params)?;
+            side
+        };
+        let playback = {
+            let props = pw::properties::properties! {
+                "media.type" => "Audio",
+                "media.category" => "Playback",
+                "node.name" => CUE_OUT,
+                "node.description" => "Patchcord cue · out",
+            };
+            let stream = pw::stream::StreamRc::new(core.clone(), CUE_OUT, props)?;
+            let level = self.level.clone();
+            let listener = stream
+                .add_local_listener_with_user_data(())
+                .process(move |stream, _| {
+                    let Some(mut buffer) = stream.dequeue_buffer() else { return };
+                    let asked = buffer.requested() as usize;
+                    let Some(d) = buffer.datas_mut().first_mut() else { return };
+                    let n = {
+                        let Some(bytes) = d.data() else { return };
+                        let room = bytes.len() / 8;
+                        let n = if asked > 0 { asked.min(room) } else { room.min(1024) };
+                        let Ok(mut b) = buf.lock() else { return };
+                        // far behind (the clocks drifted, or a stall): catch up to a cushion
+                        if b.frames.len() > 6 * n.max(256) {
+                            let extra = b.frames.len() - 2 * n;
+                            b.frames.drain(..extra);
+                        }
+                        if !b.playing && b.frames.len() >= 2 * n {
+                            b.playing = true;
+                        } else if b.playing && b.frames.len() < n {
+                            b.playing = false;
+                        }
+                        let g = f32::from_bits(level.load(std::sync::atomic::Ordering::Relaxed));
+                        for i in 0..n {
+                            let f = if b.playing { b.frames.pop_front().unwrap_or([0.0; 2]) } else { [0.0; 2] };
+                            bytes[i * 8..i * 8 + 4].copy_from_slice(&(f[0] * g).to_le_bytes());
+                            bytes[i * 8 + 4..i * 8 + 8].copy_from_slice(&(f[1] * g).to_le_bytes());
+                        }
+                        n
+                    };
+                    let c = d.chunk_mut();
+                    *c.offset_mut() = 0;
+                    *c.stride_mut() = 8;
+                    *c.size_mut() = (n * 8) as u32;
+                })
+                .register()?;
+            let pod = stereo_format()?;
+            let mut params = [spa::pod::Pod::from_bytes(&pod).ok_or(pw::Error::CreationFailed)?];
+            let side = CueSide { listener: Some(listener), stream };
+            side.stream.connect(spa::utils::Direction::Output, None, pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS | pw::stream::StreamFlags::RT_PROCESS, &mut params)?;
+            side
+        };
+        self.streams = Some(CueStreams { _capture: capture, _playback: playback });
         Ok(())
     }
 
@@ -462,7 +572,7 @@ impl Cue {
             Some(me) if self.inputs.len() >= 2 => {
                 let ins: Vec<u32> = self.inputs.values().copied().collect();
                 let mut v = Vec::new();
-                for &(node, port, ch) in &self.want.0 {
+                for &(node, port, ch) in &self.want {
                     for c in ch.map_or(vec![0, 1], |c| vec![c.min(1)]) {
                         v.push((node, port, me, ins[c]));
                     }
@@ -477,47 +587,87 @@ impl Cue {
                 continue;
             }
             // passive: listening never makes anything play
-            let props = pw::properties::properties! {
-                "link.output.node" => on.to_string(),
-                "link.output.port" => op.to_string(),
-                "link.input.node" => inn.to_string(),
-                "link.input.port" => ip.to_string(),
-                "link.passive" => "true",
-            };
-            if let Ok(l) = core.create_object::<pw::link::Link>("link-factory", &props) {
+            if let Ok(l) = make_link(core, (on, op), (inn, ip), Linked::Passive) {
                 self.links.insert((op, ip), l);
             }
         }
     }
-
-    /// Its playing side's volume: the cue's level.
-    fn set_level(&self, bound: &HashMap<u32, Bound>) {
-        if let Some(n) = self.out.and_then(|id| bound.get(&id)).and_then(|(n, _)| n.downcast_ref::<pw::node::Node>())
-            && let Some(bytes) = mix_param(vec![self.want.1; 2], false)
-            && let Some(pod) = spa::pod::Pod::from_bytes(&bytes)
-        {
-            n.set_param(spa::param::ParamType::Props, 0, pod);
-        }
-    }
 }
 
-/// A signal meter: a capture stream, its ports once they exist, and the passive links to them.
-/// A node or device bound to keep its info coming: its proxy and listener.
-type Bound = (Box<dyn Any>, Box<dyn Any>);
+/// A POD object as bytes, to send.
+fn pod_bytes(obj: spa::pod::Object) -> Option<Vec<u8>> {
+    Some(spa::pod::serialize::PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &spa::pod::Value::Object(obj)).ok()?.0.into_inner())
+}
+
+/// How a link of Patchcord's is made.
+enum Linked {
+    /// it only listens (the cue, a meter): never keeps anything awake
+    Passive,
+    /// a cord: it stays after Patchcord quits
+    Lingering,
+}
+
+/// Links an output port to an input port: (node, port) each.
+fn make_link(core: &pw::core::CoreRc, (on, op): (u32, u32), (inn, ip): (u32, u32), how: Linked) -> Result<pw::link::Link, pw::Error> {
+    let mut props = pw::properties::properties! {
+        "link.output.node" => on.to_string(),
+        "link.output.port" => op.to_string(),
+        "link.input.node" => inn.to_string(),
+        "link.input.port" => ip.to_string(),
+    };
+    match how {
+        Linked::Passive => props.insert("link.passive", "true"),
+        Linked::Lingering => props.insert("object.linger", "true"),
+    }
+    core.create_object::<pw::link::Link>("link-factory", &props)
+}
+
+/// What a buffer's data holds: its chunk (offset and size), within what is mapped.
+fn chunk_bytes(d: &mut spa::buffer::Data) -> Option<&[u8]> {
+    let (off, size) = (d.chunk().offset() as usize, d.chunk().size() as usize);
+    let bytes = d.data()?;
+    let end = off.saturating_add(size).min(bytes.len());
+    Some(&bytes[off.min(end)..end])
+}
+
+/// The format of the cue's streams: 32-bit float stereo (left, right) at 48 kHz.
+fn stereo_format() -> Result<Vec<u8>, pw::Error> {
+    let mut info = spa::param::audio::AudioInfoRaw::new();
+    info.set_format(spa::param::audio::AudioFormat::F32LE);
+    info.set_channels(2);
+    info.set_rate(48_000);
+    let mut pos = [0u32; 64];
+    (pos[0], pos[1]) = (channel_id("FL").unwrap_or(3), channel_id("FR").unwrap_or(4));
+    info.set_position(pos);
+    let obj = spa::pod::Object { type_: spa::utils::SpaTypes::ObjectParamFormat.as_raw(), id: spa::param::ParamType::EnumFormat.as_raw(), properties: info.into() };
+    pod_bytes(obj).ok_or(pw::Error::CreationFailed)
+}
+
+/// A node or device bound to keep its info coming: its listener and its proxy, dropped in that
+/// order (a struct drops its fields as they are declared). Destroyed, a proxy (or a stream)
+/// frees the list its listeners' hooks are linked into, and a hook removed after that writes
+/// into freed memory: it corrupted the heap, and something else crashed later, anywhere.
+struct Bound {
+    _listener: Box<dyn Any>,
+    proxy: Box<dyn Any>,
+}
 /// A meter's stream, its listener and the peaks it measures.
 type MeterStream = (pw::stream::StreamRc, pw::stream::StreamListener<()>, Rc<RefCell<Vec<f32>>>);
 
+/// A signal meter: a capture stream, its ports once they exist, and the passive links to them.
 struct Meter {
-    _stream: pw::stream::StreamRc,
+    /// the links to the ports, and which ports (global ids) they were made to; dropped before
+    /// the stream, whose going takes its links with it on the server
+    links: Vec<pw::link::Link>,
+    linked: Vec<u32>,
+    /// (the listener before the stream: see `Bound`)
     _listener: pw::stream::StreamListener<()>,
+    _stream: pw::stream::StreamRc,
     targets: Vec<(u32, u32)>,
     node: Option<u32>,
     /// our input ports now, by channel (`port.id`): their global ids. A stream's ports can go
     /// and come back with new ids while its format is set up, so this keeps the latest of each.
     ports: BTreeMap<u32, u32>,
-    /// the links to the ports, and which ports (global ids) they were made to
-    links: Vec<pw::link::Link>,
-    linked: Vec<u32>,
     peaks: Rc<RefCell<Vec<f32>>>,
 }
 
@@ -580,7 +730,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                             0
                         })
                         .register();
-                    bound.borrow_mut().insert(g.id, (Box::new(md), Box::new(l)));
+                    bound.borrow_mut().insert(g.id, Bound { _listener: Box::new(l), proxy: Box::new(md) });
                 }
                 if g.type_ == ObjectType::Profiler {
                     profiler_id.set(Some(g.id));
@@ -652,12 +802,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                             if app {
                                 node.subscribe_params(&[spa::param::ParamType::Props]);
                             }
-                            bound.borrow_mut().insert(id, (Box::new(node), Box::new(l)));
-                            if props.get("node.name").is_some_and(|n| n == CUE_OUT) {
-                                let mut c = cue.borrow_mut();
-                                c.out = Some(id);
-                                c.set_level(&bound.borrow());
-                            }
+                            bound.borrow_mut().insert(id, Bound { _listener: Box::new(l), proxy: Box::new(node) });
                         }
                     }
                     Kind::Device => {
@@ -718,7 +863,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                                 })
                                 .register();
                             dev.subscribe_params(&[spa::param::ParamType::EnumProfile, spa::param::ParamType::Profile, spa::param::ParamType::EnumRoute, spa::param::ParamType::Route]);
-                            bound.borrow_mut().insert(id, (Box::new(dev), Box::new(l)));
+                            bound.borrow_mut().insert(id, Bound { _listener: Box::new(l), proxy: Box::new(dev) });
                         }
                     }
                     Kind::Port => {
@@ -746,15 +891,8 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                                     m.links.clear();
                                     m.linked = now.clone();
                                     for (&(tn, tp), &mine) in m.targets.iter().zip(&now) {
-                                        let p = pw::properties::properties! {
-                                            "link.output.node" => tn.to_string(),
-                                            "link.output.port" => tp.to_string(),
-                                            "link.input.node" => me.to_string(),
-                                            "link.input.port" => mine.to_string(),
-                                            // a meter never keeps a device awake
-                                            "link.passive" => "true",
-                                        };
-                                        if let Ok(l) = core.create_object::<pw::link::Link>("link-factory", &p) {
+                                        // a meter never keeps a device awake
+                                        if let Ok(l) = make_link(&core, (tn, tp), (me, mine), Linked::Passive) {
                                             m.links.push(l);
                                         }
                                     }
@@ -781,7 +919,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                                     ev.send(Event::Info { id, props: info.props().map(props_of).unwrap_or_default(), state: Some(state) });
                                 })
                                 .register();
-                            bound.borrow_mut().insert(id, (Box::new(link), Box::new(l)));
+                            bound.borrow_mut().insert(id, Bound { _listener: Box::new(l), proxy: Box::new(link) });
                         }
                     }
                     Kind::Client | Kind::Other => {}
@@ -794,16 +932,16 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
             let bound = bound.clone();
             let meters = meters.clone();
             let cue = cue.clone();
+            let inspect = inspect.clone();
             move |id| {
                 bound.borrow_mut().remove(&id);
+                // (ids come back: a new node at this one isn't inspected)
+                inspect.borrow_mut().remove(&id);
                 {
                     let mut c = cue.borrow_mut();
                     c.inputs.retain(|_, p| *p != id);
                     if c.node == Some(id) {
                         c.node = None;
-                    }
-                    if c.out == Some(id) {
-                        c.out = None;
                     }
                 }
                 // a meter's port gone: it is linked again when a new one comes
@@ -875,7 +1013,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
             if ticks.get().is_multiple_of(12)
                 && let Some(p) = profiler.borrow().as_ref()
             {
-                let now = std::time::Instant::now();
+                let now = Instant::now();
                 let mut l = p.latest.borrow_mut();
                 l.retain(|_, (t, _, _)| now.duration_since(*t) < Duration::from_millis(1500));
                 events.send(Event::Profile(l.values().map(|(_, d, _)| d.averaged()).collect()));
@@ -885,7 +1023,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
             }
             for id in std::mem::take(&mut *stale.borrow_mut()) {
                 let b = bound.borrow();
-                let Some((proxy, _)) = b.get(&id) else { continue };
+                let Some(Bound { proxy, .. }) = b.get(&id) else { continue };
                 if let Some(dev) = proxy.downcast_ref::<pw::device::Device>() {
                     for kind in [spa::param::ParamType::EnumProfile, spa::param::ParamType::Profile, spa::param::ParamType::EnumRoute, spa::param::ParamType::Route] {
                         dev.enum_params(0, Some(kind), 0, u32::MAX);
@@ -911,8 +1049,9 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
     });
     timer.update_timer(Some(Duration::from_millis(40)), Some(Duration::from_millis(40)));
 
-    // links we made; with object.linger they stay after we quit, but we hold the proxies meanwhile
-    let made: RefCell<Vec<pw::link::Link>> = Default::default();
+    // links we made, while the server makes them: with object.linger they stay once it has (and
+    // after we quit), so a proxy is let go a while later
+    let made: RefCell<Vec<(Instant, pw::link::Link)>> = Default::default();
     let _commands = cmds.attach(mainloop.loop_(), {
         let mainloop = mainloop.clone();
         let core = core.clone();
@@ -929,15 +1068,12 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
         let profiler_module = std::cell::Cell::new(false);
         move |cmd| match cmd {
             Cmd::Link { out_node, out_port, in_node, in_port } => {
-                let props = pw::properties::properties! {
-                    "link.output.node" => out_node.to_string(),
-                    "link.output.port" => out_port.to_string(),
-                    "link.input.node" => in_node.to_string(),
-                    "link.input.port" => in_port.to_string(),
-                    "object.linger" => "true",
-                };
-                match core.create_object::<pw::link::Link>("link-factory", &props) {
-                    Ok(link) => made.borrow_mut().push(link),
+                match make_link(&core, (out_node, out_port), (in_node, in_port), Linked::Lingering) {
+                    Ok(link) => {
+                        let mut made = made.borrow_mut();
+                        made.retain(|(t, _)| t.elapsed() < Duration::from_secs(10));
+                        made.push((Instant::now(), link));
+                    }
                     Err(e) => events.send(Event::Error(format!("cannot create link: {e}"))),
                 }
             }
@@ -955,7 +1091,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
             }
             Cmd::SetProfile { device, index } => {
                 let b = bound.borrow();
-                let dev = b.get(&device).and_then(|(d, _)| d.downcast_ref::<pw::device::Device>());
+                let dev = b.get(&device).and_then(|b| b.proxy.downcast_ref::<pw::device::Device>());
                 match (dev, profile_param(index)) {
                     (Some(dev), Some(bytes)) => {
                         if let Some(pod) = spa::pod::Pod::from_bytes(&bytes) {
@@ -967,7 +1103,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
             }
             Cmd::SetRoute { device, index, route_device, volumes, mute, latency_ns } => {
                 let b = bound.borrow();
-                let dev = b.get(&device).and_then(|(d, _)| d.downcast_ref::<pw::device::Device>());
+                let dev = b.get(&device).and_then(|b| b.proxy.downcast_ref::<pw::device::Device>());
                 match (dev, route_param(index, route_device, volumes, mute, latency_ns)) {
                     (Some(dev), Some(bytes)) => {
                         if let Some(pod) = spa::pod::Pod::from_bytes(&bytes) {
@@ -979,7 +1115,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
             }
             Cmd::SetDefault { key, node_name } => {
                 let b = bound.borrow();
-                match default_md.get().and_then(|id| b.get(&id)).and_then(|(m, _)| m.downcast_ref::<pw::metadata::Metadata>()) {
+                match default_md.get().and_then(|id| b.get(&id)).and_then(|b| b.proxy.downcast_ref::<pw::metadata::Metadata>()) {
                     Some(md) => {
                         let name = node_name.replace('\\', "\\\\").replace('"', "\\\"");
                         md.set_property(0, &key, Some("Spa:String:JSON"), Some(&format!("{{\"name\":\"{name}\"}}")));
@@ -989,7 +1125,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
             }
             Cmd::SetMix { node, volumes, mute } => {
                 let b = bound.borrow();
-                let n = b.get(&node).and_then(|(n, _)| n.downcast_ref::<pw::node::Node>());
+                let n = b.get(&node).and_then(|b| b.proxy.downcast_ref::<pw::node::Node>());
                 match (n, mix_param(volumes, mute)) {
                     (Some(n), Some(bytes)) => {
                         if let Some(pod) = spa::pod::Pod::from_bytes(&bytes) {
@@ -999,21 +1135,19 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                     _ => events.send(Event::Error(format!("cannot set the volume of node {node}"))),
                 }
             }
-            Cmd::Cue { sources, level, keep } => {
+            Cmd::Cue { sources, level } => {
                 let mut c = cue.borrow_mut();
-                if sources.is_empty() && !keep {
-                    // nothing to hear, and no CUE mode: its links and the loopback go
+                if sources.is_empty() {
+                    // nothing to hear: its links and its streams go
                     *c = Cue::default();
                     return;
                 }
-                let level_changed = c.want.1 != level;
-                c.want = (sources, level);
-                if c.module.is_none() {
-                    if let Err(e) = c.start(&context) {
-                        events.send(Event::Error(format!("cannot start the cue: {e}")));
-                    }
-                } else if level_changed {
-                    c.set_level(&bound.borrow());
+                c.level.store(level.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                c.want = sources;
+                if c.streams.is_none()
+                    && let Err(e) = c.start(&core)
+                {
+                    events.send(Event::Error(format!("cannot start the cue: {e}")));
                 }
                 c.reconcile(&core);
             }
@@ -1041,7 +1175,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
             Cmd::Params(id) => {
                 inspect.borrow_mut().insert(id);
                 let b = bound.borrow();
-                if let Some(n) = b.get(&id).and_then(|(n, _)| n.downcast_ref::<pw::node::Node>()) {
+                if let Some(n) = b.get(&id).and_then(|b| b.proxy.downcast_ref::<pw::node::Node>()) {
                     use spa::param::ParamType as P;
                     for kind in [P::EnumFormat, P::Format, P::Props, P::PortConfig, P::Latency, P::ProcessLatency] {
                         n.enum_params(0, Some(kind), 0, u32::MAX);
@@ -1106,7 +1240,7 @@ unsafe extern "C" fn on_profile(data: *mut std::os::raw::c_void, pod: *const spa
     // SAFETY: `data` is the profiler's boxed `latest`, alive while the proxy is; the pod is valid
     // for the call
     let (latest, pod) = unsafe { (&*(data as *const ProfileLatest), spa::pod::Pod::from_raw(pod)) };
-    let now = std::time::Instant::now();
+    let now = Instant::now();
     if let Ok(mut l) = latest.try_borrow_mut() {
         for d in timings_of(pod) {
             match l.get_mut(&d.node.id) {
@@ -1342,10 +1476,9 @@ fn meter(core: &pw::core::CoreRc, id: u32, channels: &[String]) -> Result<MeterS
                 let Some(mut buffer) = stream.dequeue_buffer() else { return };
                 let datas = buffer.datas_mut();
                 let Some(d) = datas.first_mut() else { return };
-                let size = d.chunk().size() as usize;
-                let Some(bytes) = d.data() else { return };
+                let Some(bytes) = chunk_bytes(d) else { return };
                 let mut pk = peaks.borrow_mut();
-                for (i, s) in bytes[..size.min(bytes.len())].chunks_exact(4).enumerate() {
+                for (i, s) in bytes.chunks_exact(4).enumerate() {
                     let v = f32::from_le_bytes([s[0], s[1], s[2], s[3]]).abs();
                     let c = i % n;
                     if v > pk[c] {
@@ -1366,7 +1499,7 @@ fn meter(core: &pw::core::CoreRc, id: u32, channels: &[String]) -> Result<MeterS
     }
     info.set_position(pos);
     let obj = spa::pod::Object { type_: spa::utils::SpaTypes::ObjectParamFormat.as_raw(), id: spa::param::ParamType::EnumFormat.as_raw(), properties: info.into() };
-    let values: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &spa::pod::Value::Object(obj)).map_err(|_| pw::Error::CreationFailed)?.0.into_inner();
+    let values: Vec<u8> = pod_bytes(obj).ok_or(pw::Error::CreationFailed)?;
     let mut params = [spa::pod::Pod::from_bytes(&values).ok_or(pw::Error::CreationFailed)?];
     stream.connect(spa::utils::Direction::Input, None, pw::stream::StreamFlags::MAP_BUFFERS, &mut params)?;
     Ok((stream, listener, peaks))

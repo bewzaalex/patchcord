@@ -17,7 +17,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use super::{painter, panel};
 use super::scene::{Layer, View, next_id, rasterize};
-use super::text;
+use super::text::{self, esc};
 use crate::graph::{Device, Graph};
 use crate::pw::{CUE_NODE, Cmd, DriverTiming, Event, Kind, METER_PREFIX, NodeTiming, Props};
 
@@ -72,6 +72,43 @@ enum Hit {
     LegendWin,
     /// the strip's i cell: the cells that didn't fit
     Info,
+    /// the scrollbar of the details (0) or the tables (1)
+    Bar(usize),
+}
+
+/// A picture to draw: the layer, where (x, y, w, h in window pixels), and where it may draw if
+/// not everywhere.
+pub type Pic<'a> = (&'a Layer, f64, f64, f64, f64, Option<[f64; 4]>);
+
+/// A scrolled body, the details' or the tables': drawn apart from its frame, a slice of it about
+/// two views tall round what shows, so scrolling only moves the picture and clips it; a new
+/// slice is drawn on the painter's threads near its edge, or when what it shows changed.
+#[derive(Default)]
+struct Body {
+    /// (what it shows, where the slice starts in the body, the picture)
+    layer: Option<(u64, f64, Layer)>,
+    /// being drawn: (its painter sig, what it shows, start, width, height)
+    want: Option<(u64, u64, f64, f64, f64)>,
+}
+
+/// A body as its panel lays it out, in the panel's units: its SVG, how wide, where the view on it
+/// starts and how tall it is, where the body's top is now (scrolled) and how tall it all is.
+#[derive(Default)]
+struct Scrolled {
+    body: String,
+    w: f64,
+    top: f64,
+    view_h: f64,
+    by: f64,
+    content: f64,
+}
+
+/// A scrollbar, in logical pixels: its track, its thumb, and how far the body scrolls.
+#[derive(Clone, Copy)]
+struct Bar {
+    track: [f64; 4],
+    thumb: [f64; 4],
+    max: f64,
 }
 
 /// What the app has to do after a click.
@@ -89,6 +126,9 @@ enum NKind {
     Video,
     Stream,
     Meter,
+    /// the cue: Patchcord's two streams, what is listened to in (`CUE_NODE`), out into the default
+    /// output (after the meters: under them in a column)
+    Cue,
     Other,
     Driver,
 }
@@ -194,6 +234,10 @@ const COLW: f64 = NW + 120.0;
 const NGAP: f64 = 14.0;
 const BPAD: f64 = 26.0;
 const BHEAD: f64 = 36.0;
+/// A band is laid out to fit a view this many times wider than high.
+const ASPECT: f64 = 2.2;
+/// how deep the overlay's bottom strip is: the legend's and diagnostics' keys
+const OVERLAY_BOTTOM: f64 = 40.0;
 
 // sizes of the window parts, in logical pixels
 const STRIP_H: f64 = 50.0;
@@ -215,6 +259,11 @@ const C_SYSTEM: [u8; 3] = [0x2f, 0xb0, 0xa6];
 const C_MIDI: [u8; 3] = [0xe0, 0x8a, 0x3c];
 const C_VIDEO: [u8; 3] = [0xd9, 0x57, 0x8f];
 const C_PATCHCORD: [u8; 3] = [0x5f, 0xa3, 0x6a];
+/// the cue, as its marks on the desk
+const C_CUE: [u8; 3] = [0x5f, 0xd4, 0xff];
+const CUE: &str = "#5fd4ff";
+/// text on a port filled in the cue's colour
+const CUE_TEXT: &str = "#062533";
 /// What is chosen: the LCD's amber, and text on it as on the LCD.
 const SEL: &str = "#f7bb62";
 const SEL_TEXT: &str = "#3a2408";
@@ -223,11 +272,6 @@ const LEGEND_SVG: &str = include_str!("legend.svg");
 
 const SHOW: [(&str, &str); 4] = [("PATCHCORD", "Patchcord's own signal meters"), ("MIDI", "MIDI nodes"), ("NOT RUNNING", "nodes no driver clocks now: suspended devices, idle streams"), ("INTERNAL", "Dummy-Driver and Freewheel-Driver: PipeWire's own clocks, idle")];
 const OBJECT_TYPES: [&str; 12] = ["Core", "Module", "Factory", "Client", "Device", "Node", "Port", "Link", "Metadata", "Profiler", "SecurityContext", "Other"];
-
-fn esc(t: &str) -> String {
-    // control characters (a NUL in a driver's string) are not allowed in SVG
-    t.chars().filter(|c| !c.is_control()).collect::<String>().replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
-}
 
 fn cut(t: &str, n: usize) -> String {
     if t.chars().count() > n { format!("{}…", t.chars().take(n.saturating_sub(1)).collect::<String>()) } else { t.to_owned() }
@@ -254,60 +298,31 @@ fn led_color(state: &str, err: bool) -> &'static str {
     }
 }
 
-/// Where a link at height `y` crosses a column with nodes at `rects` (top, bottom): at `y` when
-/// that is clear of them, else just above or below the nearest of them.
-fn free_y(rects: &[(f64, f64)], y: f64, extent: f64) -> f64 {
-    let clear = |f: f64, m: f64| !rects.iter().any(|(t, b)| f + extent > t - m && f < b + m);
-    if clear(y, 5.0) {
-        return y;
-    }
-    // just above or below a node (half a gap off it: the middle of the gap between two), with room
-    // for a bundle `extent` deep under its first line
-    let free = rects.iter().flat_map(|(t, b)| [t - NGAP / 2.0 - extent, b + NGAP / 2.0]);
-    free.filter(|f| clear(*f, 2.0)).min_by(|p, q| (p - y).abs().total_cmp(&(q - y).abs())).unwrap_or(y)
+/// A link from output `a` to input `b`: one curve, level at both ports, over whatever lies between.
+fn link_curve(a: (f64, f64), b: (f64, f64)) -> [(f64, f64); 4] {
+    let d = ((b.0 - a.0).abs() / 2.0).max(50.0);
+    [a, (a.0 + d, a.1), (b.0 - d, b.1), b]
 }
 
-/// A cubic piece in two halves (de Casteljau).
-fn split(c: [(f64, f64); 4]) -> [[(f64, f64); 4]; 2] {
-    let mid = |p: (f64, f64), q: (f64, f64)| ((p.0 + q.0) / 2.0, (p.1 + q.1) / 2.0);
-    let (a, b, d) = (mid(c[0], c[1]), mid(c[1], c[2]), mid(c[2], c[3]));
-    let (e, f) = (mid(a, b), mid(b, d));
-    let g = mid(e, f);
-    [[c[0], a, e, g], [g, f, d, c[3]]]
+/// The point at `t` (0…1) along a cubic.
+fn bezier(c: &[(f64, f64); 4], t: f64) -> (f64, f64) {
+    let u = 1.0 - t;
+    let (a, b, cc, d) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+    (a * c[0].0 + b * c[1].0 + cc * c[2].0 + d * c[3].0, a * c[0].1 + b * c[1].1 + cc * c[2].1 + d * c[3].1)
 }
 
-/// A cubic piece moved `s` off itself, square to its way (down, going right), its shape kept:
-/// the edges of its control polygon moved and met again (Tiller and Hanson). So the links of a
-/// stereo pair keep the same distance apart all along, on the slopes too.
-fn offset_cubic(c: [(f64, f64); 4], s: f64) -> [(f64, f64); 4] {
-    if s == 0.0 {
-        return c;
-    }
-    let normal = |p: (f64, f64), q: (f64, f64)| {
-        let (dx, dy) = (q.0 - p.0, q.1 - p.1);
-        let l = dx.hypot(dy);
-        (l > 1e-6).then(|| (-dy / l, dx / l))
-    };
-    // each edge's normal, a short one taking its neighbour's
-    let n = [normal(c[0], c[1]), normal(c[1], c[2]), normal(c[2], c[3])];
-    let any = n.iter().flatten().next().copied().unwrap_or((0.0, 1.0));
-    let n = [n[0].or(n[1]).unwrap_or(any), n[1].or(n[0]).or(n[2]).unwrap_or(any), n[2].or(n[1]).unwrap_or(any)];
-    let moved = |p: (f64, f64), k: usize| (p.0 + n[k].0 * s, p.1 + n[k].1 * s);
-    // where two moved edges meet (the point moved square to the first, when they run alike)
-    let meet = |a: (f64, f64), da: (f64, f64), b: (f64, f64), db: (f64, f64), fallback: (f64, f64)| {
-        let den = da.0 * db.1 - da.1 * db.0;
-        if den.abs() < 1e-6 {
-            return fallback;
-        }
-        let t = ((b.0 - a.0) * db.1 - (b.1 - a.1) * db.0) / den;
-        (a.0 + da.0 * t, a.1 + da.1 * t)
-    };
-    let dir = |k: usize| (n[k].1, -n[k].0);
-    let p0 = moved(c[0], 0);
-    let p3 = moved(c[3], 2);
-    let p1 = meet(p0, dir(0), moved(c[1], 1), dir(1), moved(c[1], 0));
-    let p2 = meet(moved(c[2], 1), dir(1), p3, dir(2), moved(c[2], 2));
-    [p0, p1, p2, p3]
+/// How far point `p` is from the segment `a`–`b`.
+fn seg_dist(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let l2 = dx * dx + dy * dy;
+    let t = if l2 == 0.0 { 0.0 } else { (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / l2).clamp(0.0, 1.0) };
+    ((p.0 - a.0 - t * dx).powi(2) + (p.1 - a.1 - t * dy).powi(2)).sqrt()
+}
+
+/// How far down its node a port's row is (its middle), by its place among the node's inputs
+/// or outputs.
+fn port_y(i: usize) -> f64 {
+    NH0 + i as f64 * PR + PR / 2.0 + 2.0
 }
 
 fn node_h(n: &ENode) -> f64 {
@@ -384,7 +399,10 @@ pub struct Engine {
     strip: Option<(u64, Layer)>,
     insp: Option<(u64, Layer)>,
     bottom: Option<(u64, Layer)>,
+    /// the graph's overlay: its top (the chips) and its bottom (the legend's and diagnostics'
+    /// keys), two strips, not a picture as big as the graph mostly empty
     overlay: Option<(u64, Layer)>,
+    overlay_b: Option<(u64, Layer)>,
     /// the legend window, while it is open
     legend: Option<(u64, Layer)>,
     /// what changes every moment on the graph (see `numbers`): by what it is, its picture
@@ -401,27 +419,34 @@ pub struct Engine {
     bottom_shut: bool,
     /// the legend is open over the graph
     legend_open: bool,
-    /// content heights of the inspector's and the tabs' bodies, to clamp scrolling
-    content_h: [f64; 2],
     /// the i cell's card, and whether it is open
     info: Option<(u64, Layer)>,
     info_open: bool,
     /// MAC addresses masked in names, for pictures others see
     pub private: bool,
+    /// the ports of the jacks kept on in the cue, filled in its colour, with those linked into
+    /// it: also the ones it leaves out (heard in the output listened on already, or asleep)
+    pub cue_kept: Vec<u32>,
     /// the details and the tables being drawn on the painter's threads: what for, where
     insp_want: Option<(u64, [f64; 4])>,
     bottom_want: Option<(u64, [f64; 4])>,
     strip_want: Option<(u64, [f64; 4])>,
+    /// the bodies of the details and the tables, their scrollbars, a thumb in the hand (which,
+    /// where the pointer took it, the scroll then), and the bars' pixels (track, thumb)
+    bodies: [Body; 2],
+    bars: [Option<Bar>; 2],
+    bar_drag: Option<(usize, f64, f64)>,
+    bar_px: [Layer; 2],
+    /// each body's view top and scrolled top in its panel, as last laid out
+    body_at: [(f64, f64); 2],
 }
 
 /// What the last look saw: each link's ends by name, each node's name and state.
 type Seen = (HashMap<u32, String>, HashMap<u32, (String, &'static str)>);
 /// A press in the graph: where, the view then, what was under it, whether it moved since.
 type Press = ((f64, f64), View, Option<Sel>, bool);
-/// Where a node is on the desk: its device's key and name, its frames, hidden, its colour.
+/// Where a node is on the desk: its device's key and name, its frames, and whether it is hidden.
 type DeskPlace = (String, String, Vec<String>, bool);
-/// A block of the graph: its sort key, (node, x, y), its width and height.
-type Block = (String, Vec<(u32, f64, f64)>, f64, f64);
 
 #[derive(Default)]
 struct Layout {
@@ -474,6 +499,7 @@ impl Engine {
             insp: None,
             bottom: None,
             overlay: None,
+            overlay_b: None,
             legend: None,
             spent: Vec::new(),
             nums: HashMap::new(),
@@ -486,10 +512,15 @@ impl Engine {
             info: None,
             info_open: false,
             private: false,
+            cue_kept: Vec::new(),
             insp_want: None,
             bottom_want: None,
             strip_want: None,
-            content_h: [0.0, 0.0],
+            bodies: Default::default(),
+            bars: [None, None],
+            bar_drag: None,
+            bar_px: [pixel([0x24, 0x25, 0x28, 0xff]), pixel([0x5a, 0x5d, 0x62, 0xff])],
+            body_at: [(0.0, 0.0); 2],
         }
     }
 
@@ -504,7 +535,8 @@ impl Engine {
             (self.strip, self.strip_want) = (None, None);
             (self.insp, self.insp_want) = (None, None);
             (self.bottom, self.bottom_want) = (None, None);
-            self.overlay = None;
+            self.bodies = Default::default();
+            (self.overlay, self.overlay_b) = (None, None);
             self.legend = None;
             self.nums.clear();
             // the graph first: the diagnostics below open on a click
@@ -524,7 +556,8 @@ impl Engine {
                         self.meta.remove(&(*id, *subject, k.clone()));
                     }
                     (Some(k), Some(v)) => {
-                        self.meta.insert((*id, *subject, k.clone()), (ty.clone(), v.clone()));
+                        let v = if self.private { mask_macs(v) } else { v.clone() };
+                        self.meta.insert((*id, *subject, k.clone()), (ty.clone(), v));
                     }
                 }
                 true
@@ -581,16 +614,22 @@ impl Engine {
     }
 
     fn log(&mut self, kind: &'static str, text: String, node: Option<u32>) {
+        let text = if self.private { mask_macs(&text) } else { text };
         self.events.push_front((SystemTime::now(), kind, text, node));
         if self.events.len() > 300 {
             self.events.pop_back();
         }
     }
 
+    /// Whether `build` has something to do: something changed, or a second went by.
+    pub fn due(&self) -> bool {
+        self.dirty || self.built.is_none_or(|t| t.elapsed() >= Duration::from_millis(1000))
+    }
+
     /// Builds what ENGINE shows from the graph and the desk's devices.
     pub fn build(&mut self, graph: &Graph, devices: &[&Device], hidden: &HashSet<String>, settings: &HashMap<String, String>) {
         let now = Instant::now();
-        if !self.dirty && self.built.is_some_and(|t| now - t < Duration::from_millis(1000)) {
+        if !self.due() {
             return;
         }
         self.dirty = false;
@@ -620,8 +659,10 @@ impl Engine {
                     let desc = p.get("node.description").or(p.get("node.nick")).cloned().unwrap_or_else(|| name.clone());
                     let nkind = if name == "Dummy-Driver" || name == "Freewheel-Driver" || p.get("factory.name").is_some_and(|f| f == "support.node.driver") {
                         NKind::Driver
-                    } else if name.starts_with(METER_PREFIX) || name.starts_with(CUE_NODE) {
+                    } else if name.starts_with(METER_PREFIX) {
                         NKind::Meter
+                    } else if name.starts_with(CUE_NODE) {
+                        NKind::Cue
                     } else if class.contains("Midi") {
                         NKind::Midi
                     } else if class.contains("Video") {
@@ -634,10 +675,11 @@ impl Engine {
                         NKind::Other
                     };
                     let d = desk.get(&id);
-                    let system = class.ends_with("/Internal") || (nkind != NKind::Meter && p.get("stream.monitor").is_some_and(|v| v == "true"));
+                    let system = class.ends_with("/Internal") || (!matches!(nkind, NKind::Meter | NKind::Cue) && p.get("stream.monitor").is_some_and(|v| v == "true"));
                     // a block's colour says what it is (the legend's COLOURS)
                     let color = match nkind {
                         NKind::Meter => C_PATCHCORD,
+                        NKind::Cue => C_CUE,
                         NKind::Midi => C_MIDI,
                         NKind::Video => C_VIDEO,
                         _ if system => C_SYSTEM,
@@ -812,7 +854,7 @@ impl Engine {
             self.log("node", format!("watching PipeWire: {} nodes, {} links", nodes.len(), links.len()), None);
         }
         self.prev = Some((lnames, nstates));
-        self.props = graph.objects().map(|(id, _, p)| (id, p.clone())).collect();
+        self.props = graph.objects().map(|(id, _, p)| (id, if self.private { p.iter().map(|(k, v)| (k.clone(), mask_macs(v))).collect() } else { p.clone() })).collect();
         // the names the graph shows first; a device with its nodes (the graph's ids)
         for o in objects.iter_mut() {
             match o.0.as_str() {
@@ -990,7 +1032,7 @@ impl Engine {
 
     fn visible(&self, n: &ENode) -> bool {
         let running = self.model.group_of.contains_key(&n.id);
-        (self.show[0] || n.kind != NKind::Meter) && (self.show[1] || n.kind != NKind::Midi) && (self.show[2] || running) && (self.show[3] || n.kind != NKind::Driver || running)
+        (self.show[0] || !matches!(n.kind, NKind::Meter | NKind::Cue)) && (self.show[1] || n.kind != NKind::Midi) && (self.show[2] || running) && (self.show[3] || n.kind != NKind::Driver || running)
     }
 
     fn layout(&self) -> Layout {
@@ -1002,6 +1044,9 @@ impl Engine {
         }
         bands.push((None, "idle", m.nodes.iter().filter(|n| !m.group_of.contains_key(&n.id) && n.kind != NKind::Driver && self.visible(n)).map(|n| n.id).collect()));
         bands.push((None, "drivers", m.nodes.iter().filter(|n| !m.group_of.contains_key(&n.id) && n.kind == NKind::Driver && self.visible(n)).map(|n| n.id).collect()));
+        // the links shown: both ends shown (in any band)
+        let shown: HashSet<u32> = bands.iter().flat_map(|b| b.2.iter().copied()).collect();
+        let all: Vec<&ELink> = m.links.iter().filter(|l| shown.contains(&l.out_node) && shown.contains(&l.in_node) && l.out_node != l.in_node).collect();
         let mut lay = Layout::default();
         let mut y = 0.0;
         for (gi, what, ids) in bands {
@@ -1009,45 +1054,12 @@ impl Engine {
                 continue;
             }
             let set: HashSet<u32> = ids.iter().copied().collect();
-            let ls: Vec<&ELink> = m.links.iter().filter(|l| set.contains(&l.out_node) && set.contains(&l.in_node) && l.out_node != l.in_node).collect();
-            // blocks: nodes joined by links
-            let mut root: HashMap<u32, u32> = ids.iter().map(|i| (*i, *i)).collect();
-            fn find(r: &mut HashMap<u32, u32>, x: u32) -> u32 {
-                let p = r[&x];
-                if p == x {
-                    return x;
-                }
-                let q = find(r, p);
-                r.insert(x, q);
-                q
+            let ls: Vec<&ELink> = all.iter().copied().filter(|l| set.contains(&l.out_node) && set.contains(&l.in_node)).collect();
+            let (place, w, h) = self.band(&ids, &ls, &all);
+            for (id, (dx, dy)) in place {
+                lay.pos.insert(id, (BPAD + dx, y + BHEAD + dy));
             }
-            for l in &ls {
-                let (a, b) = (find(&mut root, l.out_node), find(&mut root, l.in_node));
-                root.insert(a, b);
-            }
-            let mut comps: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
-            for id in &ids {
-                let r = find(&mut root, *id);
-                comps.entry(r).or_default().push(*id);
-            }
-            let mut blocks: Vec<Block> = comps.into_values().map(|c| self.block(&c, &ls)).collect();
-            blocks.sort_by(|a, b| a.0.cmp(&b.0));
-            let cap = blocks.iter().map(|b| b.3).fold(380.0, f64::max);
-            let (mut x, mut cy, mut cw, mut h) = (BPAD, 0.0, 0.0f64, 0.0f64);
-            for (_, place, bw, bh) in &blocks {
-                if cy > 0.0 && cy + bh > cap {
-                    x += cw + 70.0;
-                    cy = 0.0;
-                    cw = 0.0;
-                }
-                for (id, dx, dy) in place {
-                    lay.pos.insert(*id, (x + dx, y + BHEAD + cy + dy));
-                }
-                cy += bh + NGAP * 2.0;
-                cw = cw.max(*bw);
-                h = h.max(cy - NGAP * 2.0);
-            }
-            lay.w = lay.w.max(x + cw + BPAD);
+            lay.w = lay.w.max(BPAD + w + BPAD);
             let bh = BHEAD + h + 14.0;
             lay.bands.push((y, bh, gi, what));
             y += bh + 26.0;
@@ -1060,158 +1072,222 @@ impl Engine {
         lay
     }
 
-    /// One block: its nodes in columns by signal flow (meters last), each column ordered after
-    /// the one before it so links cross less. (sort key, (node, x, y), width, height)
-    fn block(&self, ids: &[u32], ls: &[&ELink]) -> Block {
+    /// A band's nodes by their links, as they are now, in four groups left to right: no links;
+    /// only links out; links in and out, a column further than the longest way to it through
+    /// them; only links in, Patchcord's listeners (its meters, the cue's in side) after the rest.
+    /// Each group in as many columns (none to several) as fit the band best into a wide view; then
+    /// no link goes through another's port (see `unblock`). `ls`: the band's links, `all`: every
+    /// link shown (which group a node is in). Each node's place from the band's top left, the
+    /// band's width and height.
+    fn band(&self, ids: &[u32], ls: &[&ELink], all: &[&ELink]) -> (HashMap<u32, (f64, f64)>, f64, f64) {
         let m = &self.model;
-        let set: HashSet<u32> = ids.iter().copied().collect();
-        let ls: Vec<&&ELink> = ls.iter().filter(|l| set.contains(&l.out_node)).collect();
         let kind = |id: u32| m.node(id).map_or(NKind::Other, |n| n.kind);
-        let mut col: HashMap<u32, usize> = ids.iter().map(|i| (*i, 0)).collect();
-        for _ in 0..ids.len() {
-            for l in &ls {
-                if kind(l.in_node) != NKind::Meter && col[&l.in_node] <= col[&l.out_node] {
-                    col.insert(l.in_node, col[&l.out_node] + 1);
+        let desc = |id: u32| m.node(id).map_or("", |n| n.desc.as_str());
+        let tall = |id: u32| m.node(id).map_or(60.0, node_h);
+        let listener = |id: u32| m.node(id).is_some_and(|n| n.kind == NKind::Meter || (n.kind == NKind::Cue && n.name == CUE_NODE));
+        let group = |id: u32| match (listener(id), all.iter().any(|l| l.in_node == id), all.iter().any(|l| l.out_node == id)) {
+            (true, ..) | (false, true, false) => 3,
+            (false, false, false) => 0,
+            (false, false, true) => 1,
+            (false, true, true) => 2,
+        };
+        let g: HashMap<u32, u8> = ids.iter().map(|&i| (i, group(i))).collect();
+        let of = |k: u8| ids.iter().copied().filter(|i| g[i] == k).collect::<Vec<u32>>();
+        // the middle: a column further than the longest way to it through the middle
+        let mut depth: BTreeMap<u32, usize> = of(2).into_iter().map(|i| (i, 0)).collect();
+        let mid: Vec<&&ELink> = ls.iter().filter(|l| depth.contains_key(&l.out_node) && depth.contains_key(&l.in_node)).collect();
+        for _ in 0..depth.len() {
+            for l in &mid {
+                let d = depth[&l.out_node] + 1;
+                if depth[&l.in_node] < d {
+                    depth.insert(l.in_node, d);
                 }
             }
         }
-        let mx = ids.iter().filter(|i| kind(**i) != NKind::Meter).map(|i| col[i]).max();
-        for i in ids {
-            if kind(*i) == NKind::Meter {
-                col.insert(*i, mx.map_or(0, |m| m + 1));
-            }
-        }
-        let n_cols = col.values().max().map_or(0, |m| m + 1);
-        let mut cols: Vec<Vec<u32>> = vec![Vec::new(); n_cols];
-        for i in ids {
-            cols[col[i]].push(*i);
-        }
-        let cols: Vec<Vec<u32>> = cols.into_iter().filter(|c| !c.is_empty()).collect();
-        // each placed node's column and top; each column's nodes (top, bottom)
-        let mut at: HashMap<u32, (usize, f64)> = HashMap::new();
-        let mut rects: Vec<Vec<(f64, f64)>> = Vec::new();
-        let mut place = Vec::new();
-        let (mut w, mut h) = (0.0f64, 0.0f64);
-        for (ci, mut c) in cols.into_iter().enumerate() {
-            // the height a link comes in at: its port's, moved to the gaps it takes past the
-            // columns between (as link_path draws it), so that the order makes no crossings
-            let arrive = |l: &ELink, at: &HashMap<u32, (usize, f64)>, rects: &[Vec<(f64, f64)>]| {
-                let (cs, top) = *at.get(&l.out_node)?;
-                let i = m.node(l.out_node)?.outs.iter().position(|p| p.id == l.out_port)?;
-                let mut y = top + NH0 + i as f64 * PR + PR / 2.0 + 2.0;
-                for r in rects.iter().take(ci).skip(cs + 1) {
-                    y = free_y(r, y, 0.0);
+        let mids: Vec<Vec<u32>> = (0..depth.values().max().map_or(0, |d| d + 1)).map(|d| depth.iter().filter(|(_, v)| **v == d).map(|(k, _)| *k).collect()).collect();
+        let stack = |c: &[u32]| c.iter().map(|&i| tall(i)).sum::<f64>() + NGAP * c.len().saturating_sub(1) as f64;
+        let by_kind = |a: &u32, b: &u32| kind(*a).cmp(&kind(*b)).then(desc(*a).cmp(desc(*b))).then(a.cmp(b));
+        let out_y = |l: &ELink| m.node(l.out_node)?.outs.iter().position(|p| p.id == l.out_port).map(port_y);
+        // the height its links come in at (from the columns already placed): fewer crossings
+        let bary = |id: u32, at: &HashMap<u32, f64>| {
+            let ys: Vec<f64> = ls.iter().filter(|l| l.in_node == id).filter_map(|l| Some(at.get(&l.out_node)? + out_y(l)?)).collect();
+            if ys.is_empty() { 1e6 + kind(id) as u8 as f64 } else { ys.iter().sum::<f64>() / ys.len() as f64 }
+        };
+        // the columns, each group going on in the next column past `cap` tall
+        let columns = |cap: f64| -> Vec<Vec<u32>> {
+            let mut at: HashMap<u32, f64> = HashMap::new();
+            let mut cols = Vec::new();
+            let lists = [(of(0), 0u8), (of(1), 0)].into_iter().chain(mids.iter().map(|c| (c.clone(), 1))).chain([(of(3), 2)]);
+            for (mut c, how) in lists {
+                if c.is_empty() {
+                    continue;
                 }
-                Some(y)
-            };
-            let bary = |id: u32, at: &HashMap<u32, (usize, f64)>, rects: &[Vec<(f64, f64)>]| {
-                let ps: Vec<f64> = ls.iter().filter(|l| l.in_node == id).filter_map(|l| arrive(l, at, rects)).collect();
-                if ps.is_empty() { 1e6 + kind(id) as u8 as f64 } else { ps.iter().sum::<f64>() / ps.len() as f64 }
-            };
-            let desc = |id: u32| m.node(id).map_or(String::new(), |n| n.desc.clone());
-            if ci == 0 {
-                c.sort_by(|a, b| kind(*a).cmp(&kind(*b)).then(desc(*a).cmp(&desc(*b))));
-            } else {
-                c.sort_by(|a, b| bary(*a, &at, &rects).total_cmp(&bary(*b, &at, &rects)));
+                match how {
+                    0 => c.sort_by(by_kind),
+                    1 => c.sort_by(|a, b| bary(*a, &at).total_cmp(&bary(*b, &at)).then(by_kind(a, b))),
+                    _ => c.sort_by(|a, b| listener(*a).cmp(&listener(*b)).then(bary(*a, &at).total_cmp(&bary(*b, &at))).then(by_kind(a, b))),
+                }
+                let (mut col, mut y) = (Vec::new(), 0.0);
+                for i in c {
+                    if !col.is_empty() && y + tall(i) > cap {
+                        cols.push(std::mem::take(&mut col));
+                        y = 0.0;
+                    }
+                    col.push(i);
+                    at.insert(i, y);
+                    y += tall(i) + NGAP;
+                }
+                cols.push(col);
             }
-            let mut y = 0.0;
-            let mut col_rects = Vec::new();
-            for id in &c {
-                let nh = m.node(*id).map_or(60.0, node_h);
-                at.insert(*id, (ci, y));
-                col_rects.push((y, y + nh));
-                place.push((*id, ci as f64 * COLW, y));
-                y += nh + NGAP;
+            cols
+        };
+        let size = |cols: &[Vec<u32>]| (cols.len().saturating_sub(1) as f64 * COLW + NW, cols.iter().map(|c| stack(c)).fold(0.0, f64::max));
+        // as tall as needs the least zoom to fit a wide view; never lower than the middle's
+        // tallest column (its depth is its own) or the tallest node
+        let low = mids.iter().map(|c| stack(c)).chain(ids.iter().map(|&i| tall(i))).fold(0.0, f64::max);
+        let top = stack(ids).max(low);
+        let step = ((top - low) / 100.0).max(10.0);
+        let mut best: Option<(f64, Vec<Vec<u32>>)> = None;
+        let mut cap = low;
+        while cap <= top + 1.0 {
+            let cols = columns(cap);
+            let (w, h) = size(&cols);
+            let score = (w / ASPECT).max(h);
+            if best.as_ref().is_none_or(|b| score < b.0 - 1e-6) {
+                best = Some((score, cols));
             }
-            rects.push(col_rects);
-            h = h.max(y - NGAP);
-            w = ci as f64 * COLW + NW;
+            cap += step;
         }
-        let first = ids.iter().min_by_key(|i| (kind(**i), m.node(**i).map(|n| n.desc.clone()))).copied().unwrap_or(0);
-        let key = format!("{}{}", kind(first) as u8, m.node(first).map_or("", |n| n.desc.as_str()));
-        (key, place, w, h)
+        let cols = best.map(|b| b.1).unwrap_or_default();
+        let w = size(&cols).0;
+        let pos = self.unblock(cols, ls);
+        let h = pos.iter().map(|(i, (_, y))| y + tall(*i)).fold(0.0, f64::max);
+        (pos, w, h)
+    }
+
+    /// Places `cols` (node ids, top down) so that no link goes through a port that isn't one of
+    /// its two ends (it would look like it went in there): neighbours in a column change places
+    /// while that helps; what is left, of the blocks that can set a line free (the one whose port
+    /// it goes through, the line's two ends) the one that sets most free with the least step
+    /// down goes down, by half rows (the ports of the columns stay in step). Always possible
+    /// (far enough down, a block is clear of any line); the work is bounded all the same.
+    fn unblock(&self, mut cols: Vec<Vec<u32>>, ls: &[&ELink]) -> HashMap<u32, (f64, f64)> {
+        let m = &self.model;
+        let tall = |id: u32| m.node(id).map_or(60.0, node_h);
+        let mut down: HashMap<u32, f64> = HashMap::new();
+        let place = |cols: &[Vec<u32>], down: &HashMap<u32, f64>| {
+            let mut pos = HashMap::new();
+            for (ci, c) in cols.iter().enumerate() {
+                let mut y = 0.0;
+                for &i in c {
+                    y += down.get(&i).copied().unwrap_or(0.0);
+                    pos.insert(i, (ci as f64 * COLW, y));
+                    y += tall(i) + NGAP;
+                }
+            }
+            pos
+        };
+        // (each look at the lines costs one of these)
+        let mut budget = 800usize;
+        let mut n = self.through(&place(&cols, &down), ls).len();
+        while n > 0 && budget > 0 {
+            let mut better: Option<(usize, usize, usize)> = None;
+            for ci in 0..cols.len() {
+                for k in 0..cols[ci].len().saturating_sub(1) {
+                    if budget == 0 {
+                        break;
+                    }
+                    budget -= 1;
+                    cols[ci].swap(k, k + 1);
+                    let got = self.through(&place(&cols, &down), ls).len();
+                    cols[ci].swap(k, k + 1);
+                    if got < n && better.is_none_or(|b| got < b.0) {
+                        better = Some((got, ci, k));
+                    }
+                }
+            }
+            let Some((got, ci, k)) = better else { break };
+            cols[ci].swap(k, k + 1);
+            n = got;
+        }
+        let step = PR / 2.0;
+        while budget > 0 {
+            let hits = self.through(&place(&cols, &down), ls);
+            if hits.is_empty() {
+                break;
+            }
+            let free: std::collections::BTreeSet<u32> = hits.iter().flat_map(|&(l, owner)| [owner, l.out_node, l.in_node]).collect();
+            let mut best: Option<(usize, usize, u32)> = None;
+            'blocks: for i in free {
+                for k in 1..=12 {
+                    if budget == 0 {
+                        break 'blocks;
+                    }
+                    budget -= 1;
+                    *down.entry(i).or_default() += step * k as f64;
+                    let got = self.through(&place(&cols, &down), ls).len();
+                    *down.entry(i).or_default() -= step * k as f64;
+                    if got < hits.len() {
+                        if best.is_none_or(|b| (got, k) < (b.0, b.1)) {
+                            best = Some((got, k, i));
+                        }
+                        break;
+                    }
+                }
+            }
+            let Some((_, k, i)) = best else { break };
+            *down.entry(i).or_default() += step * k as f64;
+        }
+        place(&cols, &down)
+    }
+
+    /// The links that go through a port not theirs (a line this close to its dot), and whose
+    /// port it is, with the nodes at `pos`.
+    fn through<'a>(&self, pos: &HashMap<u32, (f64, f64)>, ls: &[&'a ELink]) -> Vec<(&'a ELink, u32)> {
+        const DOT: f64 = 6.0;
+        let m = &self.model;
+        let mut dots = Vec::new();
+        for (&id, &(x, y)) in pos {
+            let Some(n) = m.node(id) else { continue };
+            dots.extend(n.ins.iter().enumerate().map(|(i, p)| ((x, y + port_y(i)), id, p.id)));
+            dots.extend(n.outs.iter().enumerate().map(|(i, p)| ((x + NW, y + port_y(i)), id, p.id)));
+        }
+        let at = |node: u32, port: u32| {
+            let (x, y) = *pos.get(&node)?;
+            let n = m.node(node)?;
+            n.ins.iter().position(|p| p.id == port).map(|i| (x, y + port_y(i))).or_else(|| n.outs.iter().position(|p| p.id == port).map(|i| (x + NW, y + port_y(i))))
+        };
+        let mut found = Vec::new();
+        for &l in ls {
+            let (Some(a), Some(b)) = (at(l.out_node, l.out_port), at(l.in_node, l.in_port)) else { continue };
+            let c = link_curve(a, b);
+            let pts: Vec<(f64, f64)> = (0..=32).map(|k| bezier(&c, k as f64 / 32.0)).collect();
+            let (x0, x1) = pts.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| (lo.min(p.0), hi.max(p.0)));
+            let (y0, y1) = pts.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| (lo.min(p.1), hi.max(p.1)));
+            for &((dx, dy), owner, port) in &dots {
+                if port == l.out_port || port == l.in_port || dx < x0 - DOT || dx > x1 + DOT || dy < y0 - DOT || dy > y1 + DOT {
+                    continue;
+                }
+                if pts.windows(2).any(|w| seg_dist((dx, dy), w[0], w[1]) < DOT) {
+                    found.push((l, owner));
+                }
+            }
+        }
+        found
     }
 
     fn port_xy(&self, lay: &Layout, node: u32, port: u32) -> Option<(f64, f64)> {
         let (x, y) = *lay.pos.get(&node)?;
         let n = self.model.node(node)?;
         if let Some(i) = n.ins.iter().position(|p| p.id == port) {
-            return Some((x, y + NH0 + i as f64 * PR + PR / 2.0 + 2.0));
+            return Some((x, y + port_y(i)));
         }
         let i = n.outs.iter().position(|p| p.id == port)?;
-        Some((x + NW, y + NH0 + i as f64 * PR + PR / 2.0 + 2.0))
-    }
-
-    /// A link's way from `a` to `b` as cubic pieces: one curve, or, when nodes in a column it
-    /// crosses stand in its way, through the gap beside them, straight across that column.
-    /// Where a link out of `port` runs in the bundle of its node's links: as far below the first
-    /// one as its port is below the first port, and how deep the bundle is.
-    fn lane(&self, node: u32, port: u32) -> (f64, f64) {
-        let Some(n) = self.model.node(node) else { return (0.0, 0.0) };
-        let Some(i) = n.outs.iter().position(|p| p.id == port) else { return (0.0, 0.0) };
-        (i as f64 * PR, (n.outs.len() as f64 - 1.0) * PR)
-    }
-
-    /// A link's way from `a` to `b`. The links out of one node go as a bundle (see `lane`): the
-    /// way is found once, for the first, and each one is that way moved `lane.0` off it, so a
-    /// stereo pair keeps its distance apart all along, round the nodes in its way too.
-    fn link_path(&self, lay: &Layout, a: (f64, f64), b: (f64, f64), lane: (f64, f64)) -> Vec<[(f64, f64); 4]> {
-        let (off, extent) = lane;
-        let (a, b) = ((a.0, a.1 - off), (b.0, b.1 - off));
-        let curve = |p: (f64, f64), q: (f64, f64)| {
-            let d = ((q.0 - p.0).abs() / 2.0).max(50.0);
-            [p, (p.0 + d, p.1), (q.0 - d, q.1), q]
-        };
-        // the nodes between the two ends, column by column
-        let mut cols: BTreeMap<i64, Vec<(f64, f64)>> = BTreeMap::new();
-        // only its own band's: the next band's nodes in the same column are no gap to take
-        let band = lay.bands.iter().find(|(y, bh, ..)| a.1 >= *y && a.1 <= y + bh).map_or((f64::MIN, f64::MAX), |(y, bh, ..)| (*y, y + bh));
-        if b.0 > a.0 + NW {
-            for n in &self.model.nodes {
-                if let Some(&(x, y)) = lay.pos.get(&n.id)
-                    && x > a.0 + 1.0
-                    && x + NW < b.0 - 1.0
-                    && y >= band.0
-                    && y <= band.1
-                {
-                    cols.entry(x.round() as i64).or_default().push((y, y + node_h(n)));
-                }
-            }
-        }
-        let mut out = Vec::new();
-        let mut from = a;
-        for (x, mut rects) in cols {
-            let x = x as f64;
-            // the curve as it would go: does it cross a node of this column?
-            let c = curve(from, b);
-            let hits = (0..=48).any(|k| {
-                let t = k as f64 / 48.0;
-                let u = 1.0 - t;
-                let px = u * u * u * c[0].0 + 3.0 * u * u * t * c[1].0 + 3.0 * u * t * t * c[2].0 + t * t * t * c[3].0;
-                let py = u * u * u * c[0].1 + 3.0 * u * u * t * c[1].1 + 3.0 * u * t * t * c[2].1 + t * t * t * c[3].1;
-                px > x - 4.0 && px < x + NW + 4.0 && rects.iter().any(|(t, b)| py + extent > t - 4.0 && py < b + 4.0)
-            });
-            if !hits {
-                continue;
-            }
-            rects.sort_by(|p, q| p.0.total_cmp(&q.0));
-            let wy = free_y(&rects, from.1, extent);
-            let (l, r) = ((x - 12.0, wy), (x + NW + 12.0, wy));
-            out.push(curve(from, l));
-            out.push([l, l, r, r]);
-            from = r;
-        }
-        out.push(curve(from, b));
-        if off == 0.0 {
-            return out;
-        }
-        // in quarters first: a curve moved off itself in one piece bends too far on its slopes
-        out.into_iter().flat_map(|c| split(c).into_iter().flat_map(split)).map(|c| offset_cubic(c, off)).collect()
+        Some((x + NW, y + port_y(i)))
     }
 
     // ---------------- drawing ----------------
 
-    /// The node a selection belongs to, and the nodes it touches.
     /// The selected nodes (a node; a port's node; a device's or a client's nodes), and the nodes
     /// they are linked to (a link's two ends).
     fn focus(&self) -> (HashSet<u32>, HashSet<u32>) {
@@ -1302,12 +1378,13 @@ impl Engine {
             Some(Sel::Link(id)) => m.links.iter().filter(|l| l.id == id).flat_map(|l| [l.out_port, l.in_port]).collect(),
             _ => HashSet::new(),
         };
+        // what the cue hears: the ports linked into its in side
+        let cue_in = m.nodes.iter().find(|n| n.kind == NKind::Cue && n.name == CUE_NODE).map(|n| n.id);
+        let heard: HashSet<u32> = m.links.iter().filter(|l| Some(l.in_node) == cue_in).map(|l| l.out_port).collect();
         for l in &m.links {
             let (Some(a), Some(b)) = (self.port_xy(lay, l.out_node, l.out_port), self.port_xy(lay, l.in_node, l.in_port)) else { continue };
-            let d = self.link_path(lay, a, b, self.lane(l.out_node, l.out_port)).iter().fold(format!("M{},{}", a.0, a.1), |mut d, c| {
-                let _ = write!(d, " C{},{} {},{} {},{}", c[1].0, c[1].1, c[2].0, c[2].1, c[3].0, c[3].1);
-                d
-            });
+            let c = link_curve(a, b);
+            let d = format!("M{},{} C{},{} {},{} {},{}", c[0].0, c[0].1, c[1].0, c[1].1, c[2].0, c[2].1, c[3].0, c[3].1);
             let hl = self.sel == Some(Sel::Link(l.id)) || focus.contains(&l.out_node) || focus.contains(&l.in_node) || self.sel.is_some_and(|s| s == Sel::Port(l.out_port) || s == Sel::Port(l.in_port));
             // the colour of the block the sound comes out of; the state in its width, dashes and fading
             let from = hex(m.node(l.out_node).map_or(C_SYSTEM, |n| n.color));
@@ -1347,7 +1424,7 @@ impl Engine {
             if n.system {
                 tags.push("SYSTEM".into());
             }
-            if n.kind == NKind::Meter {
+            if matches!(n.kind, NKind::Meter | NKind::Cue) {
                 tags.push("PATCHCORD".into());
             }
             if g.is_some_and(|g| g.driver == n.id) {
@@ -1388,7 +1465,7 @@ impl Engine {
             // whole ear the port; inputs on the left, outputs on the right
             for (out, ports) in [(false, &n.ins), (true, &n.outs)] {
                 for (i, p) in ports.iter().enumerate() {
-                    let py = NH0 + i as f64 * PR + PR / 2.0 + 2.0;
+                    let py = port_y(i);
                     let label = port_label(n, p);
                     let w = ear_w(&label);
                     let (px, tx, anchor, d) = if out {
@@ -1398,6 +1475,18 @@ impl Engine {
                     };
                     let _ = if lit_ports.contains(&p.id) {
                         write!(o, r##"<path d="{d}" fill="{SEL}"/><circle cx="{px}" cy="{py}" r="4" fill="{SEL}" stroke="#0f1011" stroke-width="1.5"/><text x="{tx}" y="{}"{anchor} font-family="Noto Sans Mono" font-size="10" font-weight="bold" fill="{SEL_TEXT}">{}</text>"##, py + 3.5, esc(&label))
+                    } else if heard.contains(&p.id) || self.cue_kept.contains(&p.id) {
+                        // kept on in the cue: the whole port in its colour, and the headphones of
+                        // the CUE key just inside the block from its ear
+                        let ix = if out { NW - w - 9.0 } else { w + 9.0 };
+                        write!(
+                            o,
+                            r##"<path d="{d}" fill="{CUE}"/><circle cx="{px}" cy="{py}" r="4" fill="{CUE}" stroke="#0f1011" stroke-width="1.5"/><text x="{tx}" y="{}"{anchor} font-family="Noto Sans Mono" font-size="10" font-weight="bold" fill="{CUE_TEXT}">{}</text><g transform="translate({},{}) scale(.46)" fill="none" stroke="{CUE}" stroke-width="2.6" stroke-linecap="round"><path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="4.5" height="7" rx="1.5" fill="{CUE}" stroke="none"/><rect x="16.5" y="14" width="4.5" height="7" rx="1.5" fill="{CUE}" stroke="none"/></g>"##,
+                            py + 3.5,
+                            esc(&label),
+                            ix - 5.5,
+                            py - 6.3
+                        )
                     } else {
                         write!(o, r##"<path d="{d}" fill="{c}" fill-opacity=".1"/><circle cx="{px}" cy="{py}" r="4" fill="{c}" stroke="#0f1011" stroke-width="1.5"/><text x="{tx}" y="{}"{anchor} font-family="Noto Sans Mono" font-size="10" fill="#a8abae">{}</text>"##, py + 3.5, esc(&label))
                     };
@@ -1457,7 +1546,8 @@ impl Engine {
 
     /// Brings every part up to date and returns the pictures to draw, in order: (layer, x, y, w,
     /// h) in window pixels.
-    pub fn sprites(&mut self, size: (u32, u32), dpi: f64, version: &str) -> Vec<(&Layer, f64, f64, f64, f64)> {
+    /// (Each with where it may draw, if not everywhere: a body cut to its view.)
+    pub fn sprites(&mut self, size: (u32, u32), dpi: f64, version: &str) -> Vec<Pic<'_>> {
         let (fw, fh) = (size.0 as f64 / dpi, size.1 as f64 / dpi);
         let [strip_a, graph_a, insp_a, bottom_a] = self.areas(fw, fh);
         self.spent.clear();
@@ -1468,9 +1558,11 @@ impl Engine {
         };
         // the graph: drawn again when what it shows changes, or sharp again after zooming
         let mut hsh = std::hash::DefaultHasher::new();
-        std::hash::Hash::hash(&(&self.model.links, self.sel, self.show), &mut hsh);
+        std::hash::Hash::hash(&(&self.model.links, self.sel, self.show, &self.cue_kept), &mut hsh);
         for n in &self.model.nodes {
+            // (all that graph_svg draws of a node: its tags too)
             std::hash::Hash::hash(&(n.id, n.state, &n.ins, &n.outs, &n.desc, self.model.group_of.get(&n.id), self.xruns.get(&n.id).map(|x| x.0)), &mut hsh);
+            std::hash::Hash::hash(&(&n.class, n.system, n.color, n.desk.as_ref().map(|d| d.3), self.model.timing.get(&n.id).map(|t| t.latency)), &mut hsh);
         }
         for g in &self.model.groups {
             std::hash::Hash::hash(&(g.driver, g.quantum, g.rate, &g.members), &mut hsh);
@@ -1597,17 +1689,30 @@ impl Engine {
         lap(&mut self.spent, "engine.strip+legend");
         // what of the graph the details leave in sight
         let seen = if self.sel.is_some() { graph_a[2].min(insp_a[0] - graph_a[0]) } else { graph_a[2] };
-        let (ov, ov_hits) = self.overlay_svg(graph_a, seen);
-        let sig = hash_str(&ov, dpi);
-        if self.overlay.as_ref().is_none_or(|(s, _)| *s != sig) {
-            self.overlay = Some((sig, Layer { id: next_id(), pm: rasterize(&text::svg_options(), &ov, dpi), x: graph_a[0], y: graph_a[1], w: graph_a[2], h: graph_a[3] }));
+        let (ov, ov_hits, chips_h) = self.overlay_svg(graph_a, seen);
+        // its two strips: the same drawing, each through a window on it
+        let (gw, gh) = (graph_a[2].max(1.0), graph_a[3].max(1.0));
+        let (top_h, bot_h) = (chips_h.min(gh), OVERLAY_BOTTOM.min(gh));
+        let head = format!(r#"width="{gw}" height="{gh}" viewBox="0 0 {gw} {gh}""#);
+        for (layer, y0, sh) in [(&mut self.overlay, 0.0, top_h), (&mut self.overlay_b, gh - bot_h, bot_h)] {
+            let svg = ov.replacen(&head, &format!(r#"width="{gw}" height="{sh}" viewBox="0 {y0} {gw} {sh}""#), 1);
+            let sig = hash_str(&svg, dpi);
+            if layer.as_ref().is_none_or(|(s, _)| *s != sig) {
+                *layer = Some((sig, Layer { id: next_id(), pm: rasterize(&text::svg_options(), &svg, dpi), x: graph_a[0], y: graph_a[1] + y0, w: gw, h: sh }));
+            }
+            if let Some((_, l)) = layer {
+                (l.x, l.y) = (graph_a[0], graph_a[1] + y0);
+            }
         }
         self.hits.extend(ov_hits);
         lap(&mut self.spent, "engine.overlay");
         if self.sel.is_none() {
             (self.insp, self.insp_want) = (None, None);
+            (self.bodies[0], self.bars[0]) = (Body::default(), None);
         } else {
-            let (isvg, ihits) = self.insp_svg(insp_a);
+            let (isvg, mut ihits, ibody) = self.insp_svg(insp_a);
+            self.body_slice(0, &ibody, dpi);
+            self.bar(0, &ibody, insp_a, &mut ihits);
             let sig = hash_str(&isvg, dpi);
             // the first at once, then on the painter's threads (the old one shows meanwhile)
             if self.insp.is_none() {
@@ -1623,8 +1728,11 @@ impl Engine {
         lap(&mut self.spent, "engine.details");
         if self.bottom_shut {
             (self.bottom, self.bottom_want) = (None, None);
+            (self.bodies[1], self.bars[1]) = (Body::default(), None);
         } else {
-            let (bsvg, bhits) = self.bottom_svg(bottom_a);
+            let (bsvg, mut bhits, bbody) = self.bottom_svg(bottom_a);
+            self.body_slice(1, &bbody, dpi);
+            self.bar(1, &bbody, bottom_a, &mut bhits);
             let sig = hash_str(&bsvg, dpi);
             if self.bottom.is_none() {
                 self.bottom = Some((sig, Layer { id: next_id(), pm: rasterize(&text::svg_options(), &bsvg, dpi), x: bottom_a[0], y: bottom_a[1], w: bottom_a[2], h: bottom_a[3] }));
@@ -1636,7 +1744,7 @@ impl Engine {
         }
         lap(&mut self.spent, "engine.tables");
         // the same picture may sit elsewhere after the window or a neighbour changed size
-        for (l, at) in [(&mut self.strip, strip_a), (&mut self.overlay, graph_a), (&mut self.insp, insp_a), (&mut self.bottom, bottom_a)] {
+        for (l, at) in [(&mut self.strip, strip_a), (&mut self.insp, insp_a), (&mut self.bottom, bottom_a)] {
             if let Some((_, l)) = l {
                 (l.x, l.y) = (at[0], at[1]);
             }
@@ -1645,22 +1753,87 @@ impl Engine {
         let v = self.view;
         let mut out = Vec::new();
         if let Some((_, _, l)) = &self.graph_layer {
-            out.push((l, v.x, v.y, l.w * v.s, l.h * v.s));
+            out.push((l, v.x, v.y, l.w * v.s, l.h * v.s, None));
         }
         for (_, l) in self.nums.values() {
-            out.push((l, l.x * v.s + v.x, l.y * v.s + v.y, l.w * v.s, l.h * v.s));
+            out.push((l, l.x * v.s + v.x, l.y * v.s + v.y, l.w * v.s, l.h * v.s, None));
         }
-        for l in [&self.overlay, &self.legend, &self.strip, &self.insp, &self.bottom, &self.info].into_iter().flatten().map(|(_, l)| l) {
-            out.push((l, l.x * dpi, l.y * dpi, l.w * dpi, l.h * dpi));
+        for l in [&self.overlay, &self.overlay_b, &self.legend, &self.strip].into_iter().flatten().map(|(_, l)| l) {
+            out.push((l, l.x * dpi, l.y * dpi, l.w * dpi, l.h * dpi, None));
+        }
+        // the details and the tables: each its frame, then its body slid to where it is
+        // scrolled and cut to its view, then its scrollbar
+        for (i, frame, a) in [(0, &self.insp, insp_a), (1, &self.bottom, bottom_a)] {
+            let Some((_, l)) = frame else { continue };
+            out.push((l, l.x * dpi, l.y * dpi, l.w * dpi, l.h * dpi, None));
+            if let Some((_, s0, b)) = &self.bodies[i].layer {
+                let (top, by) = self.body_at[i];
+                let view = [a[0] * dpi, (a[1] + top) * dpi, a[2] * dpi, (a[3] - top).max(0.0) * dpi];
+                out.push((b, a[0] * dpi, ((a[1] + by + s0) * dpi).round(), b.w * dpi, b.h * dpi, Some(view)));
+            }
+            if let Some(bar) = self.bars[i] {
+                for (px, r) in [(&self.bar_px[0], bar.track), (&self.bar_px[1], bar.thumb)] {
+                    out.push((px, r[0] * dpi, r[1] * dpi, r[2] * dpi, r[3] * dpi, None));
+                }
+            }
+        }
+        if let Some((_, l)) = &self.info {
+            out.push((l, l.x * dpi, l.y * dpi, l.w * dpi, l.h * dpi, None));
         }
         out
+    }
+
+    /// Brings body `i`'s slice up to date: kept while it shows what the body has and covers the
+    /// view; else a new one round the view, at once the first time, then on the painter's
+    /// threads (the old one shows meanwhile).
+    fn body_slice(&mut self, i: usize, b: &Scrolled, dpi: f64) {
+        self.body_at[i] = (b.top, b.by);
+        let what = hash_str(&b.body, dpi + b.w * 1e-6);
+        let (v0, v1) = ((b.top - b.by).max(0.0), (b.top - b.by + b.view_h).min(b.content).max(0.0));
+        let covers = |s0: f64, sh: f64| s0 <= v0 + 0.5 && s0 + sh >= v1 - 0.5;
+        let body = &mut self.bodies[i];
+        if body.layer.as_ref().is_some_and(|(w, s0, l)| *w == what && covers(*s0, l.h)) {
+            body.want = None;
+            return;
+        }
+        if body.want.is_some_and(|(_, w, s0, _, sh)| w == what && covers(s0, sh)) {
+            return;
+        }
+        let s0 = (v0 - b.view_h * 0.5).max(0.0).floor();
+        let sh = (b.view_h * 2.0).min(b.content - s0).max(1.0).ceil();
+        let svg = format!(r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{sh}" viewBox="0 {s0} {w} {sh}" font-family="Noto Sans Mono">{}</svg>"##, b.body, w = b.w);
+        let sig = hash_str(&svg, dpi);
+        if body.layer.is_none() {
+            body.layer = Some((what, s0, Layer { id: next_id(), pm: rasterize(&text::svg_options(), &svg, dpi), x: 0.0, y: 0.0, w: b.w, h: sh }));
+            body.want = None;
+        } else {
+            body.want = Some((sig, what, s0, b.w, sh));
+            self.inbox.ask(painter::key("body", i as u8), sig, svg, dpi);
+        }
+    }
+
+    /// Body `i`'s scrollbar, when it is taller than its view: a track at the panel's right
+    /// edge, a thumb as long as the view's share of it; its hit first among the panel's.
+    fn bar(&mut self, i: usize, b: &Scrolled, a: [f64; 4], hits: &mut Vec<(Hit, [f64; 4])>) {
+        let max = (b.content - b.view_h).max(0.0);
+        if max < 1.0 {
+            self.bars[i] = None;
+            return;
+        }
+        let track = [a[0] + a[2] - 8.0, a[1] + b.top + 3.0, 5.0, (b.view_h - 6.0).max(10.0)];
+        let th = (track[3] * b.view_h / b.content).max(24.0).min(track[3]);
+        let at = self.scroll[i].clamp(0.0, max) / max;
+        let thumb = [track[0], track[1] + (track[3] - th) * at, track[2], th];
+        self.bars[i] = Some(Bar { track, thumb, max });
+        hits.insert(0, (Hit::Bar(i), [track[0] - 5.0, track[1], track[2] + 8.0, track[3]]));
     }
 
     /// The GPU has these pictures' pixels now: they are let go. Returns how many bytes.
     pub fn uploaded(&mut self, has: impl Fn(u64) -> bool) -> usize {
         let mut freed = 0;
-        let parts = [self.graph_layer.as_mut().map(|(_, _, l)| l), self.strip.as_mut().map(|(_, l)| l), self.insp.as_mut().map(|(_, l)| l), self.bottom.as_mut().map(|(_, l)| l), self.overlay.as_mut().map(|(_, l)| l), self.legend.as_mut().map(|(_, l)| l), self.info.as_mut().map(|(_, l)| l)];
-        for l in self.nums.values_mut().map(|(_, l)| l).chain(parts.into_iter().flatten()) {
+        let parts = [self.graph_layer.as_mut().map(|(_, _, l)| l), self.strip.as_mut().map(|(_, l)| l), self.insp.as_mut().map(|(_, l)| l), self.bottom.as_mut().map(|(_, l)| l), self.overlay.as_mut().map(|(_, l)| l), self.overlay_b.as_mut().map(|(_, l)| l), self.legend.as_mut().map(|(_, l)| l), self.info.as_mut().map(|(_, l)| l)];
+        let bodies = self.bodies.iter_mut().filter_map(|b| b.layer.as_mut().map(|(_, _, l)| l));
+        for l in self.nums.values_mut().map(|(_, l)| l).chain(parts.into_iter().flatten()).chain(bodies) {
             if has(l.id) {
                 freed += l.pm.take().map_or(0, |pm| pm.data().len());
             }
@@ -1794,7 +1967,8 @@ impl Engine {
 
     /// The SHOW chips over the graph's top left corner, and the keys to the legend and the diagnostics at its bottom.
     /// `seen`: how much of its width the details leave in sight.
-    fn overlay_svg(&self, a: [f64; 4], seen: f64) -> (String, Vec<(Hit, [f64; 4])>) {
+    /// (And how deep its chips go: its top strip.)
+    fn overlay_svg(&self, a: [f64; 4], seen: f64) -> (String, Vec<(Hit, [f64; 4])>, f64) {
         let (w, h) = (a[2].max(1.0), a[3].max(1.0));
         let seen = seen.clamp(1.0, w);
         let mut o = String::new();
@@ -1849,11 +2023,11 @@ impl Engine {
             if self.legend_open { "#3a3b3f" } else { "#2a2b2e" }
         );
         hits.push((Hit::Legend, [a[0] + 6.0, a[1] + ly - 16.0, 104.0, 24.0]));
-        (format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" font-family="Noto Sans Mono">{o}</svg>"#), hits)
+        (format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" font-family="Noto Sans Mono">{o}</svg>"#), hits, y + 26.0)
     }
 
     /// The inspector: what is selected, with its tabs.
-    fn insp_svg(&mut self, a: [f64; 4]) -> (String, Vec<(Hit, [f64; 4])>) {
+    fn insp_svg(&mut self, a: [f64; 4]) -> (String, Vec<(Hit, [f64; 4])>, Scrolled) {
         let (w, h) = (a[2].max(1.0), a[3].max(1.0));
         let mut hits = Vec::new();
         let mut head = String::new();
@@ -1958,7 +2132,9 @@ impl Engine {
                         }
                         heading(&mut body, &mut y, "ON THE DESK");
                         let desk = match (&n.desk, n.kind) {
-                            (_, NKind::Meter) => "Patchcord's own: a meter (the LEDs in a frame) or the cue. Passive: it follows what runs and wakes nothing. Not on the desk.".to_owned(),
+                            (_, NKind::Meter) => "Patchcord's own: a meter (the LEDs in a frame). Passive: it follows what runs and wakes nothing. Not on the desk.".to_owned(),
+                            (_, NKind::Cue) if n.name == CUE_NODE => "Patchcord's cue, its in side: what you listen to (CUE, or Alt over a jack on the desk) comes in here on passive links. It wakes nothing: what is asleep stays silent. Not on the desk.".to_owned(),
+                            (_, NKind::Cue) => "Patchcord's cue, its out side: what you listen to plays from here into the default output, at the CUE LEVEL. Not on the desk.".to_owned(),
                             (_, NKind::Driver) => "A clock of PipeWire itself, for nodes without a device. Not on the desk.".to_owned(),
                             (Some((_, name, labels, hidden)), _) => format!("{name} · {}{}", labels.join(" + "), if *hidden { " · hidden on the desk" } else { "" }),
                             (None, _) if n.system => "Plumbing Patchcord leaves out: WirePlumber's behind a headset's MIC, or another program's level meter. HIDDEN lists it under SYSTEM.".to_owned(),
@@ -2101,7 +2277,7 @@ impl Engine {
                 }
                 let (n, p, input) = match m.port(id) {
                     Some((n, p, i)) => (n.clone(), p.clone(), i),
-                    None => return (String::new(), hits),
+                    None => return (String::new(), hits, Scrolled { w, ..Default::default() }),
                 };
                 if self.itab == ITab::Props {
                     kv(&mut body, &mut y, &props_of(id).iter().map(|(k, v)| (k.as_str(), v.clone())).collect::<Vec<_>>());
@@ -2136,7 +2312,7 @@ impl Engine {
                 if !tabs.contains(&self.itab) {
                     self.itab = ITab::Info;
                 }
-                let Some(l) = m.links.iter().find(|l| l.id == id).cloned() else { return (String::new(), hits) };
+                let Some(l) = m.links.iter().find(|l| l.id == id).cloned() else { return (String::new(), hits, Scrolled { w, ..Default::default() }) };
                 let (on, inn) = (m.node(l.out_node), m.node(l.in_node));
                 let end = |n: Option<&ENode>, port: u32| n.map_or("?".into(), |n| format!("{}:{}", n.desc, port_name(n, port)));
                 if self.itab == ITab::Props {
@@ -2233,7 +2409,6 @@ impl Engine {
         }
         // the body, scrolled
         let body_h = h - top;
-        self.content_h[0] = y + 16.0;
         let sc = self.scroll[0].clamp(0.0, (y + 16.0 - body_h).max(0.0));
         self.scroll[0] = sc;
         let by = top + 6.0 - sc;
@@ -2250,14 +2425,15 @@ impl Engine {
                 hits.push((Hit::Desk(key.clone()), [a[0] + 12.0, a[1] + yy, 150.0, 24.0]));
             }
         }
+        // the frame; the body is a picture of its own (`Scrolled`)
         let svg = format!(
-            r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" font-family="Noto Sans Mono"><defs><clipPath id="c"><rect y="{top}" width="{w}" height="{body_h}"/></clipPath></defs><rect width="{w}" height="{h}" fill="#17181a"/><path d="M.5,0 V{h}" stroke="#000"/><g clip-path="url(#c)"><g transform="translate(0,{by})">{body}</g></g>{head}</svg>"##
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" font-family="Noto Sans Mono"><rect width="{w}" height="{h}" fill="#17181a"/><path d="M.5,0 V{h}" stroke="#000"/>{head}</svg>"##
         );
-        (svg, hits)
+        (svg, hits, Scrolled { body, w, top, view_h: body_h, by, content: y + 16.0 })
     }
 
     /// The tabs below the graph: TOP, ISSUES, OBJECTS, METADATA, EVENTS.
-    fn bottom_svg(&mut self, a: [f64; 4]) -> (String, Vec<(Hit, [f64; 4])>) {
+    fn bottom_svg(&mut self, a: [f64; 4]) -> (String, Vec<(Hit, [f64; 4])>, Scrolled) {
         let (w, h) = (a[2].max(1.0), a[3].max(1.0));
         let m = &self.model;
         let mut hits = Vec::new();
@@ -2505,7 +2681,6 @@ impl Engine {
         let thead_h = if matches!(self.tab, Tab::Top | Tab::Metadata) { 20.0 } else { 0.0 };
         let top = TABS_H + 4.0 + thead_h;
         let body_h = h - top;
-        self.content_h[1] = y + 8.0;
         let sc = self.scroll[1].clamp(0.0, (y + 8.0 - body_h).max(0.0));
         self.scroll[1] = sc;
         let by = top - sc;
@@ -2522,10 +2697,11 @@ impl Engine {
         } else {
             format!(r##"<rect y="{TABS_H}" width="{w}" height="{}" fill="#1a1b1d"/><g transform="translate(0,{})">{thead}</g>"##, thead_h + 4.0, TABS_H + 2.0)
         };
+        // the frame; the body is a picture of its own (`Scrolled`)
         let svg = format!(
-            r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" font-family="Noto Sans Mono"><defs><clipPath id="c"><rect y="{top}" width="{w}" height="{body_h}"/></clipPath></defs><rect width="{w}" height="{h}" fill="#131416"/><g clip-path="url(#c)"><g transform="translate(0,{by})">{body}</g></g>{thead_svg}{head}</svg>"##
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" font-family="Noto Sans Mono"><rect width="{w}" height="{h}" fill="#131416"/>{thead_svg}{head}</svg>"##
         );
-        (svg, hits)
+        (svg, hits, Scrolled { body, w, top, view_h: body_h, by, content: y + 8.0 })
     }
 
     /// The format a node runs in, as pw-top shows it: its sample format when it says, its
@@ -2581,6 +2757,19 @@ impl Engine {
                 Hit::Legend => self.legend_open = !self.legend_open,
                 Hit::LegendWin => {}
                 Hit::Info => self.info_open = !self.info_open,
+                Hit::Bar(i) => {
+                    if let Some(bar) = self.bars[i] {
+                        let [_, ty, _, th] = bar.thumb;
+                        if ly >= ty && ly <= ty + th {
+                            // the thumb in the hand
+                            self.bar_drag = Some((i, ly, self.scroll[i].min(bar.max)));
+                        } else {
+                            // a page towards where the track was clicked
+                            let page = (bar.track[3] - 20.0).max(40.0);
+                            self.scroll[i] = (self.scroll[i].min(bar.max) + if ly < ty { -page } else { page }).clamp(0.0, bar.max);
+                        }
+                    }
+                }
             }
             return None;
         }
@@ -2591,7 +2780,17 @@ impl Engine {
         None
     }
 
-    pub fn drag(&mut self, p: (f64, f64)) -> bool {
+    /// The pointer moved with the button held (`dpi`: window pixels per logical one): a thumb
+    /// scrolls its body, the graph pans.
+    pub fn drag(&mut self, p: (f64, f64), dpi: f64) -> bool {
+        if let Some((i, y0, s0)) = self.bar_drag {
+            let Some(bar) = self.bars[i] else { return false };
+            let room = (bar.track[3] - bar.thumb[3]).max(1.0);
+            let s = (s0 + (p.1 / dpi - y0) * bar.max / room).clamp(0.0, bar.max);
+            let moved = s != self.scroll[i];
+            self.scroll[i] = s;
+            return moved;
+        }
         let Some((from, v, _, moved)) = &mut self.press else { return false };
         if !*moved && ((p.0 - from.0).abs() > 4.0 || (p.1 - from.1).abs() > 4.0) {
             *moved = true;
@@ -2604,6 +2803,7 @@ impl Engine {
     }
 
     pub fn release(&mut self) {
+        self.bar_drag = None;
         if let Some((_, _, hit, moved)) = self.press.take()
             && !moved
         {
@@ -2639,7 +2839,6 @@ impl Engine {
         }
     }
 
-    /// The ? key: opens or closes the legend.
     /// Where in the window (pixels) node `name` (its description or name, or how it starts) has
     /// its header, once laid out: for the README's animation.
     pub fn node_point(&self, name: &str) -> Option<(f64, f64)> {
@@ -2653,6 +2852,7 @@ impl Engine {
         self.info_open = true;
     }
 
+    /// The ? key: opens or closes the legend.
     pub fn toggle_legend(&mut self) {
         self.legend_open = !self.legend_open;
     }
@@ -2664,14 +2864,14 @@ impl Engine {
             let Some(&(nx, ny)) = lay.pos.get(&n.id) else { continue };
             // a port: its jack, or anywhere on its ear
             for (i, p) in n.ins.iter().enumerate() {
-                let py = ny + NH0 + i as f64 * PR + PR / 2.0 + 2.0;
+                let py = ny + port_y(i);
                 let w = ear_w(&port_label(n, p));
                 if (x - nx).abs() < 8.0 && (y - py).abs() < 7.0 || (x >= nx && x <= nx + w && (y - py).abs() <= PR / 2.0) {
                     return Some(Sel::Port(p.id));
                 }
             }
             for (i, p) in n.outs.iter().enumerate() {
-                let py = ny + NH0 + i as f64 * PR + PR / 2.0 + 2.0;
+                let py = ny + port_y(i);
                 let w = ear_w(&port_label(n, p));
                 if (x - nx - NW).abs() < 8.0 && (y - py).abs() < 7.0 || (x >= nx + NW - w && x <= nx + NW && (y - py).abs() <= PR / 2.0) {
                     return Some(Sel::Port(p.id));
@@ -2685,9 +2885,9 @@ impl Engine {
         let mut best: Option<(f64, u32)> = None;
         for l in &self.model.links {
             let (Some(a), Some(b)) = (self.port_xy(lay, l.out_node, l.out_port), self.port_xy(lay, l.in_node, l.in_port)) else { continue };
-            let path = self.link_path(lay, a, b, self.lane(l.out_node, l.out_port));
-            for (k, c) in (0..=40).flat_map(|k| path.iter().map(move |c| (k, c))) {
-                let t = k as f64 / 40.0;
+            let c = link_curve(a, b);
+            for k in 0..=60 {
+                let t = k as f64 / 60.0;
                 let u = 1.0 - t;
                 let px = u * u * u * c[0].0 + 3.0 * u * u * t * c[1].0 + 3.0 * u * t * t * c[2].0 + t * t * t * c[3].0;
                 let py = u * u * u * c[0].1 + 3.0 * u * u * t * c[1].1 + 3.0 * u * t * t * c[2].1 + t * t * t * c[3].1;
@@ -2706,10 +2906,11 @@ impl Engine {
         let (lx, ly) = (p.0 / dpi, p.1 / dpi);
         let inside = |a: [f64; 4]| lx >= a[0] && lx < a[0] + a[2] && ly >= a[1] && ly < a[1] + a[3];
         let step = if f > 1.0 { -60.0 } else if f < 1.0 { 60.0 } else { 0.0 };
+        let max = |i: usize| self.bars[i].map_or(0.0, |b| b.max);
         if inside(insp) {
-            self.scroll[0] = (self.scroll[0] + step).max(0.0);
+            self.scroll[0] = (self.scroll[0].min(max(0)) + step).clamp(0.0, max(0));
         } else if inside(bottom) {
-            self.scroll[1] = (self.scroll[1] + step).max(0.0);
+            self.scroll[1] = (self.scroll[1].min(max(1)) + step).clamp(0.0, max(1));
         } else if self.in_graph(p, (size.0 as f64, size.1 as f64), dpi) {
             let w = ((p.0 - self.view.x) / self.view.s, (p.1 - self.view.y) / self.view.s);
             let s = (self.view.s * f).clamp(0.15 * dpi, 2.5 * dpi);
@@ -2718,7 +2919,6 @@ impl Engine {
         }
     }
 
-    /// Whether a re-raster after zooming is still to come (the app keeps drawing until then).
     /// For pictures without a window: brings every part up to date, the graph drawn too (it is
     /// drawn on the painter's threads, see `sprites`).
     pub fn finish(&mut self, size: (u32, u32), dpi: f64, version: &str) {
@@ -2739,6 +2939,16 @@ impl Engine {
             self.graph_want = None;
             return;
         }
+        for (i, body) in self.bodies.iter_mut().enumerate() {
+            if let Some((sig, what, s0, w, sh)) = body.want
+                && sig == done.sig
+                && done.key == painter::key("body", i as u8)
+            {
+                body.layer = Some((what, s0, Layer { id: next_id(), pm: done.pm, x: 0.0, y: 0.0, w, h: sh }));
+                body.want = None;
+                return;
+            }
+        }
         for (key, want, layer) in [("details", &mut self.insp_want, &mut self.insp), ("tables", &mut self.bottom_want, &mut self.bottom), ("strip", &mut self.strip_want, &mut self.strip)] {
             if let Some((sig, [x, y, w, h])) = *want
                 && sig == done.sig
@@ -2751,6 +2961,7 @@ impl Engine {
         }
     }
 
+    /// Whether a re-raster after zooming is still to come (the app keeps drawing until then).
     pub fn settling(&self) -> bool {
         self.zoomed.is_some_and(|t| t.elapsed() < Duration::from_millis(400)) || self.inbox.busy()
     }
@@ -2778,13 +2989,12 @@ impl Engine {
         let (w, h) = (self.lay.w.max(10.0), self.lay.h.max(10.0));
         let (gap, title, top) = (60.0, 34.0, 110.0);
         let mut o = String::new();
-        let (ov, _) = self.overlay_svg([0.0, 0.0, 2.0 * w + gap, 80.0], 2.0 * w + gap);
+        let (ov, ..) = self.overlay_svg([0.0, 0.0, 2.0 * w + gap, 80.0], 2.0 * w + gap);
         let _ = write!(o, r#"<g transform="translate(30,20)">{ov}</g>"#);
         for (i, (name, sel)) in [("NOTHING SELECTED", None), ("A NODE SELECTED", Some(Sel::Node(node))), ("A PORT SELECTED", Some(Sel::Port(port))), ("A LINK SELECTED", Some(Sel::Link(link)))].into_iter().enumerate() {
             self.sel = sel;
-            // four graphs in one picture: their glows' ids apart
             let (x, y) = (30.0 + (i % 2) as f64 * (w + gap), top + (i / 2) as f64 * (h + title + gap));
-            let _ = write!(o, r##"<text x="{x}" y="{}" font-family="Noto Sans" font-weight="bold" font-size="14" letter-spacing="1.5" fill="#e58f2c">{name}</text><g transform="translate({x},{})">{}</g>"##, y + 18.0, y + title, self.graph_svg(true).replace("glow", &format!("p{i}glow")));
+            let _ = write!(o, r##"<text x="{x}" y="{}" font-family="Noto Sans" font-weight="bold" font-size="14" letter-spacing="1.5" fill="#e58f2c">{name}</text><g transform="translate({x},{})">{}</g>"##, y + 18.0, y + title, self.graph_svg(true));
         }
         self.sel = None;
         let (tw, th) = (2.0 * w + gap + 60.0, top + 2.0 * (h + title) + gap + 30.0);
@@ -2826,7 +3036,6 @@ impl Engine {
         }
     }
 
-    /// For the status bar.
     /// What a chip or button under window pixel `p` does, for the status bar.
     pub fn hover(&self, p: (f64, f64), dpi: f64) -> Option<String> {
         let (lx, ly) = (p.0 / dpi, p.1 / dpi);
@@ -2871,8 +3080,6 @@ struct Num {
     alpha: f64,
 }
 
-/// A port's name as its block shows it: cut to half the block's width when it has ports on both
-/// sides.
 /// TOP's columns in a table `w` wide: (name, x, right-aligned); a column left out has no name.
 /// When narrow, the columns that say least go first, from the right; S, ID, BUSY, ERR and NAME
 /// stay.
@@ -2913,6 +3120,8 @@ fn tab_hint(t: &Tab) -> &'static str {
     }
 }
 
+/// A port's name as its block shows it: cut to half the block's width when it has ports on both
+/// sides.
 fn port_label(n: &ENode, p: &EPort) -> String {
     cut(&p.name, if !n.ins.is_empty() && !n.outs.is_empty() { 17 } else { 34 })
 }
@@ -2936,6 +3145,13 @@ fn band_load(g: &Group) -> String {
 fn legend_size() -> (f64, f64) {
     let num = |k: &str| LEGEND_SVG.split(k).nth(1).and_then(|v| v.split('"').next()).and_then(|v| v.parse().ok()).unwrap_or(600.0);
     (num(" width=\""), num(" height=\""))
+}
+
+/// A layer of one pixel of `rgba`, stretched where it is drawn.
+fn pixel(rgba: [u8; 4]) -> Layer {
+    let mut pm = resvg::tiny_skia::Pixmap::new(1, 1).expect("1×1");
+    pm.data_mut().copy_from_slice(&rgba);
+    Layer { id: next_id(), pm: Some(pm), x: 0.0, y: 0.0, w: 1.0, h: 1.0 }
 }
 
 fn hash_str(s: &str, dpi: f64) -> u64 {
@@ -3022,7 +3238,7 @@ impl Redact {
 }
 
 /// `C9:C1:60:6A:FD:E3` (or with `_`) as `XX:XX:XX:XX:FD:E3`.
-fn mask_macs(s: &str) -> String {
+pub(crate) fn mask_macs(s: &str) -> String {
     let b: Vec<char> = s.chars().collect();
     let mut out = String::new();
     let mut i = 0;
@@ -3210,47 +3426,100 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pw::{Event, Kind, Props};
 
-    fn node(id: u32, ins: &[u32], outs: &[u32]) -> ENode {
-        let port = |id: &u32| EPort { id: *id, name: format!("p{id}"), channel: String::new(), monitor: false, midi: false };
-        ENode { id, name: format!("n{id}"), desc: format!("n{id}"), class: "Stream/Output/Audio".into(), kind: NKind::Stream, state: "running", ins: ins.iter().map(port).collect(), outs: outs.iter().map(port).collect(), color: C_APP, desk: None, system: false }
+    /// A port: (id, direction, name).
+    type TPort<'a> = (u32, &'a str, &'a str);
+    /// A node: (id, name, class, ports).
+    type TNode<'a> = (u32, &'a str, &'a str, &'a [TPort<'a>]);
+
+    /// A graph from (node, name, class, [(port, direction, name)]) and (link, out node, out port,
+    /// in node, in port, passive), laid out (as idle: no profiler).
+    fn laid(nodes: &[TNode], links: &[(u32, u32, u32, u32, u32, bool)]) -> (Engine, Layout) {
+        let mut g = Graph::default();
+        let props = |kv: &[(&str, String)]| kv.iter().map(|(k, v)| (k.to_string(), v.clone())).collect::<Props>();
+        for &(id, name, class, ports) in nodes {
+            let p = props(&[("node.name", name.into()), ("node.description", name.into()), ("media.class", class.into())]);
+            g.apply(&Event::Added { id, kind: Kind::Node, props: p.clone() });
+            g.apply(&Event::Info { id, props: p, state: Some("running") });
+            for &(pid, dir, pname) in ports {
+                let p = props(&[("node.id", id.to_string()), ("port.direction", dir.into()), ("port.name", pname.into()), ("format.dsp", "32 bit float mono audio".into())]);
+                g.apply(&Event::Added { id: pid, kind: Kind::Port, props: p });
+            }
+        }
+        for &(id, on, op, inn, ip, passive) in links {
+            let p = props(&[("link.output.node", on.to_string()), ("link.output.port", op.to_string()), ("link.input.node", inn.to_string()), ("link.input.port", ip.to_string()), ("link.passive", passive.to_string())]);
+            g.apply(&Event::Added { id, kind: Kind::Link, props: p.clone() });
+            g.apply(&Event::Info { id, props: p, state: Some("active") });
+        }
+        g.apply(&Event::Synced);
+        let mut e = Engine::new();
+        e.dirty = true;
+        e.build(&g, &[], &HashSet::new(), &HashMap::new());
+        let lay = e.layout();
+        (e, lay)
     }
 
-    /// A stereo pair keeps the distance its ports are apart all along: round a node in its way,
-    /// on the slopes too, FL above FR, not one over the other.
+    /// An app into the headphones, measured, and the headphones' monitor measured: the app's
+    /// meter link must not run straight through the headphones' ports (it looked as if it went
+    /// in there); outputs only on the left, the headphones in the middle, the meters on the right.
     #[test]
-    fn a_stereo_pair_keeps_its_distance_all_along() {
-        let mut e = Engine::new();
-        let nodes = vec![node(1, &[], &[11, 12]), node(2, &[21, 22], &[]), node(3, &[31, 32], &[])];
-        e.model.at = nodes.iter().enumerate().map(|(i, n)| (n.id, i)).collect();
-        e.model.nodes = nodes;
-        let mut lay = Layout::default();
-        // the source at the top left, a node right in the way, the target below it on the right
-        lay.pos.insert(1, (0.0, 0.0));
-        lay.pos.insert(2, (COLW, 0.0));
-        lay.pos.insert(3, (2.0 * COLW, 100.0));
-        lay.bands.push((-50.0, 400.0, Some(0), ""));
-        let points = |out: u32, inp: u32| {
-            let (a, b) = (e.port_xy(&lay, 1, out).unwrap(), e.port_xy(&lay, 3, inp).unwrap());
-            let path = e.link_path(&lay, a, b, e.lane(1, out));
-            path.iter()
-                .flat_map(|c| {
-                    (0..=60).map(move |k| {
-                        let t = k as f64 / 60.0;
-                        let u = 1.0 - t;
-                        (u * u * u * c[0].0 + 3.0 * u * u * t * c[1].0 + 3.0 * u * t * t * c[2].0 + t * t * t * c[3].0, u * u * u * c[0].1 + 3.0 * u * u * t * c[1].1 + 3.0 * u * t * t * c[2].1 + t * t * t * c[3].1)
-                    })
-                })
-                .collect::<Vec<_>>()
-        };
-        let (fl, fr) = (points(11, 31), points(12, 32));
-        // it goes round the node: below its bottom while across its column
-        let bottom = NH0 + 2.0 * PR + 8.0;
-        assert!(fl.iter().filter(|p| p.0 > COLW + 20.0 && p.0 < COLW + NW - 20.0).all(|p| p.1 > bottom), "FL goes round the node in its way");
-        for p in &fl {
-            let d = fr.iter().map(|q| (q.0 - p.0).hypot(q.1 - p.1)).fold(f64::MAX, f64::min);
-            assert!((d - PR).abs() < 1.0, "at ({:.0}, {:.0}) FL is {d:.1} from FR, not {PR}", p.0, p.1);
+    fn no_link_goes_through_another_port() {
+        let st_out: &[(u32, &str, &str)] = &[(711, "out", "output_FL"), (712, "out", "output_FR")];
+        let sink: &[(u32, &str, &str)] = &[(1791, "in", "playback_FL"), (1792, "in", "playback_FR"), (1793, "out", "monitor_FL"), (1794, "out", "monitor_FR")];
+        let m70: &[(u32, &str, &str)] = &[(701, "in", "input_FL"), (702, "in", "input_FR")];
+        let m88: &[(u32, &str, &str)] = &[(881, "in", "input_FL"), (882, "in", "input_FR")];
+        let (e, lay) = laid(
+            &[(71, "ALSA plug-in [kadence]", "Stream/Output/Audio", st_out), (179, "JLab GO Work 2", "Audio/Sink", sink), (70, "patchcord-meter-1", "Stream/Input/Audio", m70), (88, "patchcord-meter-2", "Stream/Input/Audio", m88)],
+            &[(1, 71, 711, 179, 1791, false), (2, 71, 712, 179, 1792, false), (3, 71, 711, 70, 701, true), (4, 71, 712, 70, 702, true), (5, 179, 1793, 88, 881, true), (6, 179, 1794, 88, 882, true)],
+        );
+        let ls: Vec<&ELink> = e.model.links.iter().collect();
+        let through = e.through(&lay.pos, &ls);
+        assert!(through.is_empty(), "links through other ports: {:?}", through.iter().map(|(l, n)| (l.id, *n)).collect::<Vec<_>>());
+        let x = |id: u32| lay.pos[&id].0;
+        assert!(x(71) < x(179) && x(179) < x(70) && x(70) == x(88), "out only, in and out, in only: {:?}", lay.pos);
+    }
+
+    /// How long laying out a busy graph takes (it is done on the main thread): 12 apps into 3
+    /// outputs, each app and output measured. Run with --ignored --nocapture.
+    #[test]
+    #[ignore]
+    fn layout_time() {
+        #[allow(clippy::type_complexity)]
+        let mut nodes: Vec<(u32, String, &str, Vec<(u32, &str, String)>)> = Vec::new();
+        let mut links = Vec::new();
+        let mut lid = 10_000;
+        for s in 0..3u32 {
+            let id = 500 + s;
+            nodes.push((id, format!("Output {s}"), "Audio/Sink", vec![(id * 10, "in", "playback_FL".into()), (id * 10 + 1, "in", "playback_FR".into()), (id * 10 + 2, "out", "monitor_FL".into()), (id * 10 + 3, "out", "monitor_FR".into())]));
         }
-        assert!(fr[fr.len() / 2].1 > fl[fl.len() / 2].1, "FR runs below FL");
+        for a in 0..12u32 {
+            let id = 100 + a;
+            nodes.push((id, format!("App {a}"), "Stream/Output/Audio", vec![(id * 10, "out", "output_FL".into()), (id * 10 + 1, "out", "output_FR".into())]));
+            let s = 500 + a % 3;
+            for c in 0..2 {
+                links.push((lid, id, id * 10 + c, s, s * 10 + c, false));
+                lid += 1;
+            }
+        }
+        for (k, src) in (100..112u32).chain(500..503).enumerate() {
+            let id = 900 + k as u32;
+            nodes.push((id, format!("patchcord-meter-{k}"), "Stream/Input/Audio", vec![(id * 10, "in", "input_FL".into()), (id * 10 + 1, "in", "input_FR".into())]));
+            let base = if src >= 500 { src * 10 + 2 } else { src * 10 };
+            for c in 0..2 {
+                links.push((lid, src, base + c, id, id * 10 + c, true));
+                lid += 1;
+            }
+        }
+        let owned: Vec<Vec<TPort>> = nodes.iter().map(|n| n.3.iter().map(|(p, d, nm)| (*p, *d, nm.as_str())).collect()).collect();
+        let ns: Vec<TNode> = nodes.iter().zip(&owned).map(|(n, o)| (n.0, n.1.as_str(), n.2, o.as_slice())).collect();
+        let t = std::time::Instant::now();
+        let (e, lay) = laid(&ns, &links);
+        let built = t.elapsed();
+        let t = std::time::Instant::now();
+        let lay2 = e.layout();
+        println!("build+layout {built:?}, layout {:?}, {} nodes, {} links", t.elapsed(), lay.pos.len(), links.len());
+        let ls: Vec<&ELink> = e.model.links.iter().collect();
+        println!("through: {}", e.through(&lay2.pos, &ls).len());
     }
 }

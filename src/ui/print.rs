@@ -1,7 +1,7 @@
 //! The lettering printed on the top panel and the device faces: a few styles, defined here once
 //! and used everywhere. Only the colour follows the panel it is printed on.
 
-use super::text;
+use super::text::{self, esc};
 
 #[derive(Clone, Copy)]
 pub struct Style {
@@ -17,10 +17,6 @@ pub const SMALL: Style = Style { size: 7.5, spacing: 0.8 };
 pub const JACK: Style = Style { size: 9.0, spacing: 0.0 };
 /// Text on the little dark switch chips: SPLIT, JOIN.
 pub const SWITCH: Style = Style { size: 6.8, spacing: 0.5 };
-
-fn esc(t: &str) -> String {
-    t.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
-}
 
 impl Style {
     /// A line of text at (x, y). `anchor` is "start", "middle" or "end".

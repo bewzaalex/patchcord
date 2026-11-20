@@ -8,7 +8,7 @@ use std::fmt::Write;
 use std::sync::OnceLock;
 
 use super::print::{JACK, SECTION, SMALL, SWITCH};
-use super::text;
+use super::text::{self, esc};
 use crate::graph::{Device, Dir, Finish, Media, VOL_MAX};
 
 pub const DEV_H: f64 = 128.0;
@@ -129,15 +129,12 @@ pub struct Geometry {
 }
 
 /// An app stream's controls, right of its jacks inside its group's frame: a VOLUME knob (GAIN
-/// on an input), a BAL knob for stereo, a MUTE key under them, and on a device with two streams
-/// a meter of its own.
+/// on an input), a BAL knob for stereo, a MUTE key under them (its meter is in `meters`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MixGeo {
     pub x: f64,
     /// how far down its unit starts (the points below are on the face, this included)
     pub y: f64,
-    /// its own meter's columns: two for stereo, one for mono
-    pub cols: usize,
     /// the knobs' part (its meter, when it has one, is right of it)
     pub w: f64,
     pub input: bool,
@@ -530,7 +527,6 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
             geo.mix.push((gi, MixGeo {
                 x: ox,
                 y: oy,
-                cols: if stereo { 2 } else { 1 },
                 w,
                 input: g.mix.as_ref().is_some_and(|m| m.gain),
                 knob: (if stereo { ox + 33.0 } else { ox + w / 2.0 }, oy + 60.0),
@@ -709,10 +705,6 @@ fn fit_title(name: &str, max_w: f64) -> String {
     format!("{}…", t.trim_end())
 }
 
-fn esc(t: &str) -> String {
-    t.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
-}
-
 /// The shadow a face of width `w` casts on the desk, as an SVG document the size of the face's
 /// picture. It is all blur, so it is drawn small and stretched, and only again when the face's
 /// size changes: blurring at full size cost more than drawing the rest of the face.
@@ -731,24 +723,18 @@ pub fn shadow(w: f64, h: f64, rack: bool) -> String {
 /// Half the size of a jack's picture: the nut and its shadow fit inside.
 pub const PIC: f64 = 22.0;
 
-/// A jack (`Some`) or the plus badge at the corner of a mult's free jack (`None`), as an SVG
-/// document `2 PIC` square centred on it. The jacks are laid over the faces as pictures of their
-/// own, so that while a plug is in the hand the ones it can't go into can fade without the faces
+/// The plus badge at the corner of a mult's free jack, as an SVG document `2 PIC` square centred
+/// on it. It and the jacks (`jack_pic_ring`) are laid over the faces as pictures of their own,
+/// so that while a plug is in the hand the ones it can't go into can fade without the faces
 /// being drawn again.
-pub fn jack_pic(kind: Option<JackKind>) -> String {
+pub fn badge_pic() -> String {
     let s = 2.0 * PIC;
-    let what = match kind {
-        Some(JackKind::Mono) => format!(r##"<use href="#jack-mono" x="{PIC}" y="{PIC}"/>"##),
-        Some(JackKind::Stereo) => format!(r##"<use href="#jack-stereo" x="{PIC}" y="{PIC}"/>"##),
-        Some(JackKind::Midi) => format!(r##"<use href="#jack-midi" x="{PIC}" y="{PIC}"/>"##),
-        None => format!(
-            r##"<circle cx="{PIC}" cy="{}" r="6.2" fill="#000" opacity=".35"/><circle cx="{PIC}" cy="{PIC}" r="5.8" fill="#1b1c1e" stroke="#f2f2f2" stroke-opacity=".35" stroke-width=".8"/><path d="M{},{PIC} h6 M{PIC},{} v6" stroke="#f2f2f2" stroke-width="1.6" stroke-linecap="round"/>"##,
-            PIC + 0.8,
-            PIC - 3.0,
-            PIC - 3.0
-        ),
-    };
-    format!(r##"<svg xmlns="http://www.w3.org/2000/svg" width="{s}" height="{s}" viewBox="0 0 {s} {s}">{}{what}</svg>"##, defs())
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{s}" height="{s}" viewBox="0 0 {s} {s}"><circle cx="{PIC}" cy="{}" r="6.2" fill="#000" opacity=".35"/><circle cx="{PIC}" cy="{PIC}" r="5.8" fill="#1b1c1e" stroke="#f2f2f2" stroke-opacity=".35" stroke-width=".8"/><path d="M{},{PIC} h6 M{PIC},{} v6" stroke="#f2f2f2" stroke-width="1.6" stroke-linecap="round"/></svg>"##,
+        PIC + 0.8,
+        PIC - 3.0,
+        PIC - 3.0
+    )
 }
 
 /// A jack with a ring in its group's colour: mono and MIDI one ring, stereo two (as the gold
@@ -760,7 +746,43 @@ pub fn jack_pic_ring(kind: JackKind, color: &str) -> String {
         JackKind::Midi => ("jack-midi", format!(r#"<circle cx="{PIC}" cy="{PIC}" r="10.1" fill="none" stroke="{color}" stroke-width="1.3"/>"#)),
         JackKind::Stereo => ("jack-mono", format!(r#"<circle cx="{PIC}" cy="{PIC}" r="10.7" fill="none" stroke="{color}" stroke-width="1"/><circle cx="{PIC}" cy="{PIC}" r="9.3" fill="none" stroke="{color}" stroke-width="1"/>"#)),
     };
-    format!(r##"<svg xmlns="http://www.w3.org/2000/svg" width="{s}" height="{s}" viewBox="0 0 {s} {s}">{}<use href="#{base}" x="{PIC}" y="{PIC}"/>{rings}</svg>"##, defs())
+    format!(r##"<svg xmlns="http://www.w3.org/2000/svg" width="{s}" height="{s}" viewBox="0 0 {s} {s}">{}<use href="#{base}" x="{PIC}" y="{PIC}"/>{rings}</svg>"##, jack_defs())
+}
+
+/// Half the size of a cue mark's picture: the ring round a jack listened to, and the
+/// headphones on it.
+pub const CUE_PIC: f64 = 27.0;
+
+/// A jack kept on (clicked in CUE mode): a cyan disc out to the ring, laid under the jack, so the
+/// jack's nut lies on it with its shadow.
+pub fn cue_disc_pic() -> String {
+    let s = 2.0 * CUE_PIC;
+    format!(r##"<svg xmlns="http://www.w3.org/2000/svg" width="{s}" height="{s}" viewBox="0 0 {s} {s}"><circle cx="{CUE_PIC}" cy="{CUE_PIC}" r="21.1" fill="#5fd4ff"/><circle cx="{CUE_PIC}" cy="{CUE_PIC}" r="20.7" fill="none" stroke="#000" stroke-opacity=".35" stroke-width=".8"/></svg>"##)
+}
+
+/// A jack listened to: a ring round it and the headphones of the CUE key on a badge at its top
+/// right; red for one that would feed back.
+pub fn cue_ring_pic(red: bool) -> String {
+    let s = 2.0 * CUE_PIC;
+    let c = if red { "#ff503c" } else { "#5fd4ff" };
+    let (bx, by) = (CUE_PIC + 17.0, CUE_PIC - 17.0);
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{s}" height="{s}" viewBox="0 0 {s} {s}"><circle cx="{CUE_PIC}" cy="{CUE_PIC}" r="20" fill="none" stroke="{c}" stroke-width="2.2"/><circle cx="{bx}" cy="{by}" r="8.5" fill="#121315" stroke="{c}" stroke-width="1.4"/><g transform="translate({bx},{by}) scale(.4583) translate(-12,-12.5)"><path d="M4 15v-3a8 8 0 0 1 16 0v3" fill="none" stroke="{c}" stroke-width="2.4"/><rect x="3" y="14" width="4.5" height="7" fill="{c}"/><rect x="16.5" y="14" width="4.5" height="7" fill="{c}"/></g></svg>"##
+    )
+}
+
+/// Half the size of a target ring's picture: the ring and its halo.
+pub const TARGET_PIC: f64 = 34.0;
+
+/// While a cord's end is in the hand, a jack it may go into: a green ring in a soft halo (it
+/// pulses through the picture's opacity); `hot`, the one it is pulled to: gold, brighter.
+pub fn target_ring_pic(hot: bool) -> String {
+    let s = 2.0 * TARGET_PIC;
+    let (c, glow, r, w, ring) = if hot { ("#ffc85a", 0.75, 19.0, 3.5, 0.95) } else { ("#78eb96", 0.55, 17.5, 2.5, 0.9) };
+    let halo = r + 14.0;
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{s}" height="{s}" viewBox="0 0 {s} {s}"><defs><radialGradient id="h" cx="{TARGET_PIC}" cy="{TARGET_PIC}" r="{halo}" gradientUnits="userSpaceOnUse"><stop offset=".48" stop-color="{c}" stop-opacity="0"/><stop offset=".62" stop-color="{c}" stop-opacity="{glow}"/><stop offset="1" stop-color="{c}" stop-opacity="0"/></radialGradient></defs><circle cx="{TARGET_PIC}" cy="{TARGET_PIC}" r="{halo}" fill="url(#h)"/><circle cx="{TARGET_PIC}" cy="{TARGET_PIC}" r="{r}" fill="none" stroke="{c}" stroke-opacity="{ring}" stroke-width="{w}"/></svg>"##
+    )
 }
 
 /// Where the badge sits from the centre of the free jack it marks.
@@ -1057,38 +1079,54 @@ pub fn paint_uri() -> &'static str {
     URI.get_or_init(|| format!("data:image/png;base64,{}", base64(include_bytes!("../../assets/paint.png"))))
 }
 
+/// The shared pieces of the faces' SVG: the jacks' (`jack_defs`), and the paint, the noise, the
+/// sheen, the LCD's glow and the screws.
 fn defs() -> &'static str {
     static DEFS: OnceLock<String> = OnceLock::new();
     DEFS.get_or_init(|| {
         let paint = paint_uri();
         let noise = format!("data:image/png;base64,{}", base64(include_bytes!("../../assets/noise.png")));
-        let hex: String = (0..6)
-            .map(|k| {
-                let a = (k as f64 * 60.0 + 30.0).to_radians();
-                format!("{:.2},{:.2} ", 15.0 * a.cos(), 15.0 * a.sin())
-            })
-            .collect();
         format!(
             r##"<defs>
 <pattern id="pt" width="80" height="80" patternUnits="userSpaceOnUse"><image href="{paint}" width="80" height="80"/></pattern>
 <pattern id="nz" width="128" height="128" patternUnits="userSpaceOnUse"><image href="{noise}" width="128" height="128"/></pattern>
 <linearGradient id="gSheen" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".16"/><stop offset=".35" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".24"/></linearGradient>
-<linearGradient id="gNut" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f6f7f8"/><stop offset=".45" stop-color="#b6b9bd"/><stop offset="1" stop-color="#55585d"/></linearGradient>
+<linearGradient id="gLcd" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f7bb62"/><stop offset="1" stop-color="#e38c2a"/></linearGradient>
+<g id="screw"><circle r="5.2" fill="url(#gChrome)" stroke="#35363a" stroke-width=".7"/><path d="M-3.2,0 H3.2 M0,-3.2 V3.2" stroke="#36373b" stroke-width="1.4" stroke-linecap="round"/></g>
+{jack}</defs>"##,
+            jack = jack_parts()
+        )
+    })
+}
+
+/// Only what a jack's picture needs (without the faces' textures, a hundred kilobytes and more
+/// each picture would parse again).
+fn jack_defs() -> &'static str {
+    static DEFS: OnceLock<String> = OnceLock::new();
+    DEFS.get_or_init(|| format!("<defs>\n{}</defs>", jack_parts()))
+}
+
+/// The nut, the washers, the chrome and the hole: a mono and a MIDI jack.
+fn jack_parts() -> String {
+    let hex: String = (0..6)
+        .map(|k| {
+            let a = (k as f64 * 60.0 + 30.0).to_radians();
+            format!("{:.2},{:.2} ", 15.0 * a.cos(), 15.0 * a.sin())
+        })
+        .collect();
+    format!(
+        r##"<linearGradient id="gNut" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f6f7f8"/><stop offset=".45" stop-color="#b6b9bd"/><stop offset="1" stop-color="#55585d"/></linearGradient>
 <radialGradient id="gWasher" cx=".4" cy=".35" r=".75"><stop offset="0" stop-color="#5e6166"/><stop offset="1" stop-color="#141517"/></radialGradient>
 <radialGradient id="gWasherMidi" cx=".4" cy=".35" r=".75"><stop offset="0" stop-color="#c8483a"/><stop offset="1" stop-color="#4a120d"/></radialGradient>
 <radialGradient id="gChrome" cx=".35" cy=".3" r=".85"><stop offset="0" stop-color="#fff"/><stop offset=".4" stop-color="#b9bcc1"/><stop offset=".75" stop-color="#65686d"/><stop offset="1" stop-color="#a6a9ad"/></radialGradient>
 <radialGradient id="gHole" cx=".5" cy=".62" r=".6"><stop offset="0" stop-color="#000"/><stop offset=".7" stop-color="#0a0a0b"/><stop offset="1" stop-color="#3c3d40"/></radialGradient>
-<linearGradient id="gLcd" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f7bb62"/><stop offset="1" stop-color="#e38c2a"/></linearGradient>
 <filter id="nutShadow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="1.2"/></filter>
 <polygon id="hexShape" points="{hex}"/>
 <g id="hex"><use href="#hexShape" fill="#000" opacity=".4" transform="translate(1.2,2.4)" filter="url(#nutShadow)"/><use href="#hexShape" fill="url(#gNut)" stroke="#43454a" stroke-width=".8"/></g>
 <g id="jack-mono"><use href="#hex"/><circle r="11.4" fill="url(#gWasher)"/><circle r="8.7" fill="url(#gChrome)" stroke="#2a2b2e" stroke-width=".8"/><circle r="5.5" fill="url(#gHole)"/></g>
-<g id="jack-stereo"><use href="#jack-mono"/><circle r="10.1" fill="none" stroke="#c9a24a" stroke-width="1.3"/></g>
 <g id="jack-midi"><use href="#hex"/><circle r="11.4" fill="url(#gWasherMidi)"/><circle r="8.7" fill="url(#gChrome)" stroke="#2a2b2e" stroke-width=".8"/><circle r="5.5" fill="url(#gHole)"/></g>
-<g id="screw"><circle r="5.2" fill="url(#gChrome)" stroke="#35363a" stroke-width=".7"/><path d="M-3.2,0 H3.2 M0,-3.2 V3.2" stroke="#36373b" stroke-width="1.4" stroke-linecap="round"/></g>
-</defs>"##
-        )
-    })
+"##
+    )
 }
 
 fn base64(data: &[u8]) -> String {
@@ -1102,4 +1140,23 @@ fn base64(data: &[u8]) -> String {
         o.push(if c.len() > 2 { T[n as usize & 63] as char } else { '=' });
     }
     o
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A jack's picture, drawn with only the jacks' defs, is the same as with all the faces'.
+    #[test]
+    fn jack_pictures_need_only_the_jacks_defs() {
+        let opt = text::svg_options();
+        for kind in [JackKind::Mono, JackKind::Stereo, JackKind::Midi] {
+            let small = jack_pic_ring(kind, ACCENTS[0]);
+            let full = small.replacen(jack_defs(), defs(), 1);
+            assert_ne!(small, full);
+            let (a, b) = (super::super::scene::rasterize(&opt, &small, 2.0).unwrap(), super::super::scene::rasterize(&opt, &full, 2.0).unwrap());
+            assert!(a.data().iter().any(|&v| v > 0), "a {kind:?} jack draws nothing");
+            assert_eq!(a.data(), b.data(), "a {kind:?} jack draws differently without the faces' defs");
+        }
+    }
 }

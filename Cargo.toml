@@ -8,8 +8,9 @@ repository = "https://github.com/bewzaalex/patchcord"
 license = "MIT"
 
 [dependencies]
-# the PipeWire graph (needs libpipewire-0.3 and, to build, libclang)
-pipewire = "0.10"
+# the PipeWire graph (needs libpipewire-0.3, 0.3.49 or later: a buffer says how much is asked
+# for; to build, libclang)
+pipewire = { version = "0.10", features = ["v0_3_49"] }
 pollster = "1"
 resvg = { version = "0.45", default-features = false, features = ["text", "raster-images"] }
 # text widths, to fit long device names on the panel

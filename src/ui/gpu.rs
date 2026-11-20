@@ -27,6 +27,8 @@ pub struct Sprite<'a> {
     pub h: f64,
     /// how opaque, 0…1
     pub alpha: f32,
+    /// only what lies inside this rectangle (window pixels: x, y, w, h) is drawn
+    pub clip: Option<[f64; 4]>,
 }
 
 /// Behind everything.
@@ -240,7 +242,8 @@ impl Gpu {
             }
         };
         let t1 = std::time::Instant::now();
-        self.textures.retain(|id, _| keep.contains(id) || sprites.iter().any(|s| s.id == *id));
+        let shown: std::collections::HashSet<u64> = sprites.iter().map(|s| s.id).collect();
+        self.textures.retain(|id, _| keep.contains(id) || shown.contains(id));
         for s in sprites {
             if let (false, Some(pm)) = (self.textures.contains_key(&s.id), s.pm) {
                 let t = self.upload(pm);
@@ -255,8 +258,15 @@ impl Gpu {
         let drawn: Vec<(usize, &Sprite)> = sprites.iter().enumerate().filter(|(_, s)| self.textures.contains_key(&s.id)).collect();
         let mut v: Vec<f32> = Vec::with_capacity(drawn.len() * 6 * VERTEX);
         for (_, s) in &drawn {
-            let c = [clip(s.x, s.y), clip(s.x + s.w, s.y), clip(s.x + s.w, s.y + s.h), clip(s.x, s.y + s.h)];
-            let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+            // cut to its clip rectangle, the texture with it (nothing left: an empty quad)
+            let (mut x0, mut y0, mut x1, mut y1) = (s.x, s.y, s.x + s.w, s.y + s.h);
+            if let Some([cx, cy, cw, ch]) = s.clip {
+                (x0, y0, x1, y1) = (x0.max(cx), y0.max(cy), x1.min(cx + cw).max(x0.max(cx)), y1.min(cy + ch).max(y0.max(cy)));
+            }
+            let (u0, v0) = (((x0 - s.x) / s.w.max(1e-9)) as f32, ((y0 - s.y) / s.h.max(1e-9)) as f32);
+            let (u1, v1) = (((x1 - s.x) / s.w.max(1e-9)) as f32, ((y1 - s.y) / s.h.max(1e-9)) as f32);
+            let c = [clip(x0, y0), clip(x1, y0), clip(x1, y1), clip(x0, y1)];
+            let uv = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
             for i in [0, 1, 2, 0, 2, 3] {
                 v.extend_from_slice(&[c[i][0], c[i][1], uv[i][0], uv[i][1], s.alpha]);
             }

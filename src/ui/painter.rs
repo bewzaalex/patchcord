@@ -32,7 +32,7 @@ struct Job {
 
 struct Pool {
     jobs: Mutex<Sender<Job>>,
-    /// the newest job for each key: an older one is skipped
+    /// the newest job for each key not drawn yet: an older one is skipped
     newest: Arc<Mutex<HashMap<u64, u64>>>,
 }
 
@@ -51,6 +51,13 @@ fn pool() -> &'static Pool {
                     let Ok(job) = rx.lock().map_err(|_| ()).and_then(|r| r.recv().map_err(|_| ())) else { return };
                     let wanted = newest.lock().map(|m| m.get(&job.key) == Some(&job.sig)).unwrap_or(true);
                     let pm = if wanted { rasterize(&opt, &job.svg, job.scale) } else { None };
+                    // drawn: the key is forgotten, unless a newer job came for it meanwhile (keys
+                    // of streams that came and went would pile up all day)
+                    if wanted && let Ok(mut m) = newest.lock()
+                        && m.get(&job.key) == Some(&job.sig)
+                    {
+                        m.remove(&job.key);
+                    }
                     let _ = job.reply.send((Done { key: job.key, sig: job.sig, pm }, wanted));
                 }
             });

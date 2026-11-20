@@ -6,7 +6,7 @@ use std::fmt::Write;
 use super::face::paint_uri;
 use super::print::{SECTION, SMALL};
 use super::scene::{Layer, next_id, rasterize};
-use super::text;
+use super::text::{self, esc};
 use crate::graph::{Card, PortChoice};
 
 /// height of the top panel; its shadow falls a little below
@@ -46,9 +46,10 @@ pub enum Key {
 }
 
 impl Key {
-    /// A key for the desk and the rack only, off in ENGINE.
+    /// A key for the desk and the rack only, off in ENGINE. (CUE and its LEVEL work there too:
+    /// ENGINE shows the cue, and its key turns it off.)
     pub fn desk_only(self) -> bool {
-        matches!(self, Key::Lock | Key::Align | Key::Cables | Key::CablesAt(_) | Key::Arrange | Key::Flow | Key::Hidden | Key::Cue | Key::CueLevel)
+        matches!(self, Key::Lock | Key::Align | Key::Cables | Key::CablesAt(_) | Key::Arrange | Key::Flow | Key::Hidden)
     }
 
     /// What it does, for the status bar.
@@ -209,11 +210,10 @@ pub enum ProfileHit {
 /// A card's profile list, amber like the LCDs: a row per family (the one in use dark), its codecs
 /// as choices under it, profiles with nothing plugged in dimmed and marked. The layer is at (0, 0),
 /// `PROFILE_W` wide; the hit areas are relative to it.
-pub fn profile_menu(title: &str, card: &Card, dpi: f64) -> (Layer, Vec<(ProfileHit, [f64; 4])>) {
+pub fn profile_menu(card: &Card, dpi: f64) -> (Layer, Vec<(ProfileHit, [f64; 4])>) {
     const INK: &str = "#3a2408";
     let w = PROFILE_W;
-    // no title: it drops out of the PROFILE key that names it
-    let _ = title;
+    // (no title: it drops out of the PROFILE key that names it)
     let mut o = String::new();
     let mut hits = Vec::new();
     let mut y = 8.0;
@@ -288,9 +288,6 @@ fn section(name: &str, y: f64, w: f64) -> String {
     )
 }
 
-/// A card's port list, under its PORT key, as amber as the profile list: for each of its outputs
-/// and inputs with several ports, its name (when it has several), the ports (the one in use dark,
-/// the unplugged dimmed and marked), and its latency offset with − and + (10 ms steps with Shift).
 /// One output's or input's ports in a card's PORT list.
 #[derive(Debug)]
 pub struct PortSection {
@@ -303,10 +300,12 @@ pub struct PortSection {
     pub latency_ns: i64,
 }
 
-pub fn port_menu(title: &str, sections: &[PortSection], dpi: f64) -> (Layer, Vec<(ProfileHit, [f64; 4])>) {
+/// A card's port list, under its PORT key, as amber as the profile list: for each of its outputs
+/// and inputs with several ports, its name (when it has several), the ports (the one in use dark,
+/// the unplugged dimmed and marked), and its latency offset with − and + (10 ms steps with Shift).
+pub fn port_menu(sections: &[PortSection], dpi: f64) -> (Layer, Vec<(ProfileHit, [f64; 4])>) {
     const INK: &str = "#3a2408";
     let w = PROFILE_W;
-    let _ = title;
     let mut o = String::new();
     let mut hits = Vec::new();
     let mut y = 8.0;
@@ -389,10 +388,6 @@ const KEY_Y: f64 = 10.0;
 const KNOB_Y: f64 = 30.0;
 const KEY_H: f64 = 30.0;
 const LABEL: &str = "#26272a";
-
-fn esc(t: &str) -> String {
-    t.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
-}
 
 impl Panel {
     pub fn new(state: State) -> Self {
@@ -1195,10 +1190,10 @@ mod tests {
         let (parts, more) = folded(false, false, 540.0);
         assert_eq!(parts, vec![Part::Edit, Part::Layout]);
         assert_eq!(more, vec![Part::LockAlign, Part::Cables, Part::View, Part::Cue, Part::LcdDefaults, Part::LcdPreset]);
-        // ENGINE has no grey keys to fold: only the screen
+        // ENGINE's grey keys go first; CUE · LEVEL works there and folds as on the desk
         let (parts, more) = folded(false, true, 700.0);
         assert!(parts.contains(&Part::View) && !parts.contains(&Part::Cables), "{parts:?}");
-        assert_eq!(more, vec![Part::LcdDefaults, Part::LcdPreset]);
+        assert_eq!(more, vec![Part::Cue, Part::LcdDefaults, Part::LcdPreset]);
         // in the rack ALIGN is off: grey, then gone
         let (_, more) = folded(true, false, 540.0);
         assert_eq!(more[0], Part::LockAlign);
