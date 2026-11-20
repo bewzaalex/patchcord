@@ -434,6 +434,12 @@ struct Cue {
     want: Vec<CueSource>,
     /// how loud, as the playing side multiplies it in (linear, as f32 bits)
     level: Arc<std::sync::atomic::AtomicU32>,
+    /// what the two sides share (emptied when what is heard changes: no sound of the last)
+    buf: Option<Arc<std::sync::Mutex<CueBuf>>>,
+    /// a side went wrong (its format not agreed, its node gone): it is made again
+    failed: Rc<std::cell::Cell<bool>>,
+    /// when it was last made again after going wrong (at most every two seconds)
+    retried: Option<Instant>,
 }
 
 /// The cue's two streams, alive together.
@@ -465,6 +471,9 @@ impl Drop for CueSide {
 struct CueBuf {
     frames: std::collections::VecDeque<[f32; 2]>,
     playing: bool,
+    /// how much the recording side brings at once (its own clock's quantum, which may be
+    /// bigger than the playing side's): the cushion and the catching up allow for it
+    chunk: usize,
 }
 
 /// At most this much heard and not yet played (half a second at 48 kHz): beyond it the oldest
@@ -472,10 +481,30 @@ struct CueBuf {
 const CUE_MAX: usize = 24_000;
 
 impl Cue {
+    /// Makes its streams if it has none (or a side went wrong: both again), and links what is
+    /// wanted into them.
+    fn run(&mut self, core: &pw::core::CoreRc, events: &Sender) {
+        if self.failed.get() {
+            self.retried = Some(Instant::now());
+            self.links.clear();
+            self.streams = None;
+            (self.node, self.buf) = (None, None);
+            self.inputs.clear();
+        }
+        if self.streams.is_none()
+            && let Err(e) = self.start(core)
+        {
+            events.send(Event::Error(format!("cannot start the cue: {e}")));
+        }
+        self.reconcile(core);
+    }
+
     /// Makes its two streams.
     fn start(&mut self, core: &pw::core::CoreRc) -> Result<(), pw::Error> {
         // room for all it may hold, made here: the real-time thread never allocates
-        let buf = Arc::new(std::sync::Mutex::new(CueBuf { frames: std::collections::VecDeque::with_capacity(CUE_MAX + 8192), playing: false }));
+        let buf = Arc::new(std::sync::Mutex::new(CueBuf { frames: std::collections::VecDeque::with_capacity(CUE_MAX + 8192), playing: false, chunk: 0 }));
+        self.buf = Some(buf.clone());
+        self.failed.set(false);
         let capture = {
             let props = pw::properties::properties! {
                 "media.type" => "Audio",
@@ -490,6 +519,7 @@ impl Cue {
             let stream = pw::stream::StreamRc::new(core.clone(), CUE_NODE, props)?;
             let listener = stream
                 .add_local_listener_with_user_data(())
+                .state_changed(failed(&self.failed))
                 .process({
                     let buf = buf.clone();
                     move |stream, _| {
@@ -498,6 +528,7 @@ impl Cue {
                         let Some(bytes) = chunk_bytes(d) else { return };
                         let Ok(mut b) = buf.lock() else { return };
                         // the oldest goes first, so it never holds more than CUE_MAX
+                        b.chunk = bytes.len() / 8;
                         let over = (b.frames.len() + bytes.len() / 8).saturating_sub(CUE_MAX).min(b.frames.len());
                         b.frames.drain(..over);
                         for f in bytes.chunks_exact(8).take(CUE_MAX) {
@@ -523,21 +554,28 @@ impl Cue {
             let level = self.level.clone();
             let listener = stream
                 .add_local_listener_with_user_data(())
+                .state_changed(failed(&self.failed))
                 .process(move |stream, _| {
                     let Some(mut buffer) = stream.dequeue_buffer() else { return };
                     let asked = buffer.requested() as usize;
                     let Some(d) = buffer.datas_mut().first_mut() else { return };
                     let n = {
-                        let Some(bytes) = d.data() else { return };
+                        let Some(bytes) = d.data() else {
+                            *d.chunk_mut().size_mut() = 0;
+                            return;
+                        };
                         let room = bytes.len() / 8;
                         let n = if asked > 0 { asked.min(room) } else { room.min(1024) };
                         let Ok(mut b) = buf.lock() else { return };
-                        // far behind (the clocks drifted, or a stall): catch up to a cushion
-                        if b.frames.len() > 6 * n.max(256) {
-                            let extra = b.frames.len() - 2 * n;
+                        // what to keep in hand: two of its cycles, or one and what the recording side
+                        // brings at once if that is more (it may run at a bigger quantum)
+                        let cushion = (2 * n).max(n + b.chunk);
+                        // far behind (the clocks drifted, or a stall): catch up to the cushion
+                        if b.frames.len() > 3 * cushion.max(256) {
+                            let extra = b.frames.len() - cushion;
                             b.frames.drain(..extra);
                         }
-                        if !b.playing && b.frames.len() >= 2 * n {
+                        if !b.playing && b.frames.len() >= cushion {
                             b.playing = true;
                         } else if b.playing && b.frames.len() < n {
                             b.playing = false;
@@ -630,14 +668,35 @@ fn chunk_bytes(d: &mut spa::buffer::Data) -> Option<&[u8]> {
     Some(&bytes[off.min(end)..end])
 }
 
+/// A cue stream's state listener: an error marks the cue to be made again.
+fn failed(flag: &Rc<std::cell::Cell<bool>>) -> impl Fn(&pw::stream::Stream, &mut (), pw::stream::StreamState, pw::stream::StreamState) + 'static {
+    let flag = flag.clone();
+    move |_, _, _, new| {
+        if matches!(new, pw::stream::StreamState::Error(_)) {
+            flag.set(true);
+        }
+    }
+}
+
 /// The format of the cue's streams: 32-bit float stereo (left, right) at 48 kHz.
 fn stereo_format() -> Result<Vec<u8>, pw::Error> {
+    audio_format(&["FL".into(), "FR".into()], Some(48_000))
+}
+
+/// 32-bit float audio of these channels (by name: MONO, FL, FR…; AUX for the rest), at a rate
+/// or at any.
+fn audio_format(channels: &[String], rate: Option<u32>) -> Result<Vec<u8>, pw::Error> {
     let mut info = spa::param::audio::AudioInfoRaw::new();
     info.set_format(spa::param::audio::AudioFormat::F32LE);
-    info.set_channels(2);
-    info.set_rate(48_000);
+    info.set_channels(channels.len().max(1) as u32);
+    if let Some(r) = rate {
+        info.set_rate(r);
+    }
     let mut pos = [0u32; 64];
-    (pos[0], pos[1]) = (channel_id("FL").unwrap_or(3), channel_id("FR").unwrap_or(4));
+    for (i, c) in channels.iter().enumerate().take(64) {
+        // SPA channel positions by name (MONO 2, FL 3, FR 4…); AUX0 4096… for the rest
+        pos[i] = channel_id(c).unwrap_or(4096 + i as u32);
+    }
     info.set_position(pos);
     let obj = spa::pod::Object { type_: spa::utils::SpaTypes::ObjectParamFormat.as_raw(), id: spa::param::ParamType::EnumFormat.as_raw(), properties: info.into() };
     pod_bytes(obj).ok_or(pw::Error::CreationFailed)
@@ -1002,11 +1061,20 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
     let ticks = std::cell::Cell::new(0u32);
     let timer = mainloop.loop_().add_timer({
         let meters = meters.clone();
+        let cue = cue.clone();
+        let core = core.clone();
         let events = events.clone();
         let stale = stale.clone();
         let bound = bound.clone();
         let profiler = profiler.clone();
         move |_| {
+            // a side of the cue went wrong while something is heard: it is made again
+            {
+                let mut c = cue.borrow_mut();
+                if c.failed.get() && !c.want.is_empty() && c.retried.is_none_or(|t| t.elapsed() > Duration::from_secs(2)) {
+                    c.run(&core, &events);
+                }
+            }
             // each driver's cycles of the last half second, averaged, with their peaks (drivers
             // that stopped reporting are left out); then counting starts again
             ticks.set(ticks.get().wrapping_add(1));
@@ -1143,13 +1211,14 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                     return;
                 }
                 c.level.store(level.to_bits(), std::sync::atomic::Ordering::Relaxed);
-                c.want = sources;
-                if c.streams.is_none()
-                    && let Err(e) = c.start(&core)
+                if c.want != sources
+                    && let Some(Ok(mut b)) = c.buf.as_ref().map(|b| b.lock())
                 {
-                    events.send(Event::Error(format!("cannot start the cue: {e}")));
+                    b.frames.clear();
+                    b.playing = false;
                 }
-                c.reconcile(&core);
+                c.want = sources;
+                c.run(&core, &events);
             }
             Cmd::Profile(on) => {
                 let mut p = profiler.borrow_mut();
@@ -1173,9 +1242,9 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                 }
             }
             Cmd::Params(id) => {
-                inspect.borrow_mut().insert(id);
                 let b = bound.borrow();
                 if let Some(n) = b.get(&id).and_then(|b| b.proxy.downcast_ref::<pw::node::Node>()) {
+                    inspect.borrow_mut().insert(id);
                     use spa::param::ParamType as P;
                     for kind in [P::EnumFormat, P::Format, P::Props, P::PortConfig, P::Latency, P::ProcessLatency] {
                         n.enum_params(0, Some(kind), 0, u32::MAX);
@@ -1489,17 +1558,7 @@ fn meter(core: &pw::core::CoreRc, id: u32, channels: &[String]) -> Result<MeterS
         })
         .register()?;
 
-    let mut info = spa::param::audio::AudioInfoRaw::new();
-    info.set_format(spa::param::audio::AudioFormat::F32LE);
-    info.set_channels(n as u32);
-    let mut pos = [0u32; 64];
-    for (i, c) in channels.iter().enumerate().take(64) {
-        // SPA channel positions by name (MONO 2, FL 3, FR 4…); AUX0 4096… for the rest
-        pos[i] = channel_id(c).unwrap_or(4096 + i as u32);
-    }
-    info.set_position(pos);
-    let obj = spa::pod::Object { type_: spa::utils::SpaTypes::ObjectParamFormat.as_raw(), id: spa::param::ParamType::EnumFormat.as_raw(), properties: info.into() };
-    let values: Vec<u8> = pod_bytes(obj).ok_or(pw::Error::CreationFailed)?;
+    let values = audio_format(channels, None)?;
     let mut params = [spa::pod::Pod::from_bytes(&values).ok_or(pw::Error::CreationFailed)?];
     stream.connect(spa::utils::Direction::Input, None, pw::stream::StreamFlags::MAP_BUFFERS, &mut params)?;
     Ok((stream, listener, peaks))

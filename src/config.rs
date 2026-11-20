@@ -122,7 +122,8 @@ fn pos_line(key: &str, (x, y): (f64, f64)) -> String {
 
 fn read_pos(v: &str) -> Option<(String, (f64, f64))> {
     let f = fields(v);
-    Some((f.first()?.clone(), (f.get(1)?.parse().ok()?, f.get(2)?.parse().ok()?)))
+    let num = |i: usize| f.get(i)?.parse::<f64>().ok().filter(|v| v.is_finite());
+    Some((f.first()?.clone(), (num(1)?, num(2)?)))
 }
 
 impl Settings {
@@ -239,6 +240,8 @@ pub fn load_presets() -> Vec<Preset> {
                 let f = fields(&v);
                 if let [k, g, dir, name, ms] = &f[..]
                     && let Ok(ms) = ms.parse::<f64>()
+                    && ms.is_finite()
+                    && ms.abs() < 10_000.0
                 {
                     p.ports.insert((k.clone(), g.clone(), dir.clone()), (name.clone(), (ms * 1e6).round() as i64));
                 }

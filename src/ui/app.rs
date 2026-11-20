@@ -96,6 +96,8 @@ struct Cue {
     badge: Option<(u64, Layer)>,
     /// in CUE mode the pointer is in a jack's hole: it patches there (the ring round it listens)
     in_hole: bool,
+    /// the pointer is in the window (the headphones beside it only then)
+    inside: bool,
 }
 
 /// A second click this soon, this close, is a double-click.
@@ -461,6 +463,15 @@ impl App {
     fn cue_sync(&mut self) {
         let level = (self.cue.level.powi(3) as f32).to_bits();
         // (every frame: only worked out again when something it comes from moved on)
+        if self.cue.from.as_ref().is_some_and(|f| f.1 != self.scene.rev) {
+            // what kept on is gone (a device unplugged or hidden, a port gone): it goes too, so
+            // that no stale name shows and no new port of the same number is heard unasked
+            let scene = &self.scene;
+            self.cue.pins.retain(|k| match scene::port_of_key(k) {
+                Some(id) => scene.graph.props_of(id).is_some(),
+                None => scene.jack(k).is_some(),
+            });
+        }
         let from = (self.cue_heard(), self.scene.rev, level);
         if self.cue.from.as_ref() == Some(&from) {
             return;
@@ -479,7 +490,8 @@ impl App {
 
     /// When the next step of the scrolling of long names is due (counted from the start).
     fn next_step(&self, now: Instant) -> Option<Instant> {
-        let marquee = self.scene.devs.iter().any(|d| d.dev.name.chars().count() > LCD_CH);
+        // (ENGINE shows no LCDs)
+        let marquee = !self.engine.on && self.scene.devs.iter().any(|d| d.dev.name.chars().count() > LCD_CH);
         let ms = (now - self.start).as_millis() as u64;
         marquee.then(|| now + MARQUEE - Duration::from_millis(ms % MARQUEE.as_millis() as u64))
     }
@@ -489,14 +501,14 @@ impl App {
         if let Some(h) = &self.cue.hover
             && self.scene.cue_blocked(h)
         {
-            return format!("can't listen to {}: it is the output you listen on (it would feed back)", self.scene.jack_title(h));
+            return feedback(&self.scene.jack_title(h));
         }
-        let what = self.cue_what().unwrap_or_else(|| if self.engine.on { "move over a port to listen to it" } else { "move over a jack to listen to it" }.to_owned());
+        // (on the desk and the rack: ENGINE says what a click on a port does, `port_hint`)
+        let what = self.cue_what().unwrap_or_else(|| "move over a jack to listen to it".to_owned());
         if self.cue.mode {
             let click = match &self.cue.hover {
                 Some(h) if self.kept(h) => "  ·  click: stop it",
                 Some(_) => "  ·  click: keep it on",
-                None if self.engine.on => "  ·  click a port to keep it on; CUE or Esc stops all",
                 None => "  ·  click a jack to keep it on; CUE or Esc stops all",
             };
             format!("{what}{click}")
@@ -516,7 +528,7 @@ impl App {
     fn port_hint(&self, k: &str) -> String {
         let title = self.scene.jack_title(k);
         if self.scene.cue_blocked(k) {
-            format!("can't listen to {title}: it is the output you listen on (it would feed back)")
+            feedback(&title)
         } else if self.kept(k) {
             format!("{title}  ·  click: stop it")
         } else {
@@ -540,7 +552,7 @@ impl App {
         self.cue.mode = on;
         self.engine.port_hover = None;
         self.cue.pins.clear();
-        if !self.cue.probing || self.engine.on {
+        if !self.cue.probing {
             self.cue.hover = None;
         }
         self.say(match (on, self.engine.on) {
@@ -646,9 +658,11 @@ impl App {
         if let Some(Drag::Plug { magnet, .. }) = &mut self.drag {
             *magnet = None;
         }
-        if self.drag.is_some() {
+        // (a key, a knob or the cords switch held is just let go: not clicked)
+        if matches!(self.drag, Some(Drag::Plug { .. } | Drag::Device { .. } | Drag::Cord { .. } | Drag::Engine)) {
             self.release();
         }
+        self.drag = None;
         self.panel.state.pressed = None;
         self.engine.set_on(on);
         // what was under the pointer is on the other screen now (and Alt doesn't probe in ENGINE)
@@ -922,7 +936,8 @@ impl App {
         // the badge beside the pointer while listening, over the field
         let (ftop, fbottom) = self.field();
         // (in ENGINE over the graph itself)
-        let over = if self.engine.on { self.engine.over_graph(self.cursor, self.size, self.dpi()) } else { !self.cue.in_hole };
+        // (not over a menu or a list, nor outside the window)
+        let over = self.cue.inside && self.on_field() && if self.engine.on { self.engine.over_graph(self.cursor, self.size, self.dpi()) } else { !self.cue.in_hole };
         let show_badge = (self.cue.probing || self.cue.mode) && over && self.cursor.1 >= ftop && self.cursor.1 <= fbottom && self.drag.is_none();
         if show_badge {
             let raster = (self.dpi() * 1e6).round() as u64;
@@ -1367,7 +1382,9 @@ impl App {
             let magnet = Self::magnet(&self.scene, &targets, w);
             self.drag = Some(Drag::Plug { seq, p, v: (0.0, 0.0), magnet, targets });
         } else if let Some((di, g)) = self.scene.switch_at(w.0, w.1) {
-            self.scene.toggle_split(di, g);
+            if wires {
+                self.split(di, g);
+            }
         } else if let Some((ci, k)) = self.scene.cord_at(w.0, w.1).filter(|_| wires && self.scene.cables < 2) {
             let c = &mut self.scene.cords[ci];
             c.grab = Some(k);
@@ -1534,13 +1551,14 @@ impl App {
                     // CUE mode: a click on a port keeps it on (nothing is heard by hovering: each
                     // port heard and let go would wake the output and move the graph); the port a
                     // click would take is framed
-                    let framed = if self.cue.mode { self.engine_probe().and_then(|k| scene::port_of_key(&k).map(|id| (id, self.scene.cue_blocked(&k)))) } else { None };
+                    let probe = if self.cue.mode { self.engine_probe() } else { None };
+                    let framed = probe.as_deref().and_then(|k| scene::port_of_key(k).map(|id| (id, self.scene.cue_blocked(k))));
                     if framed != self.engine.port_hover {
                         self.engine.port_hover = framed;
                         self.redraw();
                     }
                     if self.cue.mode {
-                        let hint = if let Some(k) = self.engine_probe() {
+                        let hint = if let Some(k) = probe {
                             Some(self.port_hint(&k))
                         } else if self.on_field() && self.engine.port_at(self.cursor, self.size, dpi).is_some() {
                             Some("nothing to hear on this port: MIDI, video or Patchcord's own".to_owned())
@@ -1638,6 +1656,30 @@ impl App {
                 }
                 if let Some(sf) = &self.win {
                     sf.window.set_cursor(icon);
+                }
+            }
+        }
+    }
+
+    /// SPLIT or JOIN on device `di`'s frame `g`. The jacks get new names: what of them was kept on
+    /// stays on, on the jacks its ports are on now (one channel of a stereo jack, as that port).
+    fn split(&mut self, di: usize, g: usize) {
+        let kept: Vec<Vec<u32>> = self
+            .cue
+            .pins
+            .iter()
+            .filter_map(|k| self.scene.jack(k).filter(|(d, j)| d.dev.key == self.scene.devs[di].dev.key && j.group == g).map(|(_, j)| j.ports.clone()))
+            .collect();
+        let gone: Vec<String> = self.cue.pins.iter().filter(|k| self.scene.jack(k).is_some_and(|(d, j)| d.dev.key == self.scene.devs[di].dev.key && j.group == g)).cloned().collect();
+        self.scene.toggle_split(di, g);
+        self.cue.pins.retain(|k| !gone.contains(k));
+        for ports in kept {
+            for p in &ports {
+                let Some(j) = self.scene.cue_jack(&scene::port_key(*p)).map(str::to_owned) else { continue };
+                let all = self.scene.jack(&j).is_some_and(|(_, d)| d.ports.iter().all(|q| ports.contains(q)));
+                let k = if all { j } else { scene::port_key(*p) };
+                if !self.cue.pins.contains(&k) {
+                    self.cue.pins.push(k);
                 }
             }
         }
@@ -1869,14 +1911,17 @@ impl App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = (position.x, position.y);
+                self.cue.inside = true;
                 self.moved();
             }
             WindowEvent::CursorLeft { .. } => {
                 self.set_hover(Hover::None);
+                // nothing under the pointer any more: not heard, not framed, no badge
                 self.engine.port_hover = None;
-                if self.cue.hover.take().is_some() {
-                    self.redraw();
-                }
+                self.cue.hover = None;
+                (self.cue.in_hole, self.cue.inside) = (false, false);
+                self.hint.clear();
+                self.redraw();
             }
             WindowEvent::MouseInput { state, button, .. } => match state {
                 ElementState::Pressed => self.press(button),
@@ -1953,16 +1998,16 @@ impl App {
                 self.mods = m.state();
                 // holding Alt probes: the jack under the pointer is heard while Alt is held (on
                 // the desk and the rack: in ENGINE a click chooses, in CUE mode)
-                let alt = self.mods.alt_key() && !self.engine.on;
+                // (not with something in the hand: a plug held over a jack isn't heard)
+                let alt = self.mods.alt_key() && !self.engine.on && self.drag.is_none();
                 if alt != self.cue.probing {
                     self.cue.probing = alt;
-                    if alt {
-                        self.cue.hover = self.probe_at();
-                        self.hint = self.cue_hint();
-                    } else if !self.cue.mode {
+                    if !alt && !self.cue.mode {
                         self.cue.hover = None;
-                        self.hint.clear();
                     }
+                    // what is under the pointer, heard or not, and the status bar, again
+                    self.hint.clear();
+                    self.moved();
                     self.redraw();
                 }
             }
@@ -2061,6 +2106,11 @@ fn with_app_id(attrs: winit::window::WindowAttributes) -> winit::window::WindowA
     use winit::platform::{wayland::WindowAttributesExtWayland, x11::WindowAttributesExtX11};
     let attrs = WindowAttributesExtWayland::with_name(attrs, APP_ID, APP_ID);
     WindowAttributesExtX11::with_name(attrs, APP_ID, APP_ID)
+}
+
+/// The status bar over what would feed back if it were heard.
+fn feedback(title: &str) -> String {
+    format!("can't listen to {title}: it is the output you listen on (it would feed back)")
 }
 
 /// The patch field: dark, a little lighter towards the top middle, with a fine dot grid.

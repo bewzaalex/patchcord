@@ -297,10 +297,11 @@ pub struct Scene {
     rack_want: Option<(u64, u64, f64, f64, f64)>,
     /// pictures laid over the faces: the plus badge of a mult's free jack, then (from
     /// `JACK_PICS`) for each group colour of `face::ACCENTS` a mono, a stereo and a MIDI jack
-    /// ringed in it; last, from `CUE_PICS`, the cue's marks: the disc under a jack kept on, the ring
+    /// ringed in it; then, from `CUE_PICS`, the cue's marks: the disc under a jack kept on, the ring
     /// round a jack heard, and the red ring of one that would feed back; then the rings round
     /// the jacks a cord's end in the hand may go into (`TARGET_PICS`): green, and gold for the
-    /// one it is pulled to
+    /// one it is pulled to; last the halves of a disc (`HALF_PICS`: left, right) and a split
+    /// pair's marks (`PAIR_PICS`: disc, ring, red ring)
     pub jack_pics: [Option<Layer>; PAIR_PICS + 3],
     /// counts what PipeWire said (but the levels) and the devices made from it: what is worked
     /// out from them is worked out again when it moves on
@@ -809,6 +810,8 @@ impl Scene {
     }
 
     fn index(&mut self) {
+        // (the jacks change: what is worked out from them is worked out again)
+        self.rev += 1;
         self.jacks.clear();
         self.port_jack.clear();
         for (di, d) in self.devs.iter_mut().enumerate() {
@@ -945,9 +948,10 @@ impl Scene {
 
     /// A jack's n-th slot and the corner of its device, for a cord's end.
     fn slot(&self, key: &str, n: usize) -> Option<Slot> {
-        let at = self.slot_pos(key, n)?;
-        let d = &self.devs[self.jacks.get(key)?.0];
-        Some(Slot { at, dev: (d.x as f32, d.y as f32) })
+        let (di, ji) = *self.jacks.get(key)?;
+        let d = &self.devs[di];
+        let (lx, ly) = *d.geo.jacks.get(ji)?;
+        Some(Slot { at: ((d.x + lx + n as f64 * JP) as f32, (d.y + ly) as f32), dev: (d.x as f32, d.y as f32) })
     }
 
     /// The cords to match PipeWire's links: keep those that fit, pull out the rest, plug in what is missing.
@@ -1360,6 +1364,8 @@ impl Scene {
             }
             svgs.extend([face::cue_disc_pic(), face::cue_ring_pic(false), face::cue_ring_pic(true), face::target_ring_pic(false), face::target_ring_pic(true)]);
             svgs.extend([face::cue_half_pic(false), face::cue_half_pic(true), face::cue_pair_pic(false, false), face::cue_pair_pic(true, false), face::cue_pair_pic(true, true)]);
+            // (in the order of the indexes above: JACK_PICS, CUE_PICS, TARGET_PICS…)
+            debug_assert_eq!(svgs.len(), self.jack_pics.len());
             if self.jack_pics.iter().any(Option::is_none) {
                 let opt = &self.opt;
                 let pms: Vec<Option<Pixmap>> = std::thread::scope(|sc| svgs.iter().map(|svg| sc.spawn(move || rasterize(opt, svg, scale))).collect::<Vec<_>>().into_iter().map(|t| t.join().ok().flatten()).collect());
@@ -1751,11 +1757,7 @@ impl Scene {
     pub fn cue_sources(&self, key: &str) -> Vec<crate::pw::CueSource> {
         if let Some(id) = port_of_key(key) {
             let Some(p) = self.graph.props_of(id) else { return Vec::new() };
-            let ch = match p.get("audio.channel").map(String::as_str) {
-                Some("FL") => Some(0),
-                Some("FR") => Some(1),
-                _ => None,
-            };
+            let ch = ear(p.get("audio.channel").map_or("", String::as_str));
             if !self.listenable(id) {
                 return Vec::new();
             }
@@ -1765,11 +1767,7 @@ impl Scene {
             return self.graph.links().iter().filter(|l| l.in_port == id).filter_map(|l| Some((self.graph.port_node(l.out_port)?, l.out_port, ch))).collect();
         }
         let Some((d, j)) = self.jack(key) else { return Vec::new() };
-        let ch = |p: &crate::graph::Port| match p.channel.as_str() {
-            "FL" => Some(0),
-            "FR" => Some(1),
-            _ => None,
-        };
+        let ch = |p: &crate::graph::Port| ear(&p.channel);
         let ports: Vec<&crate::graph::Port> = j.ports.iter().filter_map(|id| d.dev.groups.iter().flat_map(|g| &g.ports).find(|p| p.id == *id)).collect();
         if j.dir == Dir::Out {
             return ports.iter().map(|p| (p.node, p.id, ch(p))).collect();
@@ -1819,13 +1817,9 @@ impl Scene {
     /// Listening to a jack of the default output, or of its monitor, would feed what it plays
     /// back into it.
     pub fn cue_blocked(&self, key: &str) -> bool {
-        if let Some(id) = port_of_key(key) {
-            let node = self.graph.port_node(id);
-            return self.default_name(true).is_some_and(|n| node.and_then(|node| self.graph.node_name(node)) == Some(n.as_str()));
-        }
-        let Some((d, j)) = self.jack(key) else { return false };
-        let Some(node) = j.ports.first().and_then(|id| d.dev.groups.iter().flat_map(|g| &g.ports).find(|p| p.id == *id)).map(|p| p.node) else { return false };
-        self.default_name(true).is_some_and(|n| self.graph.node_name(node) == Some(n.as_str()))
+        let port = port_of_key(key).or_else(|| self.jack(key).and_then(|(_, j)| j.ports.first().copied()));
+        let node = port.and_then(|p| self.graph.port_node(p));
+        self.default_name(true).is_some_and(|n| node.and_then(|node| self.graph.node_name(node)) == Some(n.as_str()))
     }
 
     /// How the status bar names a jack: "fooyin · OUTPUT", "Ryzen … · PLAYBACK L".
@@ -2720,6 +2714,15 @@ pub fn rasterize(opt: &usvg::Options, doc: &str, scale: f64) -> Option<Pixmap> {
     let mut pm = Pixmap::new((size.width() * s).ceil().max(1.0) as u32, (size.height() * s).ceil().max(1.0) as u32)?;
     resvg::render(&tree, Transform::from_scale(s, s), &mut pm.as_mut());
     Some(pm)
+}
+
+/// Which ear a channel is heard in: FL the left (0), FR the right (1), anything else both.
+fn ear(channel: &str) -> Option<usize> {
+    match channel {
+        "FL" => Some(0),
+        "FR" => Some(1),
+        _ => None,
+    }
 }
 
 /// A jack's black hole, in world units: in CUE mode it patches.

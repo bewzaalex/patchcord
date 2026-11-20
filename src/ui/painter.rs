@@ -117,8 +117,11 @@ impl Inbox {
     /// Waits for the next picture (at most `max`): for the first pictures, which have nothing to
     /// show meanwhile.
     pub fn wait(&mut self, max: std::time::Duration) -> Option<Done> {
+        let until = std::time::Instant::now() + max;
         loop {
-            let (d, drawn) = self.rx.recv_timeout(max).ok()?;
+            // (skipped ones don't stretch the wait)
+            let left = until.checked_duration_since(std::time::Instant::now())?;
+            let (d, drawn) = self.rx.recv_timeout(left).ok()?;
             self.out = self.out.saturating_sub(1);
             if drawn {
                 return Some(d);

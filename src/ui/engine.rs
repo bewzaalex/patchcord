@@ -76,8 +76,6 @@ enum Hit {
     Bar(usize),
 }
 
-/// A picture to draw: the layer, where (x, y, w, h in window pixels), and where it may draw if
-/// not everywhere.
 /// A picture to draw: (layer, x, y, w, h) in window pixels, where it may draw (if not
 /// everywhere), its opacity.
 pub type Pic<'a> = (&'a Layer, f64, f64, f64, f64, Option<[f64; 4]>, f32);
@@ -90,9 +88,22 @@ const GLIDE: Duration = Duration::from_millis(300);
 struct Glide {
     start: Instant,
     old: Layer,
-    /// each node's place (x, y) and height in the old picture, and its place now
-    from: HashMap<u32, (f64, f64, f64)>,
+    /// each node's place (x, y) and height in the old picture, where it starts gliding from
+    /// (there, or where a glide before this one had taken it), and where it goes
+    src: HashMap<u32, (f64, f64, f64)>,
+    from: HashMap<u32, (f64, f64)>,
     to: HashMap<u32, (f64, f64)>,
+}
+
+impl Glide {
+    /// How far along it is (0…1, eased) and the place of node `id` now.
+    fn at(&self, id: u32) -> Option<(f64, f64)> {
+        let t = (self.start.elapsed().as_secs_f64() / GLIDE.as_secs_f64()).min(1.0);
+        let e = t * t * (3.0 - 2.0 * t);
+        let (fx, fy) = *self.from.get(&id)?;
+        let (tx, ty) = self.to.get(&id).copied().unwrap_or((fx, fy));
+        Some((fx + (tx - fx) * e, fy + (ty - fy) * e))
+    }
 }
 
 /// A scrolled body, the details' or the tables': drawn apart from its frame, a slice of it about
@@ -412,6 +423,9 @@ pub struct Engine {
     want_pos: HashMap<u32, (f64, f64, f64)>,
     /// the blocks gliding to a new layout
     glide: Option<Glide>,
+    /// what the layout shown was made for, and the one for the picture asked for (theirs)
+    lay_sig: Option<u64>,
+    want_lay: Option<(u64, Layout)>,
     /// the graph being drawn on the painter's threads: its sig, what it is drawn from, the
     /// view's scale then, its size
     graph_want: Option<(u64, u64, f64, f64, f64)>,
@@ -472,7 +486,7 @@ type Press = ((f64, f64), View, Option<Sel>, bool);
 /// Where a node is on the desk: its device's key and name, its frames, and whether it is hidden.
 type DeskPlace = (String, String, Vec<String>, bool);
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Layout {
     pos: HashMap<u32, (f64, f64)>,
     bands: Vec<(f64, f64, Option<usize>, &'static str)>,
@@ -520,6 +534,8 @@ impl Engine {
             graph_pos: HashMap::new(),
             want_pos: HashMap::new(),
             glide: None,
+            lay_sig: None,
+            want_lay: None,
             graph_want: None,
             inbox: painter::Inbox::default(),
             strip: None,
@@ -1125,12 +1141,49 @@ impl Engine {
         let of = |k: u8| ids.iter().copied().filter(|i| g[i] == k).collect::<Vec<u32>>();
         // the middle: a column further than the longest way to it through the middle
         let mut depth: BTreeMap<u32, usize> = of(2).into_iter().map(|i| (i, 0)).collect();
-        let mid: Vec<&&ELink> = ls.iter().filter(|l| depth.contains_key(&l.out_node) && depth.contains_key(&l.in_node)).collect();
+        // (a loop back, feedback, doesn't push the loop on and on to the right: the links that
+        // close a loop, found walking the middle in order of ids, don't count)
+        let mut next: BTreeMap<u32, std::collections::BTreeSet<u32>> = BTreeMap::new();
+        for l in ls.iter().filter(|l| depth.contains_key(&l.out_node) && depth.contains_key(&l.in_node)) {
+            next.entry(l.out_node).or_default().insert(l.in_node);
+        }
+        let mut back: HashSet<(u32, u32)> = HashSet::new();
+        let mut state: HashMap<u32, u8> = HashMap::new();
+        for &root in depth.keys() {
+            if state.contains_key(&root) {
+                continue;
+            }
+            // (iterative: the node, and where it is in its links out)
+            let mut stack: Vec<(u32, Vec<u32>)> = vec![(root, next.get(&root).map(|n| n.iter().copied().collect()).unwrap_or_default())];
+            state.insert(root, 1);
+            while let Some((at, todo)) = stack.last_mut() {
+                let at = *at;
+                match todo.pop() {
+                    Some(to) => match state.get(&to) {
+                        Some(1) => {
+                            back.insert((at, to));
+                        }
+                        Some(_) => {}
+                        None => {
+                            state.insert(to, 1);
+                            let mut n: Vec<u32> = next.get(&to).map(|n| n.iter().copied().collect()).unwrap_or_default();
+                            n.reverse();
+                            stack.push((to, n));
+                        }
+                    },
+                    None => {
+                        state.insert(at, 2);
+                        stack.pop();
+                    }
+                }
+            }
+        }
+        let mid: Vec<(u32, u32)> = next.iter().flat_map(|(a, bs)| bs.iter().map(move |b| (*a, *b))).filter(|e| !back.contains(e)).collect();
         for _ in 0..depth.len() {
-            for l in &mid {
-                let d = depth[&l.out_node] + 1;
-                if depth[&l.in_node] < d {
-                    depth.insert(l.in_node, d);
+            for &(a, b) in &mid {
+                let d = depth[&a] + 1;
+                if depth[&b] < d {
+                    depth.insert(b, d);
                 }
             }
         }
@@ -1154,8 +1207,12 @@ impl Engine {
                 }
                 match how {
                     0 => c.sort_by(by_kind),
-                    1 => c.sort_by(|a, b| bary(*a, &at).total_cmp(&bary(*b, &at)).then(by_kind(a, b))),
-                    _ => c.sort_by(|a, b| listener(*a).cmp(&listener(*b)).then(bary(*a, &at).total_cmp(&bary(*b, &at))).then(by_kind(a, b))),
+                    // (each one's height worked out once, not at every comparison)
+                    _ => {
+                        let mut keyed: Vec<(bool, f64, u32)> = c.iter().map(|&i| (how == 2 && listener(i), bary(i, &at), i)).collect();
+                        keyed.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(by_kind(&a.2, &b.2)));
+                        c = keyed.into_iter().map(|k| k.2).collect();
+                    }
                 }
                 let (mut col, mut y) = (Vec::new(), 0.0);
                 for i in c {
@@ -1372,9 +1429,9 @@ impl Engine {
         let (w, h) = (lay.w.max(10.0), lay.h.max(10.0));
         let mut o = String::new();
         for (y, bh, gi, what) in &lay.bands {
-            let (col, head) = match gi {
-                Some(gi) => {
-                    let g = &m.groups[*gi];
+            // (the layout may be a moment older than the groups: one gone is drawn as no group)
+            let (col, head) = match gi.and_then(|gi| m.groups.get(gi)) {
+                Some(g) => {
                     let d = m.node(g.driver);
                     (
                         d.map_or([0x8c, 0x8e, 0x91], |n| n.color),
@@ -1534,8 +1591,9 @@ impl Engine {
         let (m, lay) = (&self.model, &self.lay);
         let mut out = Vec::new();
         for (y, _, gi, _) in &lay.bands {
-            let Some(gi) = gi else { continue };
-            let g = &m.groups[*gi];
+            // (the layout shown may be a moment older than the groups, until its new picture
+            // comes: a group gone has no numbers)
+            let Some(g) = gi.and_then(|gi| m.groups.get(gi)) else { continue };
             let d = m.node(g.driver);
             // after the header drawn in the graph (all in a monospaced font)
             let x = BPAD + text::width(text::MONO_BOLD, "DRIVER", 12.0, 1.0) + text::width(text::MONO_BOLD, &format!("  {}  ", d.map_or("?", |n| n.desc.as_str())), 12.0, 0.0) + text::width(text::MONO, &band_rest(g, d), 12.0, 0.0);
@@ -1574,9 +1632,8 @@ impl Engine {
         x >= g[0] && x < g[0] + g[2] && y >= g[1] && y < g[1] + g[3]
     }
 
-    /// Brings every part up to date and returns the pictures to draw, in order: (layer, x, y, w,
-    /// h) in window pixels.
-    /// (Each with where it may draw, if not everywhere: a body cut to its view.)
+    /// Brings every part up to date and returns the pictures to draw, in order (see `Pic`: a
+    /// body cut to its view, the gliding blocks cut out of the old graph and fading).
     pub fn sprites(&mut self, size: (u32, u32), dpi: f64, version: &str) -> Vec<Pic<'_>> {
         let (fw, fh) = (size.0 as f64 / dpi, size.1 as f64 / dpi);
         let [strip_a, graph_a, insp_a, bottom_a] = self.areas(fw, fh);
@@ -1595,7 +1652,10 @@ impl Engine {
             std::hash::Hash::hash(&(&n.class, n.system, n.color, n.desk.as_ref().map(|d| d.3), self.model.timing.get(&n.id).map(|t| t.latency)), &mut hsh);
         }
         for g in &self.model.groups {
-            std::hash::Hash::hash(&(g.driver, g.quantum, g.rate, &g.members), &mut hsh);
+            // (the members in any order: the profiler lists them as they came)
+            let mut members = g.members.clone();
+            members.sort_unstable();
+            std::hash::Hash::hash(&(g.driver, g.quantum, g.rate, members), &mut hsh);
         }
         let sig = std::hash::Hasher::finish(&hsh);
         // the graph is drawn on the painter's threads: the old one shows until the new one comes
@@ -1606,7 +1666,15 @@ impl Engine {
         let stale = self.graph_layer.as_ref().is_none_or(|(s, r, _)| *s != sig || (settled && (*r - self.view.s).abs() > 1e-3));
         let asked = self.graph_want.is_some_and(|(_, s, vs, _, _)| s == sig && (!settled || (vs - self.view.s).abs() <= 1e-3));
         if stale && !asked {
-            self.lay = self.layout();
+            // the layout for it: made again only when the graph changed (not for a zoom); it is
+            // the one the pointer and the numbers go by once its picture comes (until then the
+            // old picture shows, and the old layout with it)
+            let fresh = match &self.want_lay {
+                Some((s, l)) if *s == sig => l.clone(),
+                _ if self.lay_sig == Some(sig) => self.lay.clone(),
+                _ => self.layout(),
+            };
+            let shown = std::mem::replace(&mut self.lay, fresh);
             if !self.fitted && !self.lay.pos.is_empty() {
                 self.fitted = true;
                 self.fit_to(graph_a, dpi);
@@ -1618,6 +1686,12 @@ impl Engine {
             self.graph_want = Some((want, sig, self.view.s, self.lay.w.max(10.0), self.lay.h.max(10.0)));
             self.want_pos = self.lay.pos.iter().map(|(id, &(x, y))| (*id, (x, y, self.model.node(*id).map_or(60.0, node_h)))).collect();
             self.inbox.ask(painter::key("graph", 0u8), want, self.graph_svg(false), r);
+            let fresh = std::mem::replace(&mut self.lay, shown);
+            if self.graph_layer.is_none() {
+                (self.lay, self.lay_sig, self.want_lay) = (fresh, Some(sig), None);
+            } else {
+                self.want_lay = Some((sig, fresh));
+            }
         }
         if self.glide.as_ref().is_some_and(|g| g.start.elapsed() >= GLIDE) {
             self.glide = None;
@@ -1786,7 +1860,9 @@ impl Engine {
 
         // the frame round the port a click would listen to
         let vs = self.view.s;
-        let hover = self.port_hover.map(|h| (h, hash_str(&format!("{h:?}{:?}", self.lay.pos.get(&self.model.port_node.get(&h.0).copied().unwrap_or(0))), vs)));
+        // (drawn again with the graph: its ports may have changed)
+        let shown_sig = self.graph_layer.as_ref().map(|(s, _, _)| *s);
+        let hover = self.port_hover.map(|h| (h, hash_str(&format!("{h:?}{shown_sig:?}{:?}", self.lay.pos.get(&self.model.port_node.get(&h.0).copied().unwrap_or(0))), vs)));
         self.hover_pic = match (hover, self.hover_pic.take()) {
             (Some((_, sig)), Some(p)) if p.0 == sig => Some(p),
             (Some((h, sig)), _) => self.port_frame(h.0, h.1, vs).map(|l| (sig, l)),
@@ -1804,12 +1880,10 @@ impl Engine {
             let e = t * t * (3.0 - 2.0 * t);
             // (a little round each block: the dots of its ports stand out of it)
             const PAD: f64 = 6.0;
-            for (id, &(ox, oy, h)) in &g.from {
+            for (id, &(ox, oy, h)) in &g.src {
                 // a block that went fades where it was
-                let ((cx, cy), alpha) = match g.to.get(id) {
-                    Some(&(nx, ny)) => ((ox + (nx - ox) * e, oy + (ny - oy) * e), 1.0 - (t - 0.85).max(0.0) / 0.15),
-                    None => ((ox, oy), 1.0 - e),
-                };
+                let Some((cx, cy)) = g.at(*id) else { continue };
+                let alpha = if g.to.contains_key(id) { 1.0 - (t - 0.85).max(0.0) / 0.15 } else { 1.0 - e };
                 let clip = [v.x + (cx - PAD) * v.s, v.y + (cy - PAD) * v.s, (NW + 2.0 * PAD) * v.s, (h + 2.0 * PAD) * v.s];
                 out.push((&g.old, v.x + (cx - ox) * v.s, v.y + (cy - oy) * v.s, g.old.w * v.s, g.old.h * v.s, Some(clip), alpha.clamp(0.0, 1.0) as f32));
             }
@@ -1893,7 +1967,7 @@ impl Engine {
     /// The GPU has these pictures' pixels now: they are let go. Returns how many bytes.
     pub fn uploaded(&mut self, has: impl Fn(u64) -> bool) -> usize {
         let mut freed = 0;
-        let parts = [self.graph_layer.as_mut().map(|(_, _, l)| l), self.strip.as_mut().map(|(_, l)| l), self.insp.as_mut().map(|(_, l)| l), self.bottom.as_mut().map(|(_, l)| l), self.overlay.as_mut().map(|(_, l)| l), self.overlay_b.as_mut().map(|(_, l)| l), self.legend.as_mut().map(|(_, l)| l), self.info.as_mut().map(|(_, l)| l)];
+        let parts = [self.graph_layer.as_mut().map(|(_, _, l)| l), self.strip.as_mut().map(|(_, l)| l), self.insp.as_mut().map(|(_, l)| l), self.bottom.as_mut().map(|(_, l)| l), self.overlay.as_mut().map(|(_, l)| l), self.overlay_b.as_mut().map(|(_, l)| l), self.legend.as_mut().map(|(_, l)| l), self.info.as_mut().map(|(_, l)| l), self.hover_pic.as_mut().map(|(_, l)| l), self.glide.as_mut().map(|g| &mut g.old)];
         let bodies = self.bodies.iter_mut().filter_map(|b| b.layer.as_mut().map(|(_, _, l)| l));
         for l in self.nums.values_mut().map(|(_, l)| l).chain(parts.into_iter().flatten()).chain(bodies) {
             if has(l.id) {
@@ -2987,10 +3061,7 @@ impl Engine {
             let (Some(a), Some(b)) = (self.port_xy(lay, l.out_node, l.out_port), self.port_xy(lay, l.in_node, l.in_port)) else { continue };
             let c = link_curve(a, b);
             for k in 0..=60 {
-                let t = k as f64 / 60.0;
-                let u = 1.0 - t;
-                let px = u * u * u * c[0].0 + 3.0 * u * u * t * c[1].0 + 3.0 * u * t * t * c[2].0 + t * t * t * c[3].0;
-                let py = u * u * u * c[0].1 + 3.0 * u * u * t * c[1].1 + 3.0 * u * t * t * c[2].1 + t * t * t * c[3].1;
+                let (px, py) = bezier(&c, k as f64 / 60.0);
                 let d = (px - x).hypot(py - y);
                 if d < 7.0 && best.is_none_or(|(bd, _)| d < bd) {
                     best = Some((d, l.id));
@@ -3036,11 +3107,20 @@ impl Engine {
             && done.key == painter::key("graph", 0u8)
         {
             let pos = std::mem::take(&mut self.want_pos);
+            if let Some((s, l)) = self.want_lay.take() {
+                (self.lay, self.lay_sig) = (l, Some(s));
+            }
             // blocks that moved (the layout changed, not only the zoom): they glide there
             let moved = pos.iter().any(|(id, p)| self.graph_pos.get(id).is_some_and(|q| (p.0 - q.0).abs() + (p.1 - q.1).abs() > 1.0));
-            let old = self.graph_layer.take();
-            if moved && let Some((_, _, old)) = old {
-                self.glide = Some(Glide { start: Instant::now(), old, from: std::mem::take(&mut self.graph_pos), to: pos.iter().map(|(id, p)| (*id, (p.0, p.1))).collect() });
+            let shown = self.graph_layer.take();
+            let to: HashMap<u32, (f64, f64)> = pos.iter().map(|(id, p)| (*id, (p.0, p.1))).collect();
+            if moved {
+                // gliding already: on from where the blocks are now, cut from the same picture
+                self.glide = match (self.glide.take(), shown) {
+                    (Some(g), _) => Some(Glide { start: Instant::now(), from: g.src.keys().filter_map(|id| Some((*id, g.at(*id)?))).collect(), old: g.old, src: g.src, to }),
+                    (None, Some((_, _, old))) => Some(Glide { start: Instant::now(), old, from: self.graph_pos.iter().map(|(id, p)| (*id, (p.0, p.1))).collect(), src: std::mem::take(&mut self.graph_pos), to }),
+                    (None, None) => None,
+                };
             }
             self.graph_pos = pos;
             self.graph_layer = Some((sig, vs, Layer { id: next_id(), pm: done.pm, x: 0.0, y: 0.0, w, h }));
@@ -3586,6 +3666,22 @@ mod tests {
         assert!(through.is_empty(), "links through other ports: {:?}", through.iter().map(|(l, n)| (l.id, *n)).collect::<Vec<_>>());
         let x = |id: u32| lay.pos[&id].0;
         assert!(x(71) < x(179) && x(179) < x(70) && x(70) == x(88), "out only, in and out, in only: {:?}", lay.pos);
+    }
+
+    /// A loop (an effect fed back into itself through another) keeps its place: a column each,
+    /// not pushed on and on to the right.
+    #[test]
+    fn a_loop_back_keeps_its_columns() {
+        let app: &[TPort] = &[(11, "out", "output_MONO")];
+        let f1: &[TPort] = &[(21, "in", "input_MONO"), (22, "out", "output_MONO")];
+        let f2: &[TPort] = &[(31, "in", "input_MONO"), (32, "out", "output_MONO")];
+        let sink: &[TPort] = &[(41, "in", "playback_MONO")];
+        let (_, lay) = laid(
+            &[(1, "app", "Stream/Output/Audio", app), (2, "effect one", "Audio/Filter", f1), (3, "effect two", "Audio/Filter", f2), (4, "speaker", "Audio/Sink", sink)],
+            &[(101, 1, 11, 2, 21, false), (102, 2, 22, 3, 31, false), (103, 3, 32, 2, 21, false), (104, 3, 32, 4, 41, false)],
+        );
+        let x = |id: u32| lay.pos[&id].0;
+        assert_eq!((x(2) - x(1), x(3) - x(2), x(4) - x(3)), (COLW, COLW, COLW), "app, effect one, effect two, speaker: a column each: {:?}", lay.pos);
     }
 
     /// How long laying out a busy graph takes (it is done on the main thread): 12 apps into 3

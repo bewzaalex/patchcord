@@ -28,6 +28,7 @@ fn masked(ev: Event) -> Event {
         Event::Info { id, props: p, state } => Event::Info { id, props: props(p), state },
         Event::Setting { key, value } => Event::Setting { key, value: mask_macs(&value) },
         Event::Meta { id, subject, key, ty, value } => Event::Meta { id, subject, key, ty, value: value.map(|v| mask_macs(&v)) },
+        Event::Param { id, kind, index, text } => Event::Param { id, kind, index, text: mask_macs(&text) },
         ev => ev,
     }
 }
