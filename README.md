@@ -177,8 +177,10 @@ audio, its own SIG meter (what comes in, or what goes out, after its volume or g
 
 | | |
 | --- | --- |
-| Hold Alt over the jacks | the jack under the pointer plays in the default output, like a test probe, while Alt is held; a cyan ring with headphones marks it |
-| CUE key · LEVEL | CUE mode (LED lit): hover a jack to hear it, click it to keep it playing (it glows; as many as you like, mixed); CUE again or Esc stops them all. LEVEL sets how loud, without touching any app's or device's volume. The output you listen on, and its REC OUT, can't be heard (they would feed back); listening only hears what already flows |
+| Hold Alt over the jacks | the jack under the pointer plays in the default output, like a test probe, while Alt is held; a cyan ring with headphones marks it. With Alt held the desk only listens: no cord is touched |
+| CUE key · LEVEL | CUE mode (LED lit): hover a jack to hear it, click it to keep it playing (filled cyan; as many as you like, mixed); CUE again or Esc stops them all. LEVEL sets how loud, without touching any app's or device's volume. The output you listen on, and its REC OUT, can't be heard (they would feed back); listening only hears what already flows |
+| Patching in CUE mode | a jack's black hole still patches (the pointer turns into a crosshair): pull a cord out, move it, plug a new one; the ring round it listens. What is heard follows the new patch |
+| In ENGINE | in CUE mode click a port to hear it, again to stop (the port a click would take is framed; red where it would feed back). One port is one channel: FL in the left ear, FR in the right, the rest in both; an input port hears what comes into it. A jack and its ports are one sound: kept on in either place, it stops in either; one channel of a stereo jack kept on fills half of its disc |
 
 ### The desk and the rack
 
@@ -202,8 +204,9 @@ on: what the panels leave out, which clock drives what, and why something crackl
 
 | | |
 | --- | --- |
-| Blocks | a block per node, grouped under the driver that clocks it (NOT RUNNING: nothing clocks it now, no CPU used). Coloured by what it is: device, app, system, MIDI, video, Patchcord's own meters. Its ports are ears on its edges, inputs left, outputs right; a light shows if it runs, idles, sleeps or had xruns |
-| Links | in the colour of the block they come out of; faded when paused, dashed when they only listen (meters), red when the ends share no format. A stereo pair runs side by side, its distance kept |
+| Blocks | a block per node, grouped under the driver that clocks it (NOT RUNNING: nothing clocks it now, no CPU used). Coloured by what it is: device, app, system, MIDI, video, Patchcord's own meters and cue. Its ports are ears on its edges, inputs left, outputs right; a light shows if it runs, idles, sleeps or had xruns |
+| Where they go | by their links as they are now, left to right: no links; only links out; links in and out, a column further for each step along; only links in, then Patchcord's meters and cue. Each group takes as many columns as fit a wide view, and no link runs through another block's port. When the graph changes, the blocks glide to their new places |
+| Links | one curve each, in the colour of the block they come out of; faded when paused, dashed when they only listen (meters, the cue), red when the ends share no format |
 | Click | a node, port or link turns amber with what belongs to it, and its details open on the right: INFO, PROPS, PARAMS, TIMING, where it is on the desk (SHOW ON DESK goes there), its ports and links |
 | ALSO SHOW | Patchcord's meters, MIDI, what isn't running, PipeWire's internal drivers, on and off |
 | The strip | the clock, the quantum, the DSP load with its last 45 seconds, xruns, then (when there is room) drivers, server, session, allowed rates and objects; in a narrow window those are behind **i**. HEALTH counts errors, warnings and notes |
