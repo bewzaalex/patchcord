@@ -12,7 +12,7 @@ use resvg::tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Rect, Transform};
 use resvg::usvg;
 
 use super::cord::{Cord, Held, RATE, Slot};
-use super::face::{self, BADGE, BAL_R, BalKnob, DEV_H, Geometry, KNOB_R, Leds, MIX_H, MIX_Y, JP, JackDef, JackKind, LCD_W, LCD_X, LCD_Y, FACE_PAD, PIC, RACK_GAP, RACK_MIN, RACK_SCREW_X, RACK_U, SHADOW};
+use super::face::{self, BADGE, BAL_R, BalKnob, DEV_H, Geometry, KNOB_R, Leds, MIX_H, MIX_Y, JP, JackDef, JackKind, LCD_H, LCD_W, LCD_X, LCD_Y, FACE_PAD, PIC, RACK_GAP, RACK_MIN, RACK_SCREW_X, RACK_U, SHADOW};
 use super::{ease, paint, painter, text};
 use crate::config::Preset;
 
@@ -263,7 +263,7 @@ impl DevView {
     /// What its face is drawn from: drawn again when this changes.
     fn sig(&self, rack_w: Option<f64>, accents: bool) -> u64 {
         let mut h = DefaultHasher::new();
-        (&self.counts, &self.split, &self.dev.name, &self.dev.model, self.dev.state, rack_w.map(f64::to_bits), accents).hash(&mut h);
+        (&self.counts, &self.split, &self.dev.name, &self.dev.model, self.dev.state, rack_w.map(f64::to_bits), accents, self.dev.inside.is_empty()).hash(&mut h);
         self.dev.groups.iter().for_each(|g| g.mix.as_ref().map(|m| m.volumes.len()).hash(&mut h));
         // the frames' names: they follow the port in use (SPEAKERS, HEADPHONES…), and the
         // layout their width
@@ -611,7 +611,10 @@ impl Scene {
                     if dv.split.len() != dev.groups.len() {
                         dv.split = vec![false; dev.groups.len()];
                     }
+                    // (its cords' colour stays)
+                    let color = dv.dev.color;
                     dv.dev = dev;
+                    dv.dev.color = color;
                     dv
                 }
                 None => {
@@ -621,6 +624,21 @@ impl Scene {
                 }
             };
             self.devs.push(dv);
+        }
+        // a new device's colour: one no other device has (its own first), else the one fewest
+        // have, so no two look alike while there are colours to go round
+        for key in &fresh {
+            let mut count = [0usize; crate::graph::PALETTE.len()];
+            for d in self.devs.iter().filter(|d| !fresh.contains(&d.dev.key) || fresh.iter().position(|k| *k == d.dev.key) < fresh.iter().position(|k| k == key)) {
+                if let Some(i) = crate::graph::PALETTE.iter().position(|c| *c == d.dev.color) {
+                    count[i] += 1;
+                }
+            }
+            let Some(d) = self.devs.iter_mut().find(|d| d.dev.key == *key) else { continue };
+            let own = crate::graph::PALETTE.iter().position(|c| *c == d.dev.color).unwrap_or(0);
+            let n = count.len();
+            let best = (0..n).map(|k| (own + k) % n).min_by_key(|i| count[*i]).unwrap_or(own);
+            d.dev.color = crate::graph::PALETTE[best];
         }
         // keep the drawing order the user made by dragging
         self.devs.sort_by_key(|d| order.iter().position(|k| *k == d.dev.key).unwrap_or(usize::MAX));
@@ -1011,7 +1029,7 @@ impl Scene {
                 let gain = g.mix.as_ref().is_some_and(|m| m.gain);
                 // an output's monitor: the sound before the output's volume, its level shown on that
                 // output (PLAYBACK) too; silent when the output is muted
-                let output = (g.label == "MONITOR")
+                let output = (g.role == "MONITOR")
                     .then(|| d.dev.groups.iter().position(|o| o.dir == Dir::In && o.mix.is_some() && o.ports.first().map(|p| p.node) == g.ports.first().map(|p| p.node)))
                     .flatten();
                 // what leaves: measured on its own ports (what an app sends, a device's input after
@@ -1976,7 +1994,7 @@ impl Scene {
         }
         // a device's output (PLAYBACK): what it plays, its monitor (all it gets, mixed)
         let node = ports.first().map(|p| p.node);
-        if let Some(mon) = d.dev.groups.iter().find(|g| g.label == "MONITOR" && g.ports.first().map(|p| p.node) == node) {
+        if let Some(mon) = d.dev.groups.iter().find(|g| g.role == "MONITOR" && g.ports.first().map(|p| p.node) == node) {
             return mon.ports.iter().map(|p| (p.node, p.id, ch(p))).collect();
         }
         let links = self.graph.links();
@@ -1989,7 +2007,7 @@ impl Scene {
     pub fn cue_mix(&self, keys: &[String]) -> Vec<crate::pw::CueSource> {
         let all: Vec<crate::pw::CueSource> = keys.iter().flat_map(|k| self.cue_sources(k)).collect();
         // the devices whose monitor is heard, and the output listened on
-        let mut monitored: Vec<u32> = self.devs.iter().flat_map(|d| d.dev.groups.iter().filter(|g| g.label == "MONITOR").flat_map(|g| &g.ports)).filter(|p| all.iter().any(|s| s.1 == p.id)).map(|p| p.node).collect();
+        let mut monitored: Vec<u32> = self.devs.iter().flat_map(|d| d.dev.groups.iter().filter(|g| g.role == "MONITOR").flat_map(|g| &g.ports)).filter(|p| all.iter().any(|s| s.1 == p.id)).map(|p| p.node).collect();
         monitored.extend(self.default_output_node());
         let mut out: Vec<crate::pw::CueSource> = Vec::new();
         for s in all {
@@ -2132,6 +2150,11 @@ impl Scene {
         self.devs.iter().enumerate().rev().find_map(|(di, d)| d.geo.profile.filter(|[kx, ky, kw, kh]| x >= d.x + kx && x <= d.x + kx + kw && y >= d.y + ky && y <= d.y + ky + kh).map(|_| di))
     }
 
+    /// The device whose INSIDE key is under a world point.
+    pub fn inside_key_at(&self, x: f64, y: f64) -> Option<usize> {
+        self.devs.iter().enumerate().rev().find_map(|(di, d)| d.geo.inside.filter(|[kx, ky, kw, kh]| x >= d.x + kx && x <= d.x + kx + kw && y >= d.y + ky && y <= d.y + ky + kh).map(|_| di))
+    }
+
     /// The SPLIT/JOIN switch under a world point: (device, group).
     pub fn switch_at(&self, x: f64, y: f64) -> Option<(usize, usize)> {
         self.devs.iter().enumerate().rev().find_map(|(di, d)| {
@@ -2205,7 +2228,8 @@ impl Scene {
         let at = self.spare(key)?;
         let (d, j) = self.jack(key)?;
         let output = j.dir == Dir::Out;
-        let color = if output { d.dev.color } else { [0x8d, 0x90, 0x94] };
+        // its own device's colour; plugged into an output, it takes that one's
+        let color = d.dev.color;
         let kind = j.kind;
         self.seq += 1;
         self.slot_seq += 1;
@@ -2664,6 +2688,10 @@ impl Scene {
             let card = self.devs[di].dev.card.as_ref().map_or(String::new(), |c| c.summary());
             return format!("{card}  ·  click: choose a profile");
         }
+        if let Some(di) = self.inside_key_at(x, y) {
+            let d = &self.devs[di].dev;
+            return format!("{}: {} nodes, {} on its face  ·  click: what it does inside itself", d.name, d.inside.len(), d.inside.iter().filter(|n| n.face).count());
+        }
         if let Some((di, g)) = self.switch_at(x, y) {
             return if self.devs[di].split.get(g).copied().unwrap_or(false) { "Join L and R into one stereo jack".into() } else { "Split into separate L and R jacks".into() };
         }
@@ -2804,40 +2832,43 @@ fn prepare_dev(d: &mut DevView, n: usize, c: &DevCtx, inbox: &mut painter::Inbox
     } else if d.dev.groups.is_empty() && d.dev.card.is_some() {
         "NO INPUTS OR OUTPUTS".to_owned()
     } else {
-        format!(
-            "{:<11}{}",
-            d.dev.state.to_uppercase(),
-            match n {
-                0 => "NO LINKS".to_owned(),
-                1 => "1 LINK".to_owned(),
-                n => format!("{n} LINKS"),
-            }
-        )
+        match n {
+            0 => "NO LINKS".to_owned(),
+            1 => "1 LINK".to_owned(),
+            n => format!("{n} LINKS"),
+        }
     };
-    // line 3: a card's profile (and codec), scrolling when long; else what it carries
-    let line3 = match &d.dev.card {
+    // line 3: what it takes of PipeWire
+    let line3 = match (d.dev.nodes, d.dev.ports) {
+        (0, _) => "NO NODES".to_owned(),
+        (n, p) => format!("{n} NODE{}  {p} PORT{}", if n == 1 { "" } else { "S" }, if p == 1 { "" } else { "S" }),
+    };
+    // line 4: a card's profile (and codec), scrolling when long; else what it carries
+    let line4 = match &d.dev.card {
         Some(card) => face::marquee(&card.summary(), c.ms),
         None if d.dev.groups.iter().any(|g| g.ports.iter().any(|p| p.media == Media::Midi)) => "MIDI".to_owned(),
         None if d.dev.groups.iter().any(|g| g.stereo) => "STEREO".to_owned(),
         None => "MONO".to_owned(),
     };
-    let text = format!("{}\n{line2}\n{line3}", face::marquee(&d.dev.name, c.ms));
-    let card = d.dev.card.is_some();
+    // line 1: what it is, and its state against the right edge (the name is on the plate)
+    let state = d.dev.state.to_uppercase();
+    let line1 = format!("{:<w$}{state}", d.dev.kind, w = face::LCD_CH.saturating_sub(state.chars().count()).max(d.dev.kind.chars().count() + 1));
+    let text = format!("{line1}\n{line2}\n{line3}\n{line4}");
     let x = d.geo.left + LCD_X;
-    let lsig = painter::sig((&text, x.to_bits(), card), c.scale);
+    let lsig = painter::sig((&text, x.to_bits()), c.scale);
     // the screen as it was shows where it is now until it is drawn again
     if let Some((_, l)) = &mut d.lcd {
         l.x = x;
     }
     if d.lcd.as_ref().is_none_or(|(s, _)| *s != lsig) && d.lcd_want.map(|w| w.0) != Some(lsig) {
         let l: Vec<&str> = text.split('\n').collect();
-        let svg = face::lcd([l[0], l[1], l[2]], card);
+        let svg = face::lcd([l[0], l[1], l[2], l[3]]);
         if d.lcd.is_none() {
             let pm = rasterize(c.opt, &svg, c.scale);
-            d.lcd = Some((lsig, Layer { id: next_id(), pm, x, y: LCD_Y, w: LCD_W, h: face::lcd_h(card) }));
+            d.lcd = Some((lsig, Layer { id: next_id(), pm, x, y: LCD_Y, w: LCD_W, h: LCD_H }));
         } else {
             // the old one shows until this one is drawn
-            d.lcd_want = Some((lsig, x, face::lcd_h(card)));
+            d.lcd_want = Some((lsig, x, LCD_H));
             inbox.ask(painter::key("lcd", &d.dev.key), lsig, svg, c.scale);
         }
     }
@@ -2939,7 +2970,7 @@ mod tests {
         let mut s = Scene::new();
         s.rack = false;
         for (k, &(x, y, w)) in at.iter().enumerate() {
-            let dev = Device { key: format!("d{k}"), name: format!("d{k}"), model: String::new(), finish: crate::graph::Finish::Metal, color: [0; 3], groups: Vec::new(), state: "idle", card: None };
+            let dev = Device { key: format!("d{k}"), name: format!("d{k}"), model: String::new(), kind: "", finish: crate::graph::Finish::Metal, color: [0; 3], groups: Vec::new(), state: "idle", inside: Vec::new(), nodes: 0, ports: 0, card: None };
             let geo = Geometry { w, ..Default::default() };
             s.devs.push(DevView::new(dev, Vec::new(), geo, (x, y)));
         }
@@ -3032,6 +3063,7 @@ mod tests {
         use crate::graph::{Group, Port};
         let group = |label: &str, dir: Dir, ids: [u32; 2]| Group {
             label: label.into(),
+            role: if label == "PLAYBACK" { "PLAYBACK" } else { "OUTPUT" },
             dir,
             ports: ids.iter().zip(["FL", "FR"]).map(|(&id, ch)| Port { id, node: id, name: format!("p{id}"), label: ch.into(), dir, media: Media::Audio, channel: ch.into() }).collect(),
             stereo: true,
@@ -3061,6 +3093,7 @@ mod tests {
         use crate::graph::{Group, Port};
         let group = |label: &str, dir: Dir, ids: [u32; 2]| Group {
             label: label.into(),
+            role: if label == "PLAYBACK" { "PLAYBACK" } else { "OUTPUT" },
             dir,
             ports: ids.iter().zip(["FL", "FR"]).map(|(&id, ch)| Port { id, node: id, name: format!("p{id}"), label: ch.into(), dir, media: Media::Audio, channel: ch.into() }).collect(),
             stereo: true,
@@ -3176,7 +3209,9 @@ mod tests {
             (18, "Meeting", "Stream/Input/Audio", &[("in", "input_FL"), ("in", "input_FR")][..]),
         ] {
             let pid = if name == "Meeting" { "4242".to_owned() } else { id.to_string() };
-            let p = props(&[("node.name", name), ("node.description", name), ("media.class", class), ("application.name", name), ("application.process.id", &pid)]);
+            // the sink and source are hardware's, without a program
+            let app = if class.starts_with("Stream/") { name } else { "" };
+            let p = props(&[("node.name", name), ("node.description", name), ("media.class", class), ("application.name", app), ("application.process.id", &pid)]);
             ev.push(Event::Added { id, kind: Kind::Node, props: p.clone() });
             ev.push(Event::Info { id, props: p, state: Some("running") });
             for (dir, pname) in ports {
@@ -3193,6 +3228,15 @@ mod tests {
         }
         ev.push(Event::Synced);
         ev
+    }
+
+    /// Every device its own cord colour while there are colours to go round.
+    #[test]
+    fn devices_get_colours_of_their_own() {
+        let mut s = Scene::new();
+        s.apply(demo_events());
+        let colours: HashSet<[u8; 3]> = s.devs.iter().map(|d| d.dev.color).collect();
+        assert_eq!(colours.len(), s.devs.len(), "{} devices", s.devs.len());
     }
 
     /// A picture of the rack, for looking at without PipeWire: a few devices from a made-up graph,

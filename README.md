@@ -135,13 +135,17 @@ audio, its own SIG meter (what comes in, or what goes out, after its volume or g
 
 | | |
 | --- | --- |
-| Frame names | an app's say which way the sound goes: INPUT, OUTPUT. A sound card's say what it is, from the port in use, and follow it: SPEAKERS, HEADPHONES, HDMI, BUILT-IN MIC, MIC (SOUND OUT / SOUND IN when the card doesn't tell). A Bluetooth headset has HEADPHONES and MIC |
+| Programs | everything one program makes in PipeWire is one device, APP on its screen, under the program's own name (`application.name`): its streams, its own sinks and sources, its effects (Easy Effects), a DAW's engine (Bitwig). A program is known by its name, binary and process, as PipeWire gives them; PipeWire's own processes and WirePlumber are not programs, their nodes stay devices of their own. Two programs of one name (two VLCs): the first keeps it, the next is numbered (VLC MEDIA PLAYER 2) |
+| On a program's face | what meets the world outside it: its streams, its sink's input and its source's output (what other programs pick), and any port with a cord to another device. A port whose cords stay inside the program is not on the face; it comes onto it when it gets a cord from outside, and goes back when that cord goes |
+| INSIDE key | on a program whose face doesn't show all its nodes (Easy Effects): a list of all of them, in the order it made them, where each sends its sound among them, those on the face marked. Read only; click one to see it in ENGINE |
+| Frame names | an app's say which way the sound goes: INPUT, OUTPUT; a program with several nodes names each frame as it named the node (EASY EFFECTS SINK, SPECTRUM), two of a name kept so. A sound card's say what it is, from the port in use, and follow it: SPEAKERS, HEADPHONES, HDMI, BUILT-IN MIC, MIC (SOUND OUT / SOUND IN when the card doesn't tell). A Bluetooth headset has HEADPHONES and MIC. WirePlumber's MIDI bridge has a frame for each MIDI client on it (MIDI THROUGH, a keyboard, HYDROGEN) |
+| Screen | what the device is and its state (RUNNING), its cords (2 LINKS), what it takes of PipeWire (2 NODES 6 PORTS), and a card's profile (scrolling when long) or what it carries (STEREO, MONO, MIDI) |
 | IN / OUT tags | which way a cord goes at that frame: into it (IN) or out of it (OUT) |
 | REC OUT | inside a sound card output's frame, after a dotted rule: a copy of what it plays, to record it (PipeWire's monitor) |
 | OUTPUT 1, OUTPUT 2… | an app with several streams of a kind (Teams in a call records on two and plays on six) is one device with a numbered frame for each, each with its own controls and meter |
 | Units | up to four frames side by side; more make the device two or three units high, the frames spread evenly (eight: two units of four), inputs first and outputs last, vents where a unit has nothing to show |
 | Colours (K) | coloured bands behind the frames' names by kind (outputs, inputs, apps' outputs and inputs, MIDI), or plain frames; the jacks keep their coloured rings either way |
-| HIDE key | the struck-through eye right of a device's name (or H over it) hides a device without cords; with cords it is dimmed. Hidden devices stay hidden after a restart and come back by themselves when something connects to them |
+| HIDE key | the struck-through eye at the left of the keys under a device's screen, on every device (or H over it), hides a device without cords; with cords it is dimmed. Hidden devices stay hidden after a restart and come back by themselves when something connects to them |
 | HIDDEN key | the eye on the top panel (or H over the desk), with how many are hidden: click one to show it again. It also lists, dimmed and marked SYSTEM, what Patchcord always leaves out: other programs' level meters and its own, apps' monitors, and the plumbing behind a Bluetooth headset's MIC |
 
 ### Patching

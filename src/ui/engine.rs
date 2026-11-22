@@ -2971,6 +2971,11 @@ impl Engine {
         }
     }
 
+    /// Selects a node, as a click on it would (from a program's INSIDE list on the desk).
+    pub fn pick(&mut self, node: u32) {
+        self.select(Some(Sel::Node(node)));
+    }
+
     /// Escape: closes the legend if it is open, else drops the selection (which closes the
     /// inspector).
     pub fn deselect(&mut self) {

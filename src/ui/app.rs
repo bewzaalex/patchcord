@@ -118,11 +118,19 @@ const DOUBLE: Duration = Duration::from_millis(350);
 
 /// A card's profile list, open under its PROFILE key: drawn again when the card changes, placed
 /// under the key wherever the view puts it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ListOf {
+    Profiles,
+    Ports,
+    Inside,
+}
+
 struct ProfileList {
     /// the device whose list it is
     key: String,
-    /// its ports and latency offsets (PORT) instead of its profiles
-    port: bool,
+    /// which: its profiles (PROFILE), its ports and latency offsets (PORT), a program's nodes
+    /// (INSIDE)
+    what: ListOf,
     /// what it was drawn from
     sig: u64,
     layer: Option<Layer>,
@@ -513,8 +521,8 @@ impl App {
 
     /// When the next step of the scrolling of long names is due (counted from the start).
     fn next_step(&self, now: Instant) -> Option<Instant> {
-        // (ENGINE shows no LCDs)
-        let marquee = !self.engine.on && self.scene.devs.iter().any(|d| d.dev.name.chars().count() > LCD_CH);
+        // (ENGINE shows no LCDs; what scrolls on them is a card's profile line)
+        let marquee = !self.engine.on && self.scene.devs.iter().any(|d| d.dev.card.as_ref().is_some_and(|c| c.summary().chars().count() > LCD_CH));
         let ms = (now - self.start).as_millis() as u64;
         marquee.then(|| now + MARQUEE - Duration::from_millis(ms % MARQUEE.as_millis() as u64))
     }
@@ -1260,16 +1268,25 @@ impl App {
             self.profiles = None;
             return;
         };
-        let (Some(card), Some([kx, ky, _, kh])) = (&d.dev.card, if pl.port { d.geo.port } else { d.geo.profile }) else {
+        let key = match pl.what {
+            ListOf::Profiles => d.geo.profile,
+            ListOf::Ports => d.geo.port,
+            ListOf::Inside => d.geo.inside,
+        };
+        let (Some([kx, ky, _, kh]), true) = (key, pl.what == ListOf::Inside || d.dev.card.is_some()) else {
             self.profiles = None;
             return;
         };
-        let sections = if pl.port { self.scene.port_sections(self.scene.devs.iter().position(|x| x.dev.key == pl.key).unwrap_or(0)) } else { Vec::new() };
+        let sections = if pl.what == ListOf::Ports { self.scene.port_sections(self.scene.devs.iter().position(|x| x.dev.key == pl.key).unwrap_or(0)) } else { Vec::new() };
         let mut h = std::hash::DefaultHasher::new();
-        std::hash::Hash::hash(&(format!("{card:?}{sections:?}"), &d.dev.name, dpi.to_bits()), &mut h);
+        std::hash::Hash::hash(&(format!("{:?}{sections:?}{:?}", d.dev.card, d.dev.inside), &d.dev.name, dpi.to_bits()), &mut h);
         let sig = std::hash::Hasher::finish(&h);
         if pl.sig != sig || pl.layer.is_none() {
-            let (layer, hits) = if pl.port { panel::port_menu(&sections, dpi) } else { panel::profile_menu(card, dpi) };
+            let (layer, hits) = match (pl.what, &d.dev.card) {
+                (ListOf::Ports, _) => panel::port_menu(&sections, dpi),
+                (ListOf::Profiles, Some(card)) => panel::profile_menu(card, dpi),
+                _ => panel::inside_menu(&d.dev.inside, dpi),
+            };
             (pl.sig, pl.layer, pl.hits) = (sig, Some(layer), hits);
         }
         // under the key, its left edge at the key's, kept inside the field: over the key when
@@ -1354,9 +1371,19 @@ impl App {
                     }
                     return self.after_patch();
                 }
+                // a program's node: shown in ENGINE
+                Some(ProfileHit::Node(id)) => {
+                    self.set_engine(true);
+                    self.engine.pick(id);
+                    return self.redraw();
+                }
                 Some(ProfileHit::Inside) => return,
                 None => {
-                    let key_at = if pl.port { self.scene.port_key_at(w.0, w.1) } else { self.scene.profile_key_at(w.0, w.1) };
+                    let key_at = match pl.what {
+                        ListOf::Ports => self.scene.port_key_at(w.0, w.1),
+                        ListOf::Profiles => self.scene.profile_key_at(w.0, w.1),
+                        ListOf::Inside => self.scene.inside_key_at(w.0, w.1),
+                    };
                     let own = key_at.is_some_and(|i| self.scene.devs[i].dev.key == pl.key);
                     self.profiles = None;
                     self.redraw();
@@ -1509,9 +1536,15 @@ impl App {
         if let Some(di) = self.scene.hide_key_at(w.0, w.1) {
             return self.hide_device(di);
         }
-        // a card's PROFILE and PORT keys open their lists under them
-        if let Some((di, port)) = self.scene.port_key_at(w.0, w.1).map(|di| (di, true)).or(self.scene.profile_key_at(w.0, w.1).map(|di| (di, false))) {
-            self.profiles = Some(ProfileList { key: self.scene.devs[di].dev.key.clone(), port, sig: 0, layer: None, hits: Vec::new(), at: (0.0, 0.0) });
+        // a card's PROFILE and PORT keys, a program's INSIDE, open their lists under them
+        if let Some((di, what)) = self
+            .scene
+            .port_key_at(w.0, w.1)
+            .map(|di| (di, ListOf::Ports))
+            .or(self.scene.profile_key_at(w.0, w.1).map(|di| (di, ListOf::Profiles)))
+            .or(self.scene.inside_key_at(w.0, w.1).map(|di| (di, ListOf::Inside)))
+        {
+            self.profiles = Some(ProfileList { key: self.scene.devs[di].dev.key.clone(), what, sig: 0, layer: None, hits: Vec::new(), at: (0.0, 0.0) });
             self.redraw();
             return;
         }
@@ -1776,6 +1809,7 @@ impl App {
                         ProfileHit::Codec(_) => (CursorIcon::Pointer, "click: switch to this codec".to_owned()),
                         ProfileHit::Port(..) => (CursorIcon::Pointer, "click: use this port".to_owned()),
                         ProfileHit::Latency(..) => (CursorIcon::Pointer, "click: 1 ms earlier or later (Shift: 10 ms); this port's sound is delayed by its latency offset".to_owned()),
+                        ProfileHit::Node(_) => (CursorIcon::Pointer, "click: show this node in ENGINE".to_owned()),
                         ProfileHit::Inside => (CursorIcon::Default, String::new()),
                     }
                 } else if self.cursor.1 < top || in_more {
@@ -1916,7 +1950,7 @@ impl App {
             CursorIcon::Crosshair
         } else if self.scene.knob_at(w.0, w.1).is_some() || self.scene.bal_at(w.0, w.1).is_some_and(|(di, gi)| self.scene.devs[di].bal(gi) == BalKnob::Out) {
             CursorIcon::NsResize
-        } else if self.scene.switch_at(w.0, w.1).is_some() || self.scene.hide_key_at(w.0, w.1).is_some() || self.scene.profile_key_at(w.0, w.1).is_some() || self.scene.port_key_at(w.0, w.1).is_some() || self.scene.mix_control_at(w.0, w.1) {
+        } else if self.scene.switch_at(w.0, w.1).is_some() || self.scene.hide_key_at(w.0, w.1).is_some() || self.scene.profile_key_at(w.0, w.1).is_some() || self.scene.port_key_at(w.0, w.1).is_some() || self.scene.inside_key_at(w.0, w.1).is_some() || self.scene.mix_control_at(w.0, w.1) {
             CursorIcon::Pointer
         } else if self.scene.device_at(w.0, w.1).is_some() && !self.panel.state.locked {
             CursorIcon::Move

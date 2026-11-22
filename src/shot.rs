@@ -577,7 +577,7 @@ fn playing_into_new(scene: &Scene) -> Option<(String, String)> {
         .devs
         .iter()
         .filter(|d| !app(d))
-        .flat_map(|d| d.defs.iter().filter(move |j| j.dir == Dir::In && d.dev.groups.get(j.group).is_some_and(|g| g.label == "PLAYBACK")))
+        .flat_map(|d| d.defs.iter().filter(move |j| j.dir == Dir::In && d.dev.groups.get(j.group).is_some_and(|g| g.role == "PLAYBACK")))
         .map(|j| j.key.clone())
         .find(|k| !scene.cords.iter().any(|c| c.a.jack.as_ref() == Some(&out) && c.b.jack.as_ref() == Some(k)))?;
     Some((out, inp))

@@ -46,20 +46,19 @@ const EAR: f64 = RACK_SCREW_X + RACK_SCREW_R + RACK_SCREW_PAD + 1.5 - PAD;
 const TITLE: f64 = 14.0;
 /// characters the LCD shows on one line
 pub const LCD_CH: usize = 27;
-/// where the LCD's text area is, relative to the face (without rack ears): three lines, a little
-/// shorter on a card, whose PROFILE key sits under it
+/// where the LCD's text area is, relative to the face (without rack ears): right under the name,
+/// down to the row of keys; the same on every face
 pub const LCD_X: f64 = PAD + 1.5;
-pub const LCD_Y: f64 = 54.0;
+pub const LCD_Y: f64 = 43.0;
 pub const LCD_W: f64 = IDW - 3.0;
-pub fn lcd_h(card: bool) -> f64 {
-    if card { 46.0 } else { 57.0 }
-}
-/// a card's PROFILE key, under its LCD (centred, clear of the corner screws); with a PORT key
-/// beside it, the two share the width
-const KEY_W: f64 = 92.0;
-const KEY_W2: f64 = 84.0;
+pub const LCD_H: f64 = 57.0;
+/// the row of keys under the LCD, on every face: HIDE at its left, then a card's PROFILE and PORT
+/// sharing the rest evenly (the row a little in from the LCD's edges, clear of the desk's screws)
 const KEY_Y: f64 = 107.0;
 const KEY_H: f64 = 14.0;
+const KEY_IN: f64 = 4.0;
+const HIDE_W: f64 = 22.0;
+const KEY_GAP: f64 = 6.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum JackKind {
@@ -140,6 +139,8 @@ pub struct Geometry {
     pub profile: Option<[f64; 4]>,
     /// beside it, the PORT key of a card whose output or input has ports to choose from
     pub port: Option<[f64; 4]>,
+    /// a program's INSIDE key, when its face doesn't show all its nodes
+    pub inside: Option<[f64; 4]>,
     /// the HIDE key, right of the name (x, y, w, h)
     pub hide: [f64; 4],
     /// the controls of each app stream, by group
@@ -211,7 +212,7 @@ pub const ACCENTS: [&str; 6] = ["#8f3f63", "#5d5390", "#2e8580", "#3a6596", "#b4
 /// Which of `ACCENTS` a group has.
 pub fn accent_index(dev: &Device, gi: usize) -> usize {
     let g = &dev.groups[gi];
-    match g.label.as_str() {
+    match g.role {
         _ if g.ports.first().is_some_and(|p| p.media == Media::Midi) => 0,
         "MONITOR" => 1,
         "PLAYBACK" => 2,
@@ -282,17 +283,16 @@ struct Fin {
     paint: bool,
     noise: f64,
     print: &'static str,
-    sub: &'static str,
     /// text on a filled OUT tag
     inv: &'static str,
 }
 
 fn fin(f: Finish) -> Fin {
     match f {
-        Finish::Metal => Fin { base: "#8b8d90", paint: true, noise: 0.0, print: "#1d1e20", sub: "#2c2e31", inv: "#d9dbdd" },
-        Finish::Black => Fin { base: "#26272a", paint: false, noise: 0.9, print: "#d5d7d9", sub: "#9a9da1", inv: "#222" },
-        Finish::Cream => Fin { base: "#d9d3be", paint: false, noise: 0.6, print: "#2a2926", sub: "#5a574f", inv: "#d9dbdd" },
-        Finish::Navy => Fin { base: "#2b3950", paint: false, noise: 0.8, print: "#dde5f0", sub: "#9aa8bd", inv: "#222" },
+        Finish::Metal => Fin { base: "#8b8d90", paint: true, noise: 0.0, print: "#1d1e20", inv: "#d9dbdd" },
+        Finish::Black => Fin { base: "#26272a", paint: false, noise: 0.9, print: "#d5d7d9", inv: "#222" },
+        Finish::Cream => Fin { base: "#d9d3be", paint: false, noise: 0.6, print: "#2a2926", inv: "#d9dbdd" },
+        Finish::Navy => Fin { base: "#2b3950", paint: false, noise: 0.8, print: "#dde5f0", inv: "#222" },
     }
 }
 
@@ -326,10 +326,14 @@ pub fn name(dev: &Device, gi: usize) -> String {
     if let Some(w) = active.and_then(|p| port_word(&p.name, g.dir == Dir::Out)).or(words.first().copied().filter(|w| words.iter().all(|x| x == w))) {
         return w.to_owned();
     }
+    // a name of its own: what its program named its node, a MIDI client's
+    if g.label != g.role {
+        return g.label.clone();
+    }
     let card = dev.card.is_some();
     // no port to go by (a Bluetooth headset's microphone in its hi-fi profile): what it is
     let headset = dev.model.contains("HEADSET") || dev.model.contains("HEADPHONE");
-    match g.label.as_str() {
+    match g.role {
         "PLAYBACK" if headset => "HEADPHONES",
         "CAPTURE" if headset => "MIC",
         "PLAYBACK" if card => "SOUND OUT",
@@ -337,7 +341,7 @@ pub fn name(dev: &Device, gi: usize) -> String {
         "CAPTURE" if card => "SOUND IN",
         "CAPTURE" => "OUTPUT",
         "MONITOR" => "REC OUT",
-        other => other,
+        _ => g.label.as_str(),
     }
     .to_owned()
 }
@@ -376,7 +380,7 @@ fn port_word(name: &str, input: bool) -> Option<&'static str> {
 /// in that output's frame, after a thin rule, instead of a frame of its own.
 pub fn host(dev: &Device, gi: usize) -> Option<usize> {
     let g = &dev.groups[gi];
-    if g.label != "MONITOR" {
+    if g.role != "MONITOR" {
         return None;
     }
     dev.groups.iter().position(|o| o.dir == Dir::In && o.mix.is_some() && o.ports.first().map(|p| p.node) == g.ports.first().map(|p| p.node))
@@ -554,11 +558,13 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
     // (in the rack as wide as it, or its widest frame if the rack is narrower still)
     let w = rack_w.map_or(natural, |r| r.max(rack_min_w(dev, jd, counts)));
     let ports = dev.card.is_some() && dev.groups.iter().any(|g| g.ports_to.len() > 1);
+    let hide = [ear + PAD + KEY_IN, KEY_Y, HIDE_W, KEY_H];
+    let (kx, room) = (hide[0] + HIDE_W + KEY_GAP, IDW - 2.0 * KEY_IN - HIDE_W - KEY_GAP);
     let (profile, port) = if ports {
-        let x = ear + PAD + (IDW - 2.0 * KEY_W2 - 6.0) / 2.0;
-        (Some([x, KEY_Y, KEY_W2, KEY_H]), Some([x + KEY_W2 + 6.0, KEY_Y, KEY_W2, KEY_H]))
+        let kw = (room - KEY_GAP) / 2.0;
+        (Some([kx, KEY_Y, kw, KEY_H]), Some([kx + kw + KEY_GAP, KEY_Y, kw, KEY_H]))
     } else {
-        (dev.card.is_some().then(|| [ear + PAD + (IDW - KEY_W) / 2.0, KEY_Y, KEY_W, KEY_H]), None)
+        (dev.card.is_some().then_some([kx, KEY_Y, room, KEY_H]), None)
     };
     let rows_of = if rack {
         let (room, more) = rack_room(w);
@@ -569,7 +575,8 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
     // (in the rack a face fills its units but for the gap to the next one)
     let units = rows_of.len().max(1) as f64;
     let h = if rack { RACK_U * units - RACK_GAP } else { DEV_H * units };
-    let mut geo = Geometry { w, h, jacks: vec![(0.0, 0.0); jd.len()], switches: Vec::new(), keyed: Vec::new(), hide: [ear + PAD + IDW - 22.0, 21.0, 22.0, 14.0], left: ear, groups: vec![(0.0, 0.0, 0.0, 0.0); dev.groups.len()], grille: None, profile, port, mix: Vec::new(), meters: Vec::new(), vents: Vec::new() };
+    let inside = (dev.card.is_none() && !dev.inside.is_empty()).then_some([kx, KEY_Y, room, KEY_H]);
+    let mut geo = Geometry { w, h, jacks: vec![(0.0, 0.0); jd.len()], switches: Vec::new(), keyed: Vec::new(), hide, left: ear, groups: vec![(0.0, 0.0, 0.0, 0.0); dev.groups.len()], grille: None, profile, port, inside, mix: Vec::new(), meters: Vec::new(), vents: Vec::new() };
     // a group at `x`, in the unit `oy` down
     let place = |gi: usize, x: f64, oy: f64, geo: &mut Geometry| -> f64 {
         let (gw, jw) = (group_w(dev, gi, jd, counts), jacks_w(dev, gi, jd, counts));
@@ -813,10 +820,16 @@ fn fit_title(name: &str, max_w: f64) -> String {
     if w(&t) <= max_w {
         return t;
     }
-    while !t.is_empty() && w(&format!("{t}…")) > max_w {
+    // a number at the end (the second of two programs of one name) stays: cut before it
+    let tail = match t.rsplit_once(' ') {
+        Some((head, n)) if !head.is_empty() && !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) => format!(" {n}"),
+        _ => String::new(),
+    };
+    t.truncate(t.len() - tail.len());
+    while !t.is_empty() && w(&format!("{t}…{tail}")) > max_w {
         t.pop();
     }
-    format!("{}…", t.trim_end())
+    format!("{}…{tail}", t.trim_end())
 }
 
 /// The shadow a face of width `w` casts on the desk, as an SVG document the size of the face's
@@ -1178,9 +1191,9 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
     }
 
     let r = if rack { 3.0 } else { 12.0 };
-    let title = format!(r#"<text x="{x0}" y="33" font-size="{TITLE}">{}</text>"#, esc(&fit_title(&dev.name, IDW - 30.0)));
-    // HIDE: a small key right of the name, an eye struck through; dimmed while the device has
-    // cords (only an unused one can be hidden)
+    let title = format!(r#"<text x="{x0}" y="33" font-size="{TITLE}">{}</text>"#, esc(&fit_title(&dev.name, IDW)));
+    // HIDE: a small key at the left of the row under the LCD, an eye struck through; dimmed while
+    // the device has cords (only an unused one can be hidden)
     let hide = {
         let [hx, hy, hw, hh] = geo.hide;
         let (ex, ey) = (hx + hw / 2.0, hy + hh / 2.0);
@@ -1192,7 +1205,8 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
             ex - 5.5, ey + 4.5, ex + 5.5, ey - 4.5
         )
     };
-    // a card's PROFILE and PORT keys: dark keys with a small arrow, like the SPLIT switches
+    // a card's PROFILE and PORT keys, a program's INSIDE: dark keys with a small arrow, like the
+    // SPLIT switches
     let key_pic = |[kx, ky, kw, kh]: [f64; 4], name: &str| {
         let tw = SWITCH.width(name);
         let tx = kx + kw / 2.0 - 3.0;
@@ -1203,7 +1217,7 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
             ky + 6.0
         )
     };
-    let key = geo.profile.map_or(String::new(), |r| key_pic(r, "PROFILE")) + &geo.port.map_or(String::new(), |r| key_pic(r, "PORT"));
+    let key = geo.profile.map_or(String::new(), |r| key_pic(r, "PROFILE")) + &geo.port.map_or(String::new(), |r| key_pic(r, "PORT")) + &geo.inside.map_or(String::new(), |r| key_pic(r, "INSIDE"));
     // in the rack the screws go through the face into the rails' holes, and are as big as those
     let (inset, sy, big) = if rack { (RACK_SCREW_X, RACK_SCREW_Y, RACK_SCREW_R / 5.2) } else { (11.0, 11.0, 1.0) };
     let screws: String = {
@@ -1231,8 +1245,6 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
 </g>
 {screws}
 <g font-weight="900" fill="{print}">{title}</g>
-{model}
-<circle cx="{led}" cy="43" r="5" fill="{glow}" opacity=".35"/><circle cx="{led}" cy="43" r="3.2" fill="{lamp}" stroke="rgba(0,0,0,.6)" stroke-width=".8"/>
 <rect x="{lx}" y="{fy}" width="{lw}" height="{fh}" rx="4" fill="#111214"/>
 <rect x="{ix}" y="{LCD_Y}" width="{iw}" height="{lh}" rx="2" fill="url(#gLcd)"/>
 <rect x="{ix}" y="{LCD_Y}" width="{iw}" height="{lh}" rx="2" fill="none" stroke="rgba(110,45,0,.35)" stroke-width="3"/>
@@ -1245,41 +1257,29 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
         b = w - 1.5,
         c = h - 1.5,
         print = f.print,
-        model = SMALL.text(x0, 46.0, f.sub, "start", &dev.model),
-        lh = lcd_h(dev.card.is_some()),
+        lh = LCD_H,
         fy = LCD_Y - 3.0,
-        fh = lcd_h(dev.card.is_some()) + 6.0,
-        led = x0 + IDW - 5.0,
+        fh = LCD_H + 6.0,
         lx = x0 - 1.5,
         lw = IDW + 3.0,
         ix = x0 + 1.5,
         iw = IDW - 3.0,
-        // the status lamp: green while running, amber when idle, dark when suspended
-        lamp = match dev.state {
-            "running" => "#4cff6a",
-            "idle" => "#c48a1c",
-            _ => "#2a1d0a",
-        },
-        glow = if dev.state == "running" { "#4cff6a" } else { "none" },
     );
     (svg, geo, under)
 }
 
-/// The LCD's two lines of text, as a document the size of the LCD's text area.
-pub fn lcd(lines: [&str; 3], card: bool) -> String {
-    let h = lcd_h(card);
-    let (y1, step) = if card { (13.0, 13.5) } else { (16.0, 16.0) };
-    format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{LCD_W}" height="{h}" viewBox="0 0 {LCD_W} {h}" font-family="Noto Sans Mono" fill="#3a2408" xml:space="preserve"><text x="7.5" y="{y1}" font-size="10.5" font-weight="bold">{}</text><text x="7.5" y="{}" font-size="10.5">{}</text><text x="7.5" y="{}" font-size="10.5">{}</text></svg>"##,
-        esc(lines[0]),
-        y1 + step,
-        esc(lines[1]),
-        y1 + 2.0 * step,
-        esc(lines[2])
-    )
+/// The LCD's four lines of text, as a document the size of the LCD's text area: the top one bold.
+pub fn lcd(lines: [&str; 4]) -> String {
+    let (h, y1, step) = (LCD_H, 13.0, 13.5);
+    let mut out = format!(r##"<svg xmlns="http://www.w3.org/2000/svg" width="{LCD_W}" height="{h}" viewBox="0 0 {LCD_W} {h}" font-family="Noto Sans Mono" fill="#3a2408" xml:space="preserve">"##);
+    for (i, l) in lines.iter().enumerate() {
+        let bold = if i == 0 { r#" font-weight="bold""# } else { "" };
+        out += &format!(r#"<text x="7.5" y="{}" font-size="10.5"{bold}>{}</text>"#, y1 + i as f64 * step, esc(l));
+    }
+    out + "</svg>"
 }
 
-/// The LCD's top line: the full name, scrolling when it is too long, pausing at the start.
+/// A line too long for the LCD, scrolling, pausing at the start.
 pub fn marquee(name: &str, ms: u128) -> String {
     let chars: Vec<char> = name.chars().collect();
     if chars.len() <= LCD_CH {
@@ -1365,6 +1365,14 @@ fn base64(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A long name is cut to fit, its number (the second of two programs of one name) kept.
+    #[test]
+    fn a_cut_name_keeps_its_number() {
+        let t = fit_title("VLC media player (LibVLC 4.0.0-dev) 2", IDW);
+        assert!(t.starts_with("VLC MEDIA") && t.ends_with("… 2"), "{t}");
+        assert_eq!(fit_title("BLE MIDI 1", IDW), "BLE MIDI 1");
+    }
 
     /// A jack's picture, drawn with only the jacks' defs, is the same as with the faces' too.
     #[test]
