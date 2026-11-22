@@ -7,6 +7,9 @@
 use std::fmt::Write;
 use std::sync::OnceLock;
 
+use resvg::tiny_skia::{Color, FillRule, FilterQuality, GradientStop, LinearGradient, Paint, Path, PathBuilder, Pattern, Pixmap, Point, SpreadMode, Transform};
+use resvg::usvg;
+
 use super::print::{JACK, SECTION, SMALL, SWITCH};
 use super::text::{self, esc};
 use crate::graph::{Device, Dir, Finish, Media, VOL_MAX};
@@ -18,10 +21,28 @@ pub const JP: f64 = 48.0;
 pub const RACK_MIN: f64 = 1000.0;
 /// room around a face for its shadow
 pub const SHADOW: f64 = 30.0;
+/// The room round a face in its picture: its outline's edge reaches a pixel past it, no more
+/// (its shadow is a picture of its own, `SHADOW` round).
+pub const FACE_PAD: f64 = 2.0;
 /// width of the name and LCD block
 const IDW: f64 = 190.0;
 const PAD: f64 = 16.0;
-const EAR: f64 = 30.0;
+/// A unit of the rack: a 1U face (`DEV_H`, 1.719" in a real rack) and the gap to the next one,
+/// as in a real rack (1.75"); the rails' holes and the screws are in proportion to it.
+pub const RACK_U: f64 = DEV_H * 1.75 / 1.719;
+/// the gap between two faces in the rack (0.031")
+pub const RACK_GAP: f64 = RACK_U - DEV_H;
+/// The rack's screws: their head, the room round them (to the face's edge and to its LCD alike),
+/// and where they sit from the face's side edge.
+pub const RACK_SCREW_R: f64 = 7.2;
+const RACK_SCREW_PAD: f64 = 10.25;
+pub const RACK_SCREW_X: f64 = RACK_SCREW_PAD + RACK_SCREW_R;
+/// How far down from a face's top, and up from its bottom, its screws are: in the rack's
+/// holes, the top one of its first unit and the bottom one of its last (0.25" into a unit).
+pub const RACK_SCREW_Y: f64 = RACK_U * 0.25 / 1.75 - RACK_GAP / 2.0;
+/// In the rack a face runs over the rails, with no ears of its own: what is on it starts this far
+/// in, the screws beside its LCD.
+const EAR: f64 = RACK_SCREW_X + RACK_SCREW_R + RACK_SCREW_PAD + 1.5 - PAD;
 const TITLE: f64 = 14.0;
 /// characters the LCD shows on one line
 pub const LCD_CH: usize = 27;
@@ -403,16 +424,16 @@ pub const PER_ROW: usize = 4;
 
 /// A unit of a multi-unit face: its inputs (at its left) and its outputs (at its right).
 struct Row {
-    /// what makes sound (OUT jacks: an app's OUTPUT, a MIC), at its left
+    /// what takes sound in (IN jacks: SPEAKERS, HEADPHONES, an app's INPUT), at its left
     left: Vec<usize>,
-    /// what takes it (IN jacks: SPEAKERS, HEADPHONES, an app's INPUT), at its right
+    /// what sends it out (OUT jacks: an app's OUTPUT, a MIC), at its right
     right: Vec<usize>,
 }
 
 /// The groups in their units, balanced: as few units as up to `PER_ROW` frames side by side allow,
 /// the frames spread evenly over them (8: 4 + 4, 7: 4 + 3, 5: 3 + 2), so no unit is left half
-/// empty. What makes sound fills from the top-left, what takes it the room left at the rows' right
-/// ends, so sound flows from left to right as on a 1U face.
+/// empty. What takes sound in fills from the top-left, what sends it out the room left at the rows'
+/// right ends, so sound flows from left to right as on a 1U face.
 fn rows(dev: &Device) -> Vec<Row> {
     let (ins, outs) = sides(dev);
     let n = ins.len() + outs.len();
@@ -433,16 +454,16 @@ fn rows(dev: &Device) -> Vec<Row> {
         .collect()
 }
 
-/// A face's two sides, so that sound flows from left to right as across the desk: the groups
-/// that make sound (OUT jacks: an app's OUTPUT, a MIC) for the left, and those that take it (IN
-/// jacks: SPEAKERS, HEADPHONES with their REC OUT inside, an app's INPUT) for the right.
+/// A face's two sides, so that sound flows through it from left to right: the groups that take
+/// sound in (IN jacks: SPEAKERS, HEADPHONES with their REC OUT inside, an app's INPUT) for the
+/// left, and those that send it out (OUT jacks: an app's OUTPUT, a MIC) for the right.
 fn sides(dev: &Device) -> (Vec<usize>, Vec<usize>) {
-    let make = (0..dev.groups.len()).filter(|g| dev.groups[*g].dir == Dir::Out && host(dev, *g).is_none()).collect();
     let take = (0..dev.groups.len()).filter(|g| dev.groups[*g].dir == Dir::In).collect();
-    (make, take)
+    let make = (0..dev.groups.len()).filter(|g| dev.groups[*g].dir == Dir::Out && host(dev, *g).is_none()).collect();
+    (take, make)
 }
 
-/// A multi-unit face is one grid: a row's makers in its first columns, its takers in its last
+/// A multi-unit face is one grid: a row's inputs in its first columns, its outputs in its last
 /// (a short row's gap falls between them). Each group's column, and each column's width (its
 /// widest frame).
 fn grid(dev: &Device, jd: &[JackDef], counts: &[usize], rows: &[Row]) -> (Vec<Vec<(usize, usize)>>, Vec<f64>) {
@@ -450,6 +471,67 @@ fn grid(dev: &Device, jd: &[JackDef], counts: &[usize], rows: &[Row]) -> (Vec<Ve
     let at: Vec<Vec<(usize, usize)>> = rows.iter().map(|r| r.left.iter().enumerate().map(|(c, g)| (*g, c)).chain(r.right.iter().enumerate().map(|(j, g)| (*g, n - r.right.len() + j))).collect()).collect();
     let w = (0..n).map(|c| at.iter().flatten().filter(|(_, k)| *k == c).map(|(g, _)| group_w(dev, *g, jd, counts)).fold(0.0, f64::max)).collect();
     (at, w)
+}
+
+/// In the rack a face is as wide as the rack: its frames go in order (what takes sound in, then
+/// what sends it out), each unit's from its left edge, on as few units as fit. The lower units
+/// (the whole width, `more`, under the name and screen too) fill first, from the last frame back;
+/// the unit beside the name and screen (`room`) takes only what is left over, so a 2U face is its
+/// name over a row of frames, not frames stepping down. (All of a unit's frames are in `left`.)
+fn rack_rows(dev: &Device, jd: &[JackDef], counts: &[usize], room: f64, more: f64) -> Vec<Row> {
+    let (ins, outs) = sides(dev);
+    let all: Vec<usize> = ins.into_iter().chain(outs).collect();
+    for n in 1..=all.len().max(1) {
+        let mut rows: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut used = vec![0.0; n];
+        let mut k = n - 1;
+        let mut whole = true;
+        for &gi in all.iter().rev() {
+            let gw = group_w(dev, gi, jd, counts);
+            loop {
+                let cap = if k == 0 { room } else { more };
+                let need = if rows[k].is_empty() { gw } else { used[k] + 10.0 + gw };
+                if need <= cap + 1e-6 {
+                    rows[k].insert(0, gi);
+                    used[k] = need;
+                    break;
+                }
+                if k == 0 {
+                    whole = false;
+                    break;
+                }
+                k -= 1;
+            }
+            if !whole {
+                break;
+            }
+        }
+        if whole {
+            return rows.into_iter().map(|left| Row { left, right: Vec::new() }).collect();
+        }
+    }
+    // (nothing fits however many units: a frame to a unit, under the name and screen)
+    std::iter::once(Vec::new()).chain(all.into_iter().map(|g| vec![g])).map(|left| Row { left, right: Vec::new() }).collect()
+}
+
+/// What a face beside its name and screen has in the rack, `rack_w` wide; and in its other
+/// units, the whole width.
+fn rack_room(rack_w: f64) -> (f64, f64) {
+    let all = rack_w - 2.0 * (EAR + PAD);
+    (all - IDW - 14.0, all)
+}
+
+/// The narrowest a rack can be for this face (a narrower window scrolls sideways): its name and
+/// screen, or its widest frame (on a unit of its own, under them), whichever is wider.
+pub fn rack_min_w(dev: &Device, jd: &[JackDef], counts: &[usize]) -> f64 {
+    let widest = (0..dev.groups.len()).filter(|gi| host(dev, *gi).is_none()).map(|gi| group_w(dev, gi, jd, counts)).fold(0.0, f64::max);
+    2.0 * (EAR + PAD) + widest.max(IDW)
+}
+
+/// How many units the face takes in a rack `rack_w` wide.
+pub fn rack_units(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: f64) -> usize {
+    let (room, more) = rack_room(rack_w.max(rack_min_w(dev, jd, counts)));
+    rack_rows(dev, jd, counts, room, more).len().max(1)
 }
 
 /// Width the face needs; a rack is as wide as its widest device.
@@ -469,7 +551,8 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
     let rack = rack_w.is_some();
     let ear = if rack { EAR } else { 0.0 };
     let natural = natural_w(dev, jd, counts, rack);
-    let w = rack_w.map_or(natural, |r| r.max(natural));
+    // (in the rack as wide as it, or its widest frame if the rack is narrower still)
+    let w = rack_w.map_or(natural, |r| r.max(rack_min_w(dev, jd, counts)));
     let ports = dev.card.is_some() && dev.groups.iter().any(|g| g.ports_to.len() > 1);
     let (profile, port) = if ports {
         let x = ear + PAD + (IDW - 2.0 * KEY_W2 - 6.0) / 2.0;
@@ -477,8 +560,15 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
     } else {
         (dev.card.is_some().then(|| [ear + PAD + (IDW - KEY_W) / 2.0, KEY_Y, KEY_W, KEY_H]), None)
     };
-    let rows_of = rows(dev);
-    let h = DEV_H * rows_of.len().max(1) as f64;
+    let rows_of = if rack {
+        let (room, more) = rack_room(w);
+        rack_rows(dev, jd, counts, room, more)
+    } else {
+        rows(dev)
+    };
+    // (in the rack a face fills its units but for the gap to the next one)
+    let units = rows_of.len().max(1) as f64;
+    let h = if rack { RACK_U * units - RACK_GAP } else { DEV_H * units };
     let mut geo = Geometry { w, h, jacks: vec![(0.0, 0.0); jd.len()], switches: Vec::new(), keyed: Vec::new(), hide: [ear + PAD + IDW - 22.0, 21.0, 22.0, 14.0], left: ear, groups: vec![(0.0, 0.0, 0.0, 0.0); dev.groups.len()], grille: None, profile, port, mix: Vec::new(), meters: Vec::new(), vents: Vec::new() };
     // a group at `x`, in the unit `oy` down
     let place = |gi: usize, x: f64, oy: f64, geo: &mut Geometry| -> f64 {
@@ -542,6 +632,29 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
         geo.groups[gi] = (x, gw, jw, oy);
         x + gw + 10.0
     };
+    // in the rack each unit on its own: its frames from the left (beside the name and screen in
+    // the first unit, under them in the others), vents after them; a face with nothing to show,
+    // vents all along
+    if rack {
+        let right = w - ear - PAD;
+        for (u, row) in rows_of.iter().enumerate() {
+            let oy = u as f64 * RACK_U;
+            let x0 = if u == 0 { ear + PAD + IDW + 14.0 } else { ear + PAD };
+            let mut a = x0;
+            for &gi in &row.left {
+                a = place(gi, a, oy, &mut geo);
+            }
+            let span: f64 = row.right.iter().map(|g| group_w(dev, *g, jd, counts) + 10.0).sum();
+            let mut b = right + 10.0 - span;
+            let b0 = b;
+            for &gi in &row.right {
+                b = place(gi, b, oy, &mut geo);
+            }
+            geo.vents.push([a, b0 - 10.0, oy]);
+        }
+        geo.vents.retain(|[a, b, _]| b - a > 50.0);
+        return geo;
+    }
     // more than one unit: one grid, a unit for each row; inputs on their column's left edge,
     // outputs on its right one. Vents where a face has nothing to show: under the name and screen
     // from the second unit down, and between a short row's inputs and outputs
@@ -557,7 +670,7 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
         for (u, row) in rows_of.iter().enumerate() {
             let oy = u as f64 * DEV_H;
             for &(gi, c) in &at[u] {
-                let x = if dev.groups[gi].dir == Dir::Out { cx[c] } else { cx[c] + cw[c] - group_w(dev, gi, jd, counts) };
+                let x = if dev.groups[gi].dir == Dir::In { cx[c] } else { cx[c] + cw[c] - group_w(dev, gi, jd, counts) };
                 place(gi, x, oy, &mut geo);
             }
             let (k, m) = (row.left.len(), row.right.len());
@@ -575,7 +688,8 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
         geo.vents.retain(|[a, b, _]| b - a > 50.0);
         return geo;
     }
-    // what makes sound on the left, what takes it on the right; in a rack against the right edge
+    // what takes sound in on the left, what sends it out on the right; in a rack against the
+    // right edge
     let (ins, outs) = sides(dev);
     let span: f64 = outs.iter().map(|g| group_w(dev, *g, jd, counts) + 10.0).sum::<f64>();
     let mut x = ear + PAD + IDW + 14.0;
@@ -843,10 +957,89 @@ pub fn target_ring_pic(hot: bool) -> String {
 /// Where the badge sits from the centre of the free jack it marks.
 pub const BADGE: (f64, f64) = (11.5, -11.5);
 
-/// The face as an SVG document, `SHADOW` larger on every side than the face itself.
-/// `rack_w`: in a rack, the rack's width (the face gets ears and fills it). `accents`: each group
-/// on a band of its kind's colour.
-pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack_w: Option<f64>, accents: bool) -> (String, Geometry) {
+/// What lies under a face's drawing, put straight onto its pixels (see `raster`): its base paint,
+/// its paint's texture or its noise, its sheen. Drawn through the SVG these took most of a face's time
+/// (a pattern sampled at every pixel of a face as wide as the rack).
+#[derive(Clone, Copy, Debug)]
+pub struct Skin {
+    w: f64,
+    h: f64,
+    r: f64,
+    base: [u8; 3],
+    paint: bool,
+    noise: f32,
+}
+
+fn hex(c: &str) -> [u8; 3] {
+    let v = u32::from_str_radix(c.trim_start_matches('#'), 16).unwrap_or(0);
+    [(v >> 16) as u8, (v >> 8) as u8, v as u8]
+}
+
+/// A rectangle with round corners, `r` round.
+fn rounded(w: f32, h: f32, r: f32) -> Option<Path> {
+    let r = r.min(w / 2.0).min(h / 2.0);
+    // (a quarter circle as a cubic)
+    let k = r * (1.0 - 0.552_284_8);
+    let mut p = PathBuilder::new();
+    p.move_to(r, 0.0);
+    p.line_to(w - r, 0.0);
+    p.cubic_to(w - k, 0.0, w, k, w, r);
+    p.line_to(w, h - r);
+    p.cubic_to(w, h - k, w - k, h, w - r, h);
+    p.line_to(r, h);
+    p.cubic_to(k, h, 0.0, h - k, 0.0, h - r);
+    p.line_to(0.0, r);
+    p.cubic_to(0.0, k, k, 0.0, r, 0.0);
+    p.close();
+    p.finish()
+}
+
+/// The paint's texture and the noise, as pixels (as `defs` has them for the SVG).
+fn textures() -> &'static (Option<Pixmap>, Option<Pixmap>) {
+    static T: OnceLock<(Option<Pixmap>, Option<Pixmap>)> = OnceLock::new();
+    T.get_or_init(|| (Pixmap::decode_png(include_bytes!("../../assets/paint.png")).ok(), Pixmap::decode_png(include_bytes!("../../assets/noise.png")).ok()))
+}
+
+/// A face's picture at `scale`: its `Skin` put straight onto the pixels (the base, then the
+/// paint's texture in 80-unit tiles or the noise in 128-unit ones, as the SVG's patterns were,
+/// and the sheen), then its SVG drawn over it.
+pub fn raster(opt: &usvg::Options, svg: &str, skin: &Skin, scale: f64) -> Option<Pixmap> {
+    let tree = match usvg::Tree::from_str(svg, opt) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("patchcord: svg error: {e}");
+            return None;
+        }
+    };
+    let s = scale as f32;
+    let size = tree.size();
+    let mut pm = Pixmap::new((size.width() * s).ceil().max(1.0) as u32, (size.height() * s).ceil().max(1.0) as u32)?;
+    let at = Transform::from_row(s, 0.0, 0.0, s, FACE_PAD as f32 * s, FACE_PAD as f32 * s);
+    if let Some(path) = rounded(skin.w as f32, skin.h as f32, skin.r as f32) {
+        let mut base = Paint { anti_alias: true, ..Default::default() };
+        base.set_color_rgba8(skin.base[0], skin.base[1], skin.base[2], 255);
+        pm.fill_path(&path, &base, FillRule::Winding, at, None);
+        let (paint, noise) = textures();
+        for (tex, tile, alpha) in [(paint.as_ref().filter(|_| skin.paint), 80.0, 1.0), (noise.as_ref().filter(|_| skin.noise > 0.0), 128.0, skin.noise)] {
+            let Some(t) = tex else { continue };
+            let k = tile / t.width() as f32;
+            let shader = Pattern::new(t.as_ref(), SpreadMode::Repeat, FilterQuality::Bilinear, alpha, Transform::from_scale(k, k));
+            pm.fill_path(&path, &Paint { shader, anti_alias: true, ..Default::default() }, FillRule::Winding, at, None);
+        }
+        // the sheen: light at the top, shade at the bottom (as `gSheen`)
+        let stops = vec![GradientStop::new(0.0, Color::from_rgba8(255, 255, 255, 41)), GradientStop::new(0.35, Color::from_rgba8(255, 255, 255, 0)), GradientStop::new(1.0, Color::from_rgba8(0, 0, 0, 61))];
+        if let Some(shader) = LinearGradient::new(Point::from_xy(0.0, 0.0), Point::from_xy(0.0, skin.h as f32), stops, SpreadMode::Pad, Transform::identity()) {
+            pm.fill_path(&path, &Paint { shader, anti_alias: true, ..Default::default() }, FillRule::Winding, at, None);
+        }
+    }
+    resvg::render(&tree, Transform::from_scale(s, s), &mut pm.as_mut());
+    Some(pm)
+}
+
+/// The face as an SVG document, `FACE_PAD` larger on every side than the face itself, and what
+/// goes under it (`Skin`: draw the two with `raster`). `rack_w`: in a rack, the rack's width (the
+/// face fills it). `accents`: each group on a band of its kind's colour.
+pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack_w: Option<f64>, accents: bool) -> (String, Geometry, Skin) {
     let f = fin(dev.finish);
     let rack = rack_w.is_some();
     let ear = if rack { EAR } else { 0.0 };
@@ -855,10 +1048,11 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
     let (w, h) = (geo.w, geo.h);
     let mut body = String::new();
     // a unit more: a groove across the face parts it from the one above
-    let mut uy = DEV_H;
+    let step = if rack { RACK_U } else { DEV_H };
+    let mut uy = step - if rack { RACK_GAP / 2.0 } else { 0.0 };
     while uy < h - 1.0 {
         let _ = write!(body, r#"<path d="M{a},{uy} H{b}" stroke="rgba(0,0,0,.55)" stroke-width="1.2"/><path d="M{a},{} H{b}" stroke="rgba(255,255,255,.08)"/>"#, uy + 1.2, a = ear + 8.0, b = w - ear - 8.0);
-        uy += DEV_H;
+        uy += step;
     }
     for (gi, g) in dev.groups.iter().enumerate() {
         let (x, gw, jw, oy) = geo.groups[gi];
@@ -1010,59 +1204,30 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
         )
     };
     let key = geo.profile.map_or(String::new(), |r| key_pic(r, "PROFILE")) + &geo.port.map_or(String::new(), |r| key_pic(r, "PORT"));
-    let screws: String = if rack {
-        String::new()
-    } else {
-        [(11.0, 11.0), (w - 11.0, 11.0), (11.0, h - 11.0), (w - 11.0, h - 11.0)]
+    // in the rack the screws go through the face into the rails' holes, and are as big as those
+    let (inset, sy, big) = if rack { (RACK_SCREW_X, RACK_SCREW_Y, RACK_SCREW_R / 5.2) } else { (11.0, 11.0, 1.0) };
+    let screws: String = {
+        [(inset, sy), (w - inset, sy), (inset, h - sy), (w - inset, h - sy)]
             .iter()
             .enumerate()
             .map(|(i, (sx, sy))| {
                 format!(
-                    r##"<use href="#screw" transform="translate({sx},{sy}) rotate({})"/>"##,
+                    r##"<use href="#screw" transform="translate({sx},{sy}) rotate({}) scale({big})"/>"##,
                     (i * 37 + dev.name.len() * 11) % 90
                 )
             })
             .collect()
     };
-    // paint: solid base, then the texture on top
-    let skin = |sx: f64, sw: f64, rr: f64| {
-        let mut s = format!(r#"<rect x="{sx}" y="0" width="{sw}" height="{h}" rx="{rr}" fill="{}"/>"#, f.base);
-        if f.paint {
-            let _ = write!(s, r#"<rect x="{sx}" y="0" width="{sw}" height="{h}" rx="{rr}" fill="url(#pt)"/>"#);
-        }
-        if f.noise > 0.0 {
-            let _ = write!(s, r#"<rect x="{sx}" y="0" width="{sw}" height="{h}" rx="{rr}" fill="url(#nz)" opacity="{}"/>"#, f.noise);
-        }
-        let _ = write!(s, r#"<rect x="{sx}" y="0" width="{sw}" height="{h}" rx="{rr}" fill="url(#gSheen)"/>"#);
-        s
-    };
-    let ears = if rack {
-        [0.0, w - EAR - 6.0]
-            .iter()
-            .map(|&ex| {
-                let cx = if ex == 0.0 { EAR / 2.0 } else { w - EAR / 2.0 };
-                let mut s = skin(ex, EAR + 6.0, 3.0);
-                let _ = write!(s, r#"<rect x="{ex}" y="0" width="{}" height="{h}" rx="3" fill="none" stroke="rgba(0,0,0,.6)"/>"#, EAR + 6.0);
-                for sy in [24.0, h - 24.0] {
-                    let _ = write!(s, r##"<rect x="{}" y="{}" width="11" height="18" rx="5.5" fill="#0a0a0b"/><use href="#screw" transform="translate({cx},{sy}) rotate({sy})"/>"##, cx - 5.5, sy - 9.0);
-                }
-                s
-            })
-            .collect::<String>()
-    } else {
-        String::new()
-    };
-
-    let (dw, dh) = (w + 2.0 * SHADOW, h + 2.0 * SHADOW);
+    // paint: solid base, its texture and the sheen, put under the drawing (`Skin`)
+    let under = Skin { w, h, r, base: hex(f.base), paint: f.paint, noise: f.noise as f32 };
+    let (dw, dh) = (w + 2.0 * FACE_PAD, h + 2.0 * FACE_PAD);
     let svg = format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="{dw}" height="{dh}" viewBox="0 0 {dw} {dh}" font-family="Noto Sans" font-weight="bold">
 {defs}
-<g transform="translate({SHADOW},{SHADOW})">
+<g transform="translate({FACE_PAD},{FACE_PAD})">
 <g>
-{ears}
-{skin}
 <rect x="{a}" y=".75" width="{b}" height="{c}" rx="{r}" fill="none" stroke="rgba(255,255,255,.2)"/>
-<rect x="{ear}" y="0" width="{d}" height="{h}" rx="{r}" fill="none" stroke="rgba(0,0,0,.65)"/>
+<rect x="0" y="0" width="{w}" height="{h}" rx="{r}" fill="none" stroke="rgba(0,0,0,.65)"/>
 </g>
 {screws}
 <g font-weight="900" fill="{print}">{title}</g>
@@ -1076,11 +1241,9 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
 </g>
 </svg>"##,
         defs = defs(),
-        skin = skin(ear, w - 2.0 * ear, r),
-        a = ear + 0.75,
-        b = w - 2.0 * ear - 1.5,
+        a = 0.75,
+        b = w - 1.5,
         c = h - 1.5,
-        d = w - 2.0 * ear,
         print = f.print,
         model = SMALL.text(x0, 46.0, f.sub, "start", &dev.model),
         lh = lcd_h(dev.card.is_some()),
@@ -1099,7 +1262,7 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
         },
         glow = if dev.state == "running" { "#4cff6a" } else { "none" },
     );
-    (svg, geo)
+    (svg, geo, under)
 }
 
 /// The LCD's two lines of text, as a document the size of the LCD's text area.

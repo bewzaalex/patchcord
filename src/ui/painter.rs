@@ -27,6 +27,8 @@ struct Job {
     sig: u64,
     svg: String,
     scale: f64,
+    /// a face's: what goes under its SVG (see `face::raster`)
+    skin: Option<super::face::Skin>,
     reply: Sender<(Done, bool)>,
 }
 
@@ -50,7 +52,11 @@ fn pool() -> &'static Pool {
                 loop {
                     let Ok(job) = rx.lock().map_err(|_| ()).and_then(|r| r.recv().map_err(|_| ())) else { return };
                     let wanted = newest.lock().map(|m| m.get(&job.key) == Some(&job.sig)).unwrap_or(true);
-                    let pm = if wanted { rasterize(&opt, &job.svg, job.scale) } else { None };
+                    let pm = match (wanted, &job.skin) {
+                        (false, _) => None,
+                        (true, Some(skin)) => super::face::raster(&opt, &job.svg, skin, job.scale),
+                        (true, None) => rasterize(&opt, &job.svg, job.scale),
+                    };
                     // drawn: the key is forgotten, unless a newer job came for it meanwhile (keys
                     // of streams that came and went would pile up all day)
                     if wanted && let Ok(mut m) = newest.lock()
@@ -98,11 +104,16 @@ impl Default for Inbox {
 impl Inbox {
     /// Asks for `svg` drawn at `scale` as the picture `key` (drawn from `sig`).
     pub fn ask(&mut self, key: u64, sig: u64, svg: String, scale: f64) {
+        self.ask_skinned(key, sig, svg, scale, None);
+    }
+
+    /// The same for a face: `skin` goes under its SVG (see `face::raster`).
+    pub fn ask_skinned(&mut self, key: u64, sig: u64, svg: String, scale: f64, skin: Option<super::face::Skin>) {
         let p = pool();
         if let Ok(mut m) = p.newest.lock() {
             m.insert(key, sig);
         }
-        if p.jobs.lock().is_ok_and(|j| j.send(Job { key, sig, svg, scale, reply: self.tx.clone() }).is_ok()) {
+        if p.jobs.lock().is_ok_and(|j| j.send(Job { key, sig, svg, scale, skin, reply: self.tx.clone() }).is_ok()) {
             self.out += 1;
         }
     }

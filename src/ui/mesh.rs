@@ -206,5 +206,50 @@ mod tests {
         assert!(y0 <= 45.0 && y1 >= 55.0 && y0 > 40.0 && y1 < 60.0, "the width is {y0}…{y1}");
         assert_eq!(out.len() % (3 * VERTEX), 0, "whole triangles");
     }
-}
 
+    /// How long the cords' triangles take to make on the main thread (done every frame while
+    /// anything moves), next to one step of their physics: 40 stereo cords carrying sound, at
+    /// rest across a desk. Run with --ignored --nocapture.
+    #[test]
+    #[ignore]
+    fn mesh_time() {
+        use super::super::cord::Slot;
+        use super::super::face::JackKind;
+        let ends = |i: usize| ((80.0 + (i % 8) as f32 * 150.0, 200.0 + (i / 8) as f32 * 40.0), (200.0 + (i * 7 % 8) as f32 * 140.0, 700.0 + (i / 8) as f32 * 30.0));
+        let mut cs: Vec<Cord> = (0..40)
+            .map(|i| {
+                let (a, b) = ends(i);
+                let mut c = Cord::new(i as u64, (2 * i as u64, 2 * i as u64 + 1), (format!("a{i}"), JackKind::Stereo, a), (format!("b{i}"), JackKind::Stereo, b), [40, 200, 90]);
+                (c.flow, c.flow_at) = (1.0, 0.4);
+                c
+            })
+            .collect();
+        let slot = |k: &str, _n: usize| {
+            let i: usize = k[1..].parse().ok()?;
+            let at = if k.starts_with('a') { ends(i).0 } else { ends(i).1 };
+            Some(Slot { at, dev: at })
+        };
+        for _ in 0..300 {
+            for c in &mut cs {
+                c.frame(1.0 / 60.0, 2, &slot, None, None, false);
+            }
+        }
+        let n = 200;
+        let v = View { x: 0.0, y: 0.0, s: 1.0 };
+        let t = std::time::Instant::now();
+        let mut verts = 0;
+        for _ in 0..n {
+            let m = cords(&cs, |_| 1.0, v);
+            verts = (m.normal.len() + m.glow.len()) / VERTEX;
+        }
+        let mesh = t.elapsed() / n;
+        let t = std::time::Instant::now();
+        for _ in 0..n {
+            for c in &mut cs {
+                c.frame(1.0 / 60.0, 2, &slot, None, None, false);
+            }
+        }
+        let physics = t.elapsed() / n;
+        println!("40 cords: mesh {mesh:?} a frame ({verts} vertices, {} KB), physics {physics:?} a frame", verts * VERTEX * 4 / 1024);
+    }
+}

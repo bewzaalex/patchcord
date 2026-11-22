@@ -69,7 +69,7 @@ impl Key {
             Key::CablesAt(1) => "Fade the cords",
             Key::CablesAt(_) => "Hide the cords",
             Key::Arrange => "Arrange devices by signal flow (A)",
-            Key::Fit => "Fit everything in the window (F)",
+            Key::Fit => "Fit everything in the window; in the rack: back to its top (F)",
             Key::Flow => "Show which way the cords go: a light runs along each from its output to its input (W)",
             Key::Hidden => "Hidden devices: click to show them again (a device's HIDE key, or H over it, hides an unused one)",
             Key::Lcd => "Presets",
@@ -158,6 +158,8 @@ pub struct Panel {
     folded: Vec<Part>,
     more_rects: Vec<(Key, [f64; 4])>,
     more_layer: Option<(u64, Layer)>,
+    /// the bare panel (see `tile`), at a dpi
+    tile: Option<(u64, Layer)>,
     /// MORE's drop-down being drawn on the painter's threads: what for, where
     more_want: Option<(u64, [f64; 4])>,
 }
@@ -391,7 +393,7 @@ const LABEL: &str = "#26272a";
 
 impl Panel {
     pub fn new(state: State) -> Self {
-        Panel { state, rects: Vec::new(), layer: None, want: None, inbox: Default::default(), menu: None, menu_rects: Vec::new(), menu_layer: None, folded: Vec::new(), more_rects: Vec::new(), more_layer: None, more_want: None }
+        Panel { state, tile: None, rects: Vec::new(), layer: None, want: None, inbox: Default::default(), menu: None, menu_rects: Vec::new(), menu_layer: None, folded: Vec::new(), more_rects: Vec::new(), more_layer: None, more_want: None }
     }
 
     /// Where a key is (x, y, w, h), once the panel has been drawn.
@@ -416,6 +418,12 @@ impl Panel {
         self.state.more && at.is_some_and(|[lx, ly, lw, lh]| x >= lx && x <= lx + lw && y >= ly && y <= ly + lh - SHADOW)
     }
 
+    /// How far down MORE's open drop-down reaches (logical pixels), if it is open.
+    pub fn more_bottom(&self) -> Option<f64> {
+        let at = self.more_want.map(|(_, at)| at).or_else(|| self.more_layer.as_ref().map(|(_, l)| [l.x, l.y, l.w, l.h]));
+        at.filter(|_| self.state.more).map(|[_, ly, _, lh]| ly + lh - SHADOW)
+    }
+
     /// The panel as a layer `width` logical pixels wide, drawn at `dpi`.
     pub fn layer(&mut self, width: f64, dpi: f64) -> &Layer {
         for done in self.inbox.take() {
@@ -436,7 +444,8 @@ impl Panel {
         let sig = std::hash::Hasher::finish(&h);
         if self.layer.as_ref().is_none_or(|(s, _)| *s != sig) && self.want.map(|w| w.0) != Some(sig) {
             // where the keys are, at once; their picture on the painter's threads (the first one
-            // here: there is nothing to show meanwhile)
+            // here: there is nothing to show meanwhile; a window grown meanwhile shows the bare
+            // panel, `tile`, beyond the old one)
             let (svg, rects, folded) = self.svg(width);
             self.rects = rects;
             self.folded = folded;
@@ -447,6 +456,10 @@ impl Panel {
                 self.want = Some((sig, width));
                 self.inbox.ask(super::painter::key("panel", 0u8), sig, svg, dpi);
             }
+        }
+        if self.tile.as_ref().is_none_or(|(d, _)| *d != dpi.to_bits()) {
+            let pm = rasterize(&text::svg_options(), &bare_svg(TILE_W), dpi);
+            self.tile = Some((dpi.to_bits(), Layer { id: next_id(), pm, x: 0.0, y: 0.0, w: TILE_W, h: H + SHADOW }));
         }
         // MORE's drop-down, on the painter's threads too (the old one shows meanwhile); where its
         // keys are, at once
@@ -479,6 +492,13 @@ impl Panel {
         for (_, l) in [self.layer.as_mut(), self.more_layer.as_mut(), self.menu_layer.as_mut()].into_iter().flatten() {
             l.pm = None;
         }
+    }
+
+    /// The bare panel, `TILE_W` wide (its paint repeats that often): laid side by side under the
+    /// panel's picture, it fills what a window that has grown shows beyond it until the new one
+    /// comes.
+    pub fn tile(&self) -> Option<&Layer> {
+        self.tile.as_ref().map(|(_, l)| l)
     }
 
     /// The panel and drop-down layers as last prepared.
@@ -869,6 +889,24 @@ fn more_key(x: f64, pressed: bool) -> String {
         KEY_Y + KEY_H / 2.0 - 1.5
     );
     o
+}
+
+/// How wide the bare panel's tile is: as its paint's pattern, so tiles meet seamlessly.
+pub const TILE_W: f64 = 80.0;
+
+/// The panel with nothing on it, `w` wide: its paint, its light and its shadow.
+fn bare_svg(w: f64) -> String {
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{th}" viewBox="0 0 {w} {th}">
+{defs}
+<rect y="{H}" width="{w}" height="{SHADOW}" fill="url(#gDrop)"/>
+<rect width="{w}" height="{H}" fill="#8c8e91"/><rect width="{w}" height="{H}" fill="url(#pt)"/><rect width="{w}" height="{H}" fill="url(#gStrip)"/>
+<path d="M0,.5 H{w}" stroke="#fff" stroke-opacity=".35"/><path d="M0,{b} H{w}" stroke="#000" stroke-opacity=".5"/>
+</svg>"##,
+        th = H + SHADOW,
+        defs = defs(),
+        b = H - 0.5,
+    )
 }
 
 /// The panel's paint, gradients and the keys' shading.

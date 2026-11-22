@@ -186,11 +186,13 @@ audio, its own SIG meter (what comes in, or what goes out, after its volume or g
 
 | | |
 | --- | --- |
-| Drag a device | on the desk it stops at other devices and slides along them, and sticks lightly to their edges and centres, with a guide line (G: place freely; ALIGN is off in the rack); in RACK, drag it up or down to change the order |
-| R, or DESK / RACK | devices on a desk, or in a 19" rack (each keeps its desk place) |
+| Drag a device | on the desk it stops at other devices and slides along them, and sticks lightly to their edges and centres, with a guide line (G: place freely; ALIGN is off in the rack). In the rack it takes another slot (into the other rack too), the rest making room; near the window's top or bottom the rack scrolls under it |
+| R, or DESK / RACK | devices on a desk, or screwed into a 19" rack (each keeps its desk place) |
+| The rack | the window is the rack, always at 100%: its rails at the window's sides, units numbered from the top. Every face is as wide as the rack: vents take what its frames don't need (all of it on a card that is off), and frames that don't fit go on to another unit (2U, 3U…): the lower units fill first, the whole width (under the name and screen too), the unit beside the name takes only what is left over; in each unit the frames go from the left (inputs, then outputs), vents after them. A face is at least as wide as its name and screen, or its widest frame (on a unit of its own): only a narrower window scrolls sideways (Shift+wheel, or drag). When the devices don't fit the window's height in one rack, racks stand side by side, as many as it takes (each still as wide as its widest device needs), the devices going down the first and on into the next, split so the racks come out evenest. ARRANGE puts the devices in the order of the signal flow (sources at the top). It goes no higher than its first device; below, as far as its last device or the lowest cord (further while the window is taller) |
+| Wheel in the rack | scrolls it up and down (the rack doesn't zoom); bars at the window's edges show there is more. While it scrolls, a knob passing under the pointer isn't turned. Carrying a plug near the top or bottom edge scrolls the rack that way, to reach a device out of sight |
 | MORE ▾ | in a narrow window the top panel makes room: the logo goes first, then the keys the screen can't use, then groups fold into MORE from the right. MORE drops them below the panel as they are |
 | A, or ARRANGE | devices with cords in columns by signal flow (sources left), ordered so cords cross less; the unused ones after them, kind by kind (sound cards, apps, MIDI), in rows shaped to the window so the faces come out as big as they can |
-| F | fit everything in the window |
+| F | fit everything in the window; in the rack, back to its top |
 | L | lock devices in place |
 | C, or CABLES | cords shown, faded or hidden |
 | Drag empty space, or right/middle drag · wheel | pan · zoom |
@@ -215,8 +217,7 @@ on: what the panels leave out, which clock drives what, and why something crackl
 | Drag · wheel · F · Esc | pan · zoom · fit · deselect; E or DESK / RACK goes back |
 
 Settings and presets are plain text files in `~/.config/patchcord`: `settings.txt` (cords, lock,
-lining up, colours, the cord lights, desk or rack, window size, where devices sit, the rack's
-order, hidden devices) and `presets.txt` (each preset's links, split jacks, layout, volumes, the
+lining up, colours, the cord lights, desk or rack, window size, where devices sit, the rack's order, hidden devices) and `presets.txt` (each preset's links, split jacks, layout, volumes, the
 cards' profiles and ports, and the default output and input, by PipeWire's names). Loading a
 preset takes away the links between devices it knows that it doesn't have; devices started later
 keep theirs. The Flatpak keeps them in `~/.var/app/io.github.bewzaalex.patchcord/config/patchcord`

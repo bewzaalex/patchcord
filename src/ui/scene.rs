@@ -12,7 +12,7 @@ use resvg::tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Rect, Transform};
 use resvg::usvg;
 
 use super::cord::{Cord, Held, RATE, Slot};
-use super::face::{self, BADGE, BAL_R, BalKnob, DEV_H, Geometry, KNOB_R, Leds, MIX_H, MIX_Y, JP, JackDef, JackKind, LCD_W, LCD_X, LCD_Y, PIC, RACK_MIN, SHADOW};
+use super::face::{self, BADGE, BAL_R, BalKnob, DEV_H, Geometry, KNOB_R, Leds, MIX_H, MIX_Y, JP, JackDef, JackKind, LCD_W, LCD_X, LCD_Y, FACE_PAD, PIC, RACK_GAP, RACK_MIN, RACK_SCREW_X, RACK_U, SHADOW};
 use super::{ease, paint, painter, text};
 use crate::config::Preset;
 
@@ -56,15 +56,123 @@ fn cords_box<'a>(cords: impl Iterator<Item = &'a Cord>) -> Option<(f64, f64, f64
     [x0, y0, x1, y1].iter().all(|v| v.is_finite() && v.abs() < 1e6).then_some((x0 as f64, y0 as f64, x1 as f64, y1 as f64))
 }
 
+/// The rails' pictures at one scale (see `Scene::rails`): [left, right, left first, right first]
+/// units, and the units' numbers, made as they come into sight.
+struct Rails {
+    scale: f64,
+    tiles: [Layer; 4],
+    nums: Vec<Layer>,
+}
+
+impl Rails {
+    fn new(opt: &usvg::Options, scale: f64) -> Self {
+        let tile = |right: bool, first: bool| {
+            let svg = rail_svg(right, first);
+            Layer { id: next_id(), pm: rasterize(opt, &svg, scale), x: 0.0, y: 0.0, w: RAIL_W, h: RACK_U }
+        };
+        Rails { scale, tiles: [tile(false, false), tile(true, false), tile(false, true), tile(true, true)], nums: Vec::new() }
+    }
+
+    fn ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.tiles.iter().chain(&self.nums).map(|l| l.id)
+    }
+}
+
+/// A unit of a rail, its outer edge at x 0 (the right rail's mirrored): dark steel, three square
+/// holes cut through it (the window's background shows in them; a notch by the middle one, as on
+/// real rails), a white line over the unit (none over the first: the panel is there).
+fn rail_svg(right: bool, first: bool) -> String {
+    let (w, h) = (RAIL_W, RACK_U);
+    let (hx, hs) = (RAIL_NUMS + RACK_SCREW_X, RAIL_HOLE);
+    // the holes, as a mask cut out of the steel
+    let mut cut = String::new();
+    let mut edges = String::new();
+    for (k, cy) in RAIL_PITCH.iter().enumerate() {
+        let (x, y) = (hx - hs / 2.0, cy - hs / 2.0);
+        let _ = std::fmt::Write::write_fmt(&mut cut, format_args!(r##"<rect x="{x}" y="{y}" width="{hs}" height="{hs}" rx="1.2" fill="#000"/>"##));
+        if k == 1 {
+            let _ = std::fmt::Write::write_fmt(&mut cut, format_args!(r##"<circle cx="{x}" cy="{cy}" r="2.6" fill="#000"/>"##));
+        }
+        // the steel's cut edge: dark round the hole, catching the light along its bottom
+        let _ = std::fmt::Write::write_fmt(
+            &mut edges,
+            format_args!(r##"<rect x="{x}" y="{y}" width="{hs}" height="{hs}" rx="1.2" fill="none" stroke="#000" stroke-width=".6" opacity=".6"/><path d="M{},{} h{}" stroke="#5a5d61" stroke-width=".7" opacity=".8"/>"##, x + 1.0, y + hs + 0.35, hs - 2.0),
+        );
+    }
+    let mut g = format!(
+        r##"<defs><mask id="holes" maskUnits="userSpaceOnUse" x="0" y="0" width="{w}" height="{h}"><rect width="{w}" height="{h}" fill="#fff"/>{cut}</mask></defs><g mask="url(#holes)"><rect width="{w}" height="{h}" fill="url(#steel)"/><rect x=".3" width=".8" height="{h}" fill="#6b6e72" opacity=".7"/><rect x="{}" width=".7" height="{h}" fill="#55585c" opacity=".6"/><rect x="{}" width=".9" height="{h}" fill="#0d0d0e" opacity=".75"/>{edges}</g>"##,
+        w - 1.6,
+        w - 0.9
+    );
+    if !first {
+        let _ = std::fmt::Write::write_fmt(&mut g, format_args!(r##"<rect x="3" y="0" width="{}" height="1.3" fill="#e6e6e6" opacity=".9"/>"##, hx - hs / 2.0 - 3.0));
+    }
+    if right {
+        g = format!(r#"<g transform="translate({w},0) scale(-1,1)">{g}</g>"#);
+    }
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}"><defs><linearGradient id="steel" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2c2d30"/><stop offset=".5" stop-color="#36373a"/><stop offset="1" stop-color="#28292b"/></linearGradient></defs>{g}</svg>"##
+    )
+}
+
+/// A unit's number, for the strip outside a rail.
+fn rail_number_svg(n: usize) -> String {
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{RAIL_NUMS}" height="16" viewBox="0 0 {RAIL_NUMS} 16"><text x="{}" y="12" font-family="Noto Sans" font-weight="bold" font-size="11" fill="#e8e8e8" text-anchor="middle">{n}</text></svg>"##,
+        RAIL_NUMS / 2.0
+    )
+}
+
 pub fn next_id() -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-/// space between units in the rack
-const RACK_GAP: f64 = 3.0;
-/// the rack's frame around the stack of devices
-const FRAME: f64 = 7.0;
+/// The rack's rails, at the window's sides: a strip with the units' numbers outside, then the
+/// steel the faces are screwed to, its square holes in proportion to a unit (0.375", 0.25",
+/// 0.875" and 1.5" into a 1.75" unit), a thin rim beside them inside.
+pub const RAIL_NUMS: f64 = 20.0;
+const RAIL_HOLE: f64 = RACK_U * 0.375 / 1.75;
+const RAIL_PITCH: [f64; 3] = [RACK_U * 0.25 / 1.75, RACK_U * 0.875 / 1.75, RACK_U * 1.5 / 1.75];
+const RAIL_RIM: f64 = 8.0;
+/// a rail's width, from the window's edge; the faces start `RAIL_NUMS` in
+const RAIL_W: f64 = RAIL_NUMS + RACK_SCREW_X + RAIL_HOLE / 2.0 + RAIL_RIM;
+/// From one rack's left edge to the next one's: its faces and a rail's numbers either side.
+fn rack_pitch(rack_w: f64) -> f64 {
+    rack_w + 2.0 * RAIL_NUMS
+}
+
+/// The devices' heights, in order, into `n` racks, each a run of them: where each one goes, so the
+/// tallest rack is as short as can be.
+fn columns(hs: &[f64], n: usize) -> Vec<usize> {
+    let fill = |cap: f64| {
+        let (mut col, mut used, mut at) = (0, 0.0, Vec::with_capacity(hs.len()));
+        for &h in hs {
+            if used > 0.0 && used + h > cap + 1e-6 {
+                col += 1;
+                used = 0.0;
+            }
+            used += h;
+            at.push(col);
+        }
+        at
+    };
+    let (mut lo, mut hi) = (hs.iter().copied().fold(0.0, f64::max), hs.iter().sum::<f64>());
+    for _ in 0..50 {
+        let mid = (lo + hi) / 2.0;
+        if fill(mid).last().is_none_or(|c| *c < n) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    fill(hi).into_iter().map(|c| c.min(n.saturating_sub(1))).collect()
+}
+
+/// where unit `k` (from 0) starts: half a gap down, so the first face is a gap below the top
+fn unit_top(k: i64) -> f64 {
+    RACK_GAP / 2.0 + k as f64 * RACK_U
+}
 /// Where the ringed jacks start in `Scene::jack_pics` (after the plus badge): for each group
 /// colour of `face::ACCENTS`, a mono, a stereo and a MIDI jack.
 const JACK_PICS: usize = 1;
@@ -276,9 +384,17 @@ pub struct Scene {
     pub rack: bool,
     pub rack_order: Vec<String>,
     rack_w: Option<f64>,
+    /// how far down the devices reach in the rack: the bottom of the last one's units (of the
+    /// tallest rack)
     rack_h: f64,
-    /// the rack's rails and inside, behind the devices
-    pub rack_bg: Option<(u64, Layer)>,
+    /// how wide and tall the window's field is (its units): the rack is as wide; racks go side
+    /// by side when the devices don't fit its height in one, the devices going down the first and
+    /// on into the next
+    rack_room: (f64, f64),
+    racks: usize,
+    /// the rails' pictures at a scale: a unit of the left and the right rail, each also without
+    /// the line over it (the first unit's: the panel is there), and the units' numbers
+    rails: Option<Rails>,
     /// faces and shadows being drawn on the painter's threads
     inbox: painter::Inbox,
     /// a device on the desk grew (more jacks): the ones it now lies over make room on the next tick
@@ -292,9 +408,6 @@ pub struct Scene {
     pub align: bool,
     /// each group on a band of its kind's colour (K)
     pub accents: bool,
-    rack_scale: f64,
-    /// the rack being drawn: what for, its scale, size
-    rack_want: Option<(u64, u64, f64, f64, f64)>,
     /// pictures laid over the faces: the plus badge of a mult's free jack, then (from
     /// `JACK_PICS`) for each group colour of `face::ACCENTS` a mono, a stereo and a MIDI jack
     /// ringed in it; then, from `CUE_PICS`, the cue's marks: the disc under a jack kept on, the ring
@@ -400,15 +513,15 @@ impl Scene {
             rack_order: Vec::new(),
             rack_w: None,
             rack_h: 0.0,
-            rack_bg: None,
+            rack_room: (0.0, 0.0),
+            racks: 1,
+            rails: None,
             inbox: painter::Inbox::default(),
             crowded: false,
             guides: Vec::new(),
             snapped: (None, None),
             align: true,
             accents: true,
-            rack_scale: 0.0,
-            rack_want: None,
             jack_pics: Default::default(),
             spent: Vec::new(),
             pics_scale: 0.0,
@@ -585,55 +698,109 @@ impl Scene {
         }
     }
 
-    /// Faces' geometry; in a rack every face is as wide as the widest needs.
+    /// Faces' geometry. In the rack every face is as wide as the rack: the window between its rails
+    /// (vents take what a face's frames don't need, frames that don't fit go on to more units); as
+    /// many racks side by side as there is room for 19" ones (and each as wide as the widest frame
+    /// needs). Without a window (pictures): as wide as the widest face needs.
     fn regeo(&mut self) {
-        self.rack_w = self.rack.then(|| self.devs.iter().map(|d| face::natural_w(&d.dev, &d.defs, &d.counts, true)).fold(RACK_MIN, f64::max));
+        self.rack_w = self.rack.then(|| {
+            let least = self.devs.iter().map(|d| face::rack_min_w(&d.dev, &d.defs, &d.counts)).fold(0.0, f64::max);
+            let (room, tall) = self.rack_room;
+            if room <= 0.0 {
+                self.racks = 1;
+                return self.devs.iter().map(|d| face::natural_w(&d.dev, &d.defs, &d.counts, true)).fold(RACK_MIN, f64::max);
+            }
+            // one rack while the devices fit the window's height in it; else as many side by side
+            // as it takes to fit (each still as wide as its widest device needs), or, if no number
+            // of them does, the number whose tallest rack is the shortest
+            let fit = |n: usize| room / n as f64 - 2.0 * RAIL_NUMS;
+            let order = self.rack_keys();
+            let tallest = |n: usize| {
+                let hs: Vec<f64> = order.iter().filter_map(|k| self.devs.iter().find(|d| d.dev.key == *k)).map(|d| face::rack_units(&d.dev, &d.defs, &d.counts, fit(n)) as f64 * RACK_U).collect();
+                let col = columns(&hs, n);
+                (0..n).map(|c| hs.iter().zip(&col).filter(|(_, k)| **k == c).map(|(h, _)| h).sum::<f64>()).fold(0.0, f64::max) + RACK_GAP / 2.0
+            };
+            let (mut n, mut best) = (1, tallest(1));
+            let mut k = 2;
+            while best > tall && k <= self.devs.len() && fit(k) >= least {
+                let t = tallest(k);
+                if t < best - 0.5 {
+                    (n, best) = (k, t);
+                }
+                k += 1;
+            }
+            self.racks = n;
+            fit(n).max(least)
+        });
         for d in &mut self.devs {
             d.geo = face::face_geometry(&d.dev, &d.defs, &d.counts, self.rack_w, self.accents);
         }
     }
 
-    /// Stacks the devices in the rack in its order. While one is dragged (`dragged`), it goes where
-    /// it is held and the others make room for it.
-    fn layout_rack(&mut self, dragged: Option<&str>) {
+    /// The devices' keys in the rack's order (the new ones last).
+    fn rack_keys(&self) -> Vec<String> {
         let mut order: Vec<String> = self.rack_order.iter().filter(|k| self.devs.iter().any(|d| d.dev.key == **k)).cloned().collect();
         for d in &self.devs {
             if !order.contains(&d.dev.key) {
                 order.push(d.dev.key.clone());
             }
         }
+        order
+    }
+
+    /// Stacks the devices in the rack in its order. While one is dragged (`dragged`), it goes where
+    /// it is held and the others make room for it.
+    fn layout_rack(&mut self, dragged: Option<&str>) {
+        let mut order = self.rack_keys();
         if let Some(k) = dragged
             && let Some(d) = self.devs.iter().find(|d| d.dev.key == k)
         {
+            // the others stacked without it (down the racks as they would go), and it put before
+            // the first one past it: a rack further right, or lower in its rack
             order.retain(|o| o != k);
-            let (mut y, mut idx) = (0.0, order.len());
-            for (i, o) in order.iter().enumerate() {
-                let oh = self.devs.iter().find(|x| x.dev.key == *o).map_or(DEV_H, DevView::h);
-                if d.y + d.h() / 2.0 < y + oh / 2.0 {
+            let hs: Vec<f64> = order.iter().map(|o| self.devs.iter().find(|x| x.dev.key == *o).map_or(DEV_H, DevView::h) + RACK_GAP).collect();
+            let col = columns(&hs, self.racks);
+            let pitch = rack_pitch(self.rack_w.unwrap_or(RACK_MIN));
+            let held = (((d.x + d.geo.w / 2.0) / pitch).floor().max(0.0) as usize).min(self.racks.max(1) - 1);
+            let mid = d.y + d.h() / 2.0;
+            let (mut y, mut idx) = (RACK_GAP, order.len());
+            for i in 0..order.len() {
+                if i > 0 && col[i] != col[i - 1] {
+                    y = RACK_GAP;
+                }
+                if col[i] > held || (col[i] == held && mid < y + (hs[i] - RACK_GAP) / 2.0) {
                     idx = i;
                     break;
                 }
-                y += oh + RACK_GAP;
+                y += hs[i];
             }
             order.insert(idx, k.to_owned());
         }
-        let mut y = 0.0;
-        for k in &order {
-            let h = self.devs.iter().find(|d| d.dev.key == *k).map_or(DEV_H, DevView::h);
+        // each face in its units, a gap below the one above (and the first a gap below the top);
+        // down the first rack and on into the next
+        let hs: Vec<f64> = order.iter().map(|k| self.devs.iter().find(|d| d.dev.key == *k).map_or(DEV_H, DevView::h) + RACK_GAP).collect();
+        let col = columns(&hs, self.racks);
+        let pitch = rack_pitch(self.rack_w.unwrap_or(RACK_MIN));
+        let (mut y, mut bottom) = (RACK_GAP, 0.0f64);
+        for (i, k) in order.iter().enumerate() {
+            if i > 0 && col[i] != col[i - 1] {
+                y = RACK_GAP;
+            }
             if let Some(d) = self.devs.iter_mut().find(|d| d.dev.key == *k)
                 && Some(k.as_str()) != dragged
             {
-                (d.tx, d.ty) = (0.0, y);
+                (d.tx, d.ty) = (col[i] as f64 * pitch, y);
             }
-            y += h + RACK_GAP;
+            y += hs[i];
+            bottom = bottom.max(y);
         }
         self.rack_order = order;
-        self.rack_h = y;
+        self.rack_h = bottom.max(RACK_GAP) - RACK_GAP / 2.0;
     }
 
     /// The ids of every picture of the desk or rack (to keep on the GPU while ENGINE shows).
     pub fn layer_ids(&self) -> impl Iterator<Item = u64> + '_ {
-        self.devs.iter().flat_map(|d| d.layers().map(|l| l.id)).chain(self.pic_ids()).chain(self.rack_bg.iter().map(|(_, l)| l.id))
+        self.devs.iter().flat_map(|d| d.layers().map(|l| l.id)).chain(self.pic_ids()).chain(self.rails.iter().flat_map(Rails::ids))
     }
 
     /// The ids of the pictures laid over the faces now and then (the spare devices', the jacks'
@@ -644,7 +811,7 @@ impl Scene {
 
     /// The faces kept for the other screen: the GPU keeps them.
     pub fn spare_ids(&self) -> impl Iterator<Item = u64> + '_ {
-        self.devs.iter().filter_map(|d| d.spare.as_ref().map(|(_, _, l)| l.id)).chain(self.rack_bg.iter().filter(|_| self.rack_w.is_none()).map(|(_, l)| l.id))
+        self.devs.iter().filter_map(|d| d.spare.as_ref().map(|(_, _, l)| l.id))
     }
 
     /// Devices into the rack, or back to their places on the desk.
@@ -1339,10 +1506,75 @@ impl Scene {
     /// A view that shows every device in the window area `top` pixels down, w × h pixels.
     /// The view that shows every device, as big as the window allows up to `max_scale`, with a
     /// margin of `m` (screen pixels) round them.
+    /// In the rack: the rails at the window's edges, the first device at the top.
     pub fn fit(&self, w: f64, h: f64, top: f64, max_scale: f64, m: f64) -> View {
+        if let Some((l, r, _)) = self.rack_extent() {
+            let s = w / (r - l);
+            return View { s, x: -l * s, y: top };
+        }
         let Some((x0, y0, x1, y1)) = self.bounds() else { return View { x: 0.0, y: top, s: 1.0 } };
         let s = ((w - 2.0 * m) / (x1 - x0)).min((h - 2.0 * m) / (y1 - y0)).clamp(0.3, max_scale);
         View { s, x: (w - (x1 - x0) * s) / 2.0 - x0 * s, y: top + ((h - (y1 - y0) * s) / 2.0).max(m) - y0 * s }
+    }
+
+    /// How wide and tall the rack was last told the window's field is (0: not yet).
+    pub fn rack_room(&self) -> (f64, f64) {
+        self.rack_room
+    }
+
+    /// In the rack: how wide and tall the window's field is (its units). The rack is laid out
+    /// again when it changes.
+    pub fn set_rack_room(&mut self, w: f64, h: f64) {
+        if (w - self.rack_room.0).abs() < 0.5 && (h - self.rack_room.1).abs() < 0.5 {
+            return;
+        }
+        self.rack_room = (w, h);
+        if self.rack {
+            self.regeo();
+            self.layout_rack(None);
+        }
+    }
+
+    /// The rack's ends, in the rack: the left rail's outer edge, the right one's, and how far down
+    /// it has something (the last device, or a cord hanging lower). The scene never shows beyond
+    /// them (but below, while the window is taller).
+    pub fn rack_extent(&self) -> Option<(f64, f64, f64)> {
+        let rw = self.rack_w.filter(|_| self.rack)?;
+        let cords = self.cords.iter().flat_map(|c| c.pts.iter().map(|p| p.y as f64)).fold(0.0, f64::max);
+        Some((-RAIL_NUMS, self.racks as f64 * rack_pitch(rw) - RAIL_NUMS, self.rack_h.max(cords)))
+    }
+
+    /// The units' numbers up to the unit at `y` (world units) drawn, for `rails` to show.
+    pub fn rail_numbers(&mut self, y: f64) {
+        let Some(r) = &mut self.rails else { return };
+        let upto = ((y - unit_top(0)) / RACK_U).ceil().max(0.0) as usize + 1;
+        while r.nums.len() < upto {
+            let svg = rail_number_svg(r.nums.len() + 1);
+            r.nums.push(Layer { id: next_id(), pm: rasterize(&self.opt, &svg, r.scale), x: 0.0, y: 0.0, w: RAIL_NUMS, h: 16.0 });
+        }
+    }
+
+    /// The rails' pictures between `y0` and `y1` (world units), and where each goes (x, y, w, h,
+    /// world units): the rails run the whole way, past the last device.
+    pub fn rails(&self, y0: f64, y1: f64) -> Vec<(&Layer, [f64; 4])> {
+        let (Some(r), Some(rw)) = (&self.rails, self.rack_w.filter(|_| self.rack)) else { return Vec::new() };
+        let first = ((y0 - unit_top(0)) / RACK_U).floor().max(-1.0) as i64;
+        let last = ((y1 - unit_top(0)) / RACK_U).ceil() as i64;
+        let mut out = Vec::new();
+        for (l, rr) in (0..self.racks).map(|c| (c as f64 * rack_pitch(rw) - RAIL_NUMS, c as f64 * rack_pitch(rw) + rw + RAIL_NUMS)) {
+            for k in first..=last {
+                let y = unit_top(k);
+                let t = if k <= 0 { 2 } else { 0 };
+                out.push((&r.tiles[t], [l, y, RAIL_W, RACK_U]));
+                out.push((&r.tiles[t + 1], [rr - RAIL_W, y, RAIL_W, RACK_U]));
+                if let Some(n) = usize::try_from(k).ok().and_then(|k| r.nums.get(k)) {
+                    let ny = y + RACK_U / 2.0 - 8.0;
+                    out.push((n, [l, ny, RAIL_NUMS, 16.0]));
+                    out.push((n, [rr - RAIL_NUMS, ny, RAIL_NUMS, 16.0]));
+                }
+            }
+        }
+        out
     }
 
     /// Brings the rack, faces and LCDs up to date where they are missing, out of date or drawn at
@@ -1379,30 +1611,8 @@ impl Scene {
             }
             self.pics_scale = scale;
         }
-        match self.rack_w {
-            Some(rw) => {
-                let mut h = DefaultHasher::new();
-                (rw.to_bits(), self.rack_h.to_bits()).hash(&mut h);
-                let sig = h.finish();
-                let changed = self.rack_bg.as_ref().is_none_or(|(s, _)| *s != sig);
-                let want = painter::sig(sig, scale);
-                if (changed || self.rack_scale != scale) && self.rack_want.map(|w| w.0) != Some(want) {
-                    // tight around the stack (the last unit's gap is not part of it); the first one
-                    // at once, then on the painter's threads
-                    let (w, ht) = (rw + 2.0 * FRAME, (self.rack_h - RACK_GAP).max(0.0) + 2.0 * FRAME);
-                    if self.rack_bg.is_none() {
-                        let pm = rasterize(&self.opt, &rack_svg(w, ht), scale);
-                        self.rack_bg = Some((sig, Layer { id: next_id(), pm, x: -FRAME, y: -FRAME, w, h: ht }));
-                        self.rack_scale = scale;
-                    } else {
-                        self.rack_want = Some((want, sig, scale, w, ht));
-                        self.inbox.ask(painter::key("rack", 0u8), want, rack_svg(w, ht), scale);
-                    }
-                }
-            }
-            // off the rack its frame is kept (the GPU too keeps it): back in the rack it shows at
-            // once, and is drawn again if it has to be
-            None => self.rack_want = None,
+        if self.rack && self.rails.as_ref().is_none_or(|r| r.scale != scale) {
+            self.rails = Some(Rails::new(&self.opt, scale));
         }
         let links: HashMap<usize, usize> = {
             let mut m = HashMap::new();
@@ -1441,14 +1651,6 @@ impl Scene {
 
     /// A face or shadow the painter has drawn, in its place if it is still the one wanted.
     fn install(&mut self, done: painter::Done) {
-        if let Some((want, sig, scale, w, h)) = self.rack_want
-            && want == done.sig
-            && done.key == painter::key("rack", 0u8)
-        {
-            self.rack_bg = Some((sig, Layer { id: next_id(), pm: done.pm, x: -FRAME, y: -FRAME, w, h }));
-            (self.rack_scale, self.rack_want) = (scale, None);
-            return;
-        }
         if let Some(i) = (0..self.jack_pics.len()).find(|i| done.key == painter::key("jack", i) && done.sig == painter::sig(i, self.pics_scale)) {
             self.jack_pics[i] = Some(pic_layer(i, done.pm));
             return;
@@ -1458,7 +1660,7 @@ impl Scene {
                 && want == done.sig
                 && done.key == painter::key("face", &d.dev.key)
             {
-                let old = d.face.replace(Layer { id: next_id(), pm: done.pm, x: -SHADOW, y: -SHADOW, w, h });
+                let old = d.face.replace(Layer { id: next_id(), pm: done.pm, x: -FACE_PAD, y: -FACE_PAD, w, h });
                 // another screen's face is kept for going back
                 if d.face_sig != sig
                     && let Some(old) = old
@@ -2535,8 +2737,9 @@ fn prepare_dev(d: &mut DevView, n: usize, c: &DevCtx, inbox: &mut painter::Inbox
     let want = painter::sig(sig, c.scale);
     if (d.face.is_none() || want != painter::sig(d.face_sig, d.face_scale)) && d.face_want.map(|w| w.0) != Some(want) {
         // its geometry (where its jacks and knobs are) changes at once; its picture follows
-        let (svg, geo) = face::face(&d.dev, &d.defs, &d.counts, &d.split, c.rack_w, c.accents);
-        let reshaped = d.face.is_some() && (geo.w, geo.h) != (d.geo.w, d.geo.h);
+        let (svg, geo, skin) = face::face(&d.dev, &d.defs, &d.counts, &d.split, c.rack_w, c.accents);
+        // (by the face shown: its geometry may have changed already, as the rack's width does)
+        let reshaped = d.face.as_ref().is_some_and(|f| (f.w, f.h) != (geo.w + 2.0 * FACE_PAD, geo.h + 2.0 * FACE_PAD));
         d.geo = geo;
         // back to the other screen: its face as it was shows (scaled) until this one comes
         if d.face_sig != sig
@@ -2547,18 +2750,19 @@ fn prepare_dev(d: &mut DevView, n: usize, c: &DevCtx, inbox: &mut painter::Inbox
             }
             (d.face_sig, d.face_scale) = (ss, sc);
         }
-        let (w, h) = (d.geo.w + 2.0 * SHADOW, d.geo.h + 2.0 * SHADOW);
+        let (w, h) = (d.geo.w + 2.0 * FACE_PAD, d.geo.h + 2.0 * FACE_PAD);
         if reshaped && d.face_sig != sig {
-            // a new shape and none kept for it: drawn at once, an old face of another shape
-            // would show its jacks and knobs elsewhere
-            let old = d.face.replace(Layer { id: next_id(), pm: rasterize(c.opt, &svg, c.scale), x: -SHADOW, y: -SHADOW, w, h });
-            if let Some(old) = old {
+            // a new shape and none kept for it: waited for (as a new device is, side by side on
+            // the painter's threads), an old face of another shape would show its jacks and knobs
+            // elsewhere
+            if let Some(old) = d.face.take() {
                 d.spare = Some((d.face_sig, d.face_scale, old));
             }
-            (d.face_sig, d.face_scale, d.face_want) = (sig, c.scale, None);
+            d.face_want = Some((want, sig, c.scale, w, h));
+            inbox.ask_skinned(painter::key("face", &d.dev.key), want, svg, c.scale, Some(skin));
         } else if want != painter::sig(d.face_sig, d.face_scale) {
             d.face_want = Some((want, sig, c.scale, w, h));
-            inbox.ask(painter::key("face", &d.dev.key), want, svg, c.scale);
+            inbox.ask_skinned(painter::key("face", &d.dev.key), want, svg, c.scale, Some(skin));
         }
         d.gmeters.clear();
     }
@@ -2652,19 +2856,6 @@ fn prepare_dev(d: &mut DevView, n: usize, c: &DevCtx, inbox: &mut painter::Inbox
         }
     }
     d.gmeters = meters;
-}
-
-/// The rack: just a thin metal frame hugging the stack of devices, dark inside (between the
-/// units).
-fn rack_svg(w: f64, h: f64) -> String {
-    let i = FRAME - 2.0;
-    format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}"><defs><linearGradient id="steel" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#a6a9ad"/><stop offset=".5" stop-color="#8a8d91"/><stop offset="1" stop-color="#6e7175"/></linearGradient></defs><rect x=".5" y=".5" width="{}" height="{}" rx="4" fill="url(#steel)" stroke="#000"/><rect x="{i}" y="{i}" width="{}" height="{}" rx="2" fill="#0c0d0e" stroke="#2a2b2e"/></svg>"##,
-        w - 1.0,
-        h - 1.0,
-        w - 2.0 * i,
-        h - 2.0 * i
-    )
 }
 
 /// The lit LEDs of a signal meter (the dark ones are part of the face), with a little glow.
@@ -2963,5 +3154,148 @@ mod tests {
         assert!(s.cue_sources(&port_key(41)).is_empty() && !s.listenable(41), "MIDI: nothing to hear");
         assert_eq!(port_of_key(&port_key(12)), Some(12));
         assert_eq!(port_of_key("device:x/out/0"), None);
+    }
+
+    /// A made-up graph: two devices, a few apps (one on several streams), the music player
+    /// playing into the speakers.
+    fn demo_events() -> Vec<Event> {
+        use crate::pw::{Kind, Props};
+        let props = |kv: &[(&str, &str)]| kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Props>();
+        let mut ev = Vec::new();
+        let mut port = 1000;
+        for (id, name, class, ports) in [
+            (10u32, "Speakers", "Audio/Sink", &[("in", "playback_FL"), ("in", "playback_FR")][..]),
+            (11, "Microphone", "Audio/Source", &[("out", "capture_FL"), ("out", "capture_FR")][..]),
+            (12, "Music player", "Stream/Output/Audio", &[("out", "output_FL"), ("out", "output_FR")][..]),
+            (13, "Browser", "Stream/Output/Audio", &[("out", "output_FL"), ("out", "output_FR")][..]),
+            (14, "Recorder", "Stream/Input/Audio", &[("in", "input_FL"), ("in", "input_FR")][..]),
+            // an app on several streams: a frame each, more than a narrow rack has room for
+            (15, "Meeting", "Stream/Output/Audio", &[("out", "output_FL"), ("out", "output_FR")][..]),
+            (16, "Meeting", "Stream/Output/Audio", &[("out", "output_FL"), ("out", "output_FR")][..]),
+            (17, "Meeting", "Stream/Output/Audio", &[("out", "output_FL"), ("out", "output_FR")][..]),
+            (18, "Meeting", "Stream/Input/Audio", &[("in", "input_FL"), ("in", "input_FR")][..]),
+        ] {
+            let pid = if name == "Meeting" { "4242".to_owned() } else { id.to_string() };
+            let p = props(&[("node.name", name), ("node.description", name), ("media.class", class), ("application.name", name), ("application.process.id", &pid)]);
+            ev.push(Event::Added { id, kind: Kind::Node, props: p.clone() });
+            ev.push(Event::Info { id, props: p, state: Some("running") });
+            for (dir, pname) in ports {
+                port += 1;
+                let nid = id.to_string();
+                ev.push(Event::Added { id: port, kind: Kind::Port, props: props(&[("node.id", &nid), ("port.direction", dir), ("port.name", pname), ("format.dsp", "32 bit float mono audio")]) });
+            }
+        }
+        // the music player into the speakers
+        for (lid, op, ip) in [(500u32, "1005", "1001"), (501, "1006", "1002")] {
+            let p = props(&[("link.output.node", "12"), ("link.output.port", op), ("link.input.node", "10"), ("link.input.port", ip)]);
+            ev.push(Event::Added { id: lid, kind: Kind::Link, props: p.clone() });
+            ev.push(Event::Info { id: lid, props: p, state: Some("active") });
+        }
+        ev.push(Event::Synced);
+        ev
+    }
+
+    /// A picture of the rack, for looking at without PipeWire: a few devices from a made-up graph,
+    /// the rails, at 100% in a window `PATCHCORD_PIC_SIZE` (WxH, 1200x900 by default),
+    /// scrolled `PATCHCORD_PIC_DOWN` units down. Writes PATCHCORD_PIC. Run with --ignored.
+    #[test]
+    #[ignore]
+    fn rack_picture() {
+        let Ok(out) = std::env::var("PATCHCORD_PIC") else { return };
+        let (ww, wh) = std::env::var("PATCHCORD_PIC_SIZE").ok().and_then(|v| v.split_once('x').and_then(|(a, b)| Some((a.parse::<u32>().ok()?, b.parse::<u32>().ok()?)))).unwrap_or((1200, 900));
+        let down: f64 = std::env::var("PATCHCORD_PIC_DOWN").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        let ev = demo_events();
+        let mut s = Scene::new();
+        s.apply(ev);
+        s.set_rack(true);
+        s.set_rack_room(ww as f64, wh as f64 - 60.0 - 22.0);
+        let (l, r, _) = s.rack_extent().expect("in the rack");
+        let sc = ww as f64 / (r - l);
+        let top = 60.0;
+        let v = View { s: sc, x: -l * sc, y: top - down * RACK_U * sc };
+        for _ in 0..400 {
+            s.tick(1.0 / 60.0, None, None, false);
+        }
+        s.prepare(sc, 0);
+        s.finish();
+        s.rail_numbers((wh as f64 - v.y) / sc);
+        let mut pm = Pixmap::new(ww, wh).unwrap();
+        pm.fill(resvg::tiny_skia::Color::from_rgba8(0x17, 0x18, 0x1a, 255));
+        let draw = |pm: &mut Pixmap, l: &Layer, (x, y, w, h): (f64, f64, f64, f64)| {
+            let Some(p) = &l.pm else { return };
+            let (px, py) = ((x * sc + v.x) as f32, (y * sc + v.y) as f32);
+            let (sx, sy) = ((w * sc) as f32 / p.width() as f32, (h * sc) as f32 / p.height() as f32);
+            let paint = resvg::tiny_skia::PixmapPaint { quality: resvg::tiny_skia::FilterQuality::Bilinear, ..Default::default() };
+            pm.draw_pixmap(0, 0, p.as_ref(), &paint, Transform::from_row(sx, 0.0, 0.0, sy, px, py), None);
+        };
+        for (l, [x, y, w, h]) in s.rails((0.0 - v.y) / sc, (wh as f64 - v.y) / sc) {
+            draw(&mut pm, l, (x, y, w, h));
+        }
+        for d in &s.devs {
+            for l in d.layers() {
+                draw(&mut pm, l, (d.x + l.x, d.y + l.y, l.w, l.h));
+            }
+        }
+        // the top panel's place
+        if let Some(rect) = Rect::from_xywh(0.0, 0.0, ww as f32, top as f32) {
+            let mut p = Paint::default();
+            p.set_color_rgba8(0x8a, 0x8d, 0x91, 255);
+            pm.fill_rect(rect, &p, Transform::identity(), None);
+        }
+        pm.save_png(&out).unwrap();
+        println!("{} devices, scale {sc:.3}, {} racks, {:.0} wide, {:.0} down", s.devs.len(), s.racks, r - l, s.rack_h);
+    }
+
+    /// How long a rack face takes to draw, and what in it costs: the whole, then without each of
+    /// its textures and filters. Run with --ignored --nocapture.
+    #[test]
+    #[ignore]
+    fn face_time() {
+        let mut s = Scene::new();
+        s.apply(demo_events());
+        s.set_rack(true);
+        s.set_rack_room(1450.0, 900.0);
+        let opt = text::svg_options();
+        for d in s.devs.iter().take(3) {
+            let (svg, geo, skin) = face::face(&d.dev, &d.defs, &d.counts, &d.split, s.rack_w, s.accents);
+            let time = |doc: &str| {
+                let t = Instant::now();
+                for _ in 0..5 {
+                    face::raster(&opt, doc, &skin, 1.7);
+                }
+                t.elapsed() / 5
+            };
+            let without = |pat: &str| svg.replace(pat, "url(#none)");
+            println!(
+                "{} {:.0}x{:.0}: all {:?}; no nut shadow {:?}; no sheen {:?}",
+                d.dev.name,
+                geo.w,
+                geo.h,
+                time(&svg),
+                time(&without("url(#nutShadow)")),
+                time(&without("url(#gSheen)"))
+            );
+        }
+    }
+
+    /// A face's picture leaves room round it: nothing of the face (its outline's edge reaches a
+    /// pixel past it) touches the picture's edge, on the desk or in the rack.
+    #[test]
+    fn faces_keep_inside_their_pictures() {
+        let opt = text::svg_options();
+        for rack in [false, true] {
+            let mut s = Scene::new();
+            s.apply(demo_events());
+            s.set_rack(rack);
+            s.set_rack_room(1000.0, 900.0);
+            for d in &s.devs {
+                let (svg, _, skin) = face::face(&d.dev, &d.defs, &d.counts, &d.split, s.rack_w, s.accents);
+                let pm = face::raster(&opt, &svg, &skin, 1.0).expect("drawn");
+                let (w, h) = (pm.width() as usize, pm.height() as usize);
+                let alpha = |x: usize, y: usize| pm.data()[(y * w + x) * 4 + 3];
+                let edge = (0..w).any(|x| alpha(x, 0) > 0 || alpha(x, h - 1) > 0) || (0..h).any(|y| alpha(0, y) > 0 || alpha(w - 1, y) > 0);
+                assert!(!edge, "rack {rack}, {}: drawn up to its picture's edge", d.dev.name);
+            }
+        }
     }
 }

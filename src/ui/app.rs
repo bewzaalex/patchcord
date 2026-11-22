@@ -25,6 +25,19 @@ use crate::pw::{Cmd, Connection};
 /// After zooming, faces are drawn sharp again (on the painter's threads) once the zoom has been
 /// still this long.
 const RESCALE_DELAY: Duration = Duration::from_millis(120);
+/// The window's width, for the rack (each new width draws every face again): a change after a
+/// quiet moment (a maximize) is taken at once; while the window is being dragged wider or
+/// narrower, the last width once it has kept still this long.
+const ROOM_DELAY: Duration = Duration::from_millis(150);
+/// How long after the wheel scrolled the rack it still scrolls it, over knobs too.
+const SCROLL_LATCH: Duration = Duration::from_millis(400);
+
+/// A picture of one pixel of a colour (opaque), stretched to whatever it fills.
+fn pixel(rgb: [u8; 4]) -> Layer {
+    let mut pm = resvg::tiny_skia::Pixmap::new(1, 1).expect("1×1");
+    pm.data_mut().copy_from_slice(&rgb);
+    Layer { id: next_id(), pm: Some(pm), x: 0.0, y: 0.0, w: 1.0, h: 1.0 }
+}
 /// How often a long name on an LCD moves on.
 const MARQUEE: Duration = Duration::from_millis(280);
 
@@ -156,6 +169,13 @@ pub struct App {
     hover_since: Instant,
     /// a touchpad's scrolling, gathered into wheel clicks for what steps (knobs, switches)
     wheel_px: f64,
+    /// when the wheel last scrolled the rack: a knob passing under the pointer meanwhile isn't
+    /// turned (the scrolling goes on)
+    scrolled: Option<Instant>,
+    /// the window's width the rack is to take, and since when
+    room_at: ((f64, f64), Instant),
+    /// the rack's scroll bars: track, thumb
+    bar_px: [Layer; 2],
     tip: Option<Layer>,
     /// a card's profile list, open under its PROFILE key
     profiles: Option<ProfileList>,
@@ -215,6 +235,9 @@ impl App {
             notice: None,
             hover_since: now,
             wheel_px: 0.0,
+            scrolled: None,
+            room_at: ((0.0, 0.0), Instant::now()),
+            bar_px: [pixel([0x2a, 0x2b, 0x2e, 0xff]), pixel([0x9a, 0x9d, 0xa2, 0xff])],
             tip: None,
             profiles: None,
             // as it was left (at full the cue plays what it hears as loud as it is: the level
@@ -742,11 +765,117 @@ impl App {
         self.redraw();
     }
 
+    /// The rack is shown (not ENGINE over it).
+    fn in_rack(&self) -> bool {
+        self.scene.rack && !self.engine.on && self.size.0 > 0
+    }
+
+    /// A view kept to the rack: always at 100% (it doesn't zoom: it is as wide as the window, its
+    /// rails at the window's edges); not above its first device, not below what it has (the last
+    /// device, or a cord hanging lower) unless the window is taller. Only a window narrower than
+    /// the rack's widest frame lets it move sideways. Off the rack any view goes.
+    fn clamp_view(&self, v: View) -> View {
+        let Some((l, r, b)) = self.scene.rack_extent().filter(|_| self.in_rack()) else { return v };
+        let (top, bottom) = self.field();
+        let (w, s) = (self.size.0 as f64, self.dpi());
+        let x = if (r - l) * s <= w + 0.5 { -l * s } else { v.x.min(-l * s).max(w - r * s) };
+        View { s, x, y: v.y.min(top).max((bottom - b * s).min(top)) }
+    }
+
+    /// The wheel in the rack: up and down (sideways with Shift, or a touchpad's sideways, in a
+    /// window narrower than the rack); a wheel's click glides a little, a touchpad's pixels go as
+    /// they come.
+    fn scroll_rack(&mut self, delta: MouseScrollDelta) {
+        let dpi = self.dpi();
+        let (mut dx, mut dy, glide) = match delta {
+            MouseScrollDelta::LineDelta(x, y) => (x as f64 * 90.0 * dpi, y as f64 * 90.0 * dpi, true),
+            MouseScrollDelta::PixelDelta(p) => (p.x, p.y, false),
+        };
+        if self.mods.shift_key() && dx == 0.0 {
+            (dx, dy) = (dy, 0.0);
+        }
+        if glide {
+            let base = self.view_to.unwrap_or(self.view);
+            self.view_to = Some(self.clamp_view(View { x: base.x + dx, y: base.y + dy, ..base }));
+        } else {
+            self.view = self.clamp_view(View { x: self.view.x + dx, y: self.view.y + dy, ..self.view });
+            self.view_to = None;
+        }
+        self.scrolled = Some(Instant::now());
+        self.redraw();
+    }
+
+    /// The rack's scroll bars, where it goes on beyond the window: down the right edge, along the
+    /// bottom one. Track and thumb, in window pixels.
+    fn rack_bars(&self) -> Vec<(usize, [f64; 4])> {
+        let Some((l, r, b)) = self.scene.rack_extent().filter(|_| self.in_rack()) else { return Vec::new() };
+        let (top, bottom) = self.field();
+        let (v, w, dpi) = (self.view, self.size.0 as f64, self.dpi());
+        let (fh, t) = (bottom - top, 4.0 * dpi);
+        let mut out = Vec::new();
+        // (the rack's height: what it has, or the window's if that is more)
+        let ch = (b * v.s).max(fh);
+        if ch > fh + 1.0 {
+            let th = (fh * fh / ch).max(24.0 * dpi);
+            let at = ((top - v.y) / (ch - fh)).clamp(0.0, 1.0);
+            out.push((0, [w - t - 2.0, top + 2.0, t, fh - 4.0]));
+            out.push((1, [w - t - 2.0, top + 2.0 + (fh - 4.0 - th) * at, t, th]));
+        }
+        let cw = (r - l) * v.s;
+        if cw > w + 1.0 {
+            let tw = (w * w / cw).max(24.0 * dpi);
+            let at = ((-l * v.s - v.x) / (cw - w)).clamp(0.0, 1.0);
+            out.push((0, [2.0, bottom - t - 2.0, w - 4.0, t]));
+            out.push((1, [2.0 + (w - 4.0 - tw) * at, bottom - t - 2.0, tw, t]));
+        }
+        out
+    }
+
+    /// While a plug or a device is carried in the rack, the pointer near the field's top or bottom
+    /// scrolls the rack that way, the faster the nearer the edge: to patch to a device out of
+    /// sight, or to take one there.
+    fn edge_scroll(&mut self, dt: f64) {
+        if !matches!(self.drag, Some(Drag::Plug { .. } | Drag::Device { .. })) || !self.in_rack() {
+            return;
+        }
+        let (top, bottom) = self.field();
+        let band = ((bottom - top) * 0.1).min(70.0 * self.dpi());
+        let y = self.cursor.1;
+        let k = if y < top + band { (top + band - y) / band } else if y > bottom - band { -(y - (bottom - band)) / band } else { 0.0 };
+        if k != 0.0 {
+            self.view.y += k.clamp(-1.0, 1.0) * 1400.0 * self.dpi() * dt;
+            self.view_to = None;
+            // a carried device goes with the hand, the rack moving under it
+            if let Some(Drag::Device { key, off }) = &self.drag {
+                self.view = self.clamp_view(self.view);
+                let w = self.world(self.cursor);
+                let (key, x, y) = (key.clone(), w.0 - off.0, w.1 - off.1);
+                let px = self.dpi() / self.view.s;
+                self.scene.drag_device(&key, x, y, px);
+            }
+        }
+    }
+
     fn frame(&mut self) {
         self.prof.begin();
         let now = Instant::now();
         let dt = (now - self.last).as_secs_f32().min(0.05);
         self.last = now;
+        // the rack is as wide as the window, and goes side by side by its height (see ROOM_DELAY)
+        let (top, bottom) = self.field();
+        let room = (self.size.0 as f64 / self.dpi(), ((bottom - top) / self.dpi()).max(0.0));
+        let quiet = self.room_at.1.elapsed() >= ROOM_DELAY;
+        let changed = !same_room(room, self.room_at.0);
+        if changed {
+            self.room_at = (room, now);
+        }
+        if self.scene.rack_room().0 <= 0.0 || self.room_at.1.elapsed() >= ROOM_DELAY || (changed && quiet) {
+            self.scene.set_rack_room(room.0, room.1);
+        }
+        self.edge_scroll(dt as f64);
+        // the rack's ends hold whatever moved the view: a pan, a zoom, a glide, the window's size
+        self.view_to = self.view_to.map(|t| self.clamp_view(t));
+        self.view = self.clamp_view(self.view);
         if let Some(t) = self.view_to {
             let v = &mut self.view;
             let k = ease(0.15, dt) as f64;
@@ -821,6 +950,7 @@ impl App {
             self.rescale_at = None;
         }
         let faces_waiting = self.scene.prepare(self.raster, (now - self.start).as_millis());
+        self.scene.rail_numbers((self.field().1 - self.view.y) / self.view.s);
         self.prof.mark("faces");
         // the background for a new window size: drawn on a thread (the old one stretches meanwhile),
         // the first one here
@@ -946,6 +1076,8 @@ impl App {
             }
         }
         let version = self.scene.version.clone().unwrap_or_else(|| "?".into());
+        let field = self.field();
+        let bars = self.rack_bars();
         let Some(sf) = &mut self.win else { return };
         let v = self.view;
         let mut sprites: Vec<Sprite> = Vec::new();
@@ -961,11 +1093,14 @@ impl App {
             }
             self.prof.mark("engine.pictures");
         }
-        if !engine_on
-            && self.scene.rack
-            && let Some((_, l)) = &self.scene.rack_bg
-        {
-            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: l.x * v.s + v.x, y: l.y * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha: 1.0, clip: None });
+        if !engine_on && self.scene.rack {
+            // the rails, unit by unit down the field: on whole pixels, so no seam shows between
+            let (top, bottom) = field;
+            for (l, [x, y, w, h]) in self.scene.rails((top - v.y) / v.s, (bottom - v.y) / v.s) {
+                let (x0, y0) = ((x * v.s + v.x).round(), (y * v.s + v.y).round());
+                let (x1, y1) = (((x + w) * v.s + v.x).round(), ((y + h) * v.s + v.y).round());
+                sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: x0, y: y0, w: x1 - x0, h: y1 - y0, alpha: 1.0, clip: None });
+            }
         }
         let targets = match &self.drag {
             Some(Drag::Plug { targets, .. }) => Some(targets.as_slice()),
@@ -1012,11 +1147,27 @@ impl App {
         // the cords, over the faces and the rings, under the notices and the panel
         let cords_at = sprites.len();
         let (fw, fh) = (self.size.0 as f64, self.size.1 as f64);
+        // the rack's scroll bars, over the cords
+        for (i, [x, y, w, h]) in bars {
+            let l = &self.bar_px[i];
+            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: x.round(), y: y.round(), w: w.round(), h: h.round(), alpha: if i == 0 { 0.55 } else { 0.8 }, clip: None });
+        }
         if let Some((_, l)) = &self.notice {
-            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: ((fw - l.w * dpi) / 2.0).round(), y: ((panel::H + 14.0) * dpi).round(), w: l.w * dpi, h: l.h * dpi, alpha: 1.0, clip: None });
+            // under the panel, or under MORE's drop-down while it is open (else it hides it)
+            let under = self.panel.more_bottom().unwrap_or(0.0).max(panel::H);
+            sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: ((fw - l.w * dpi) / 2.0).round(), y: ((under + 14.0) * dpi).round(), w: l.w * dpi, h: l.h * dpi, alpha: 1.0, clip: None });
         }
         if let Some((_, l)) = &self.status {
             sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: 0.0, y: fh - l.h * dpi, w: l.w * dpi, h: l.h * dpi, alpha: 1.0, clip: None });
+        }
+        // the bare panel where the window has grown past its picture, until the new one comes
+        if let (Some(t), Some(pl)) = (self.panel.tile(), self.panel.layers().next()) {
+            let mut x = (pl.w / panel::TILE_W).floor() * panel::TILE_W;
+            while x < fw / dpi {
+                let (x0, x1) = ((x * dpi).round(), ((x + panel::TILE_W) * dpi).round());
+                sprites.push(Sprite { id: t.id, pm: t.pm.as_ref(), x: x0, y: 0.0, w: x1 - x0, h: t.h * dpi, alpha: 1.0, clip: None });
+                x += panel::TILE_W;
+            }
         }
         for l in self.panel.layers() {
             sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (l.x * dpi).round(), y: (l.y * dpi).round(), w: l.w * dpi, h: l.h * dpi, alpha: 1.0, clip: None });
@@ -1055,11 +1206,6 @@ impl App {
             }
         }
         self.panel.uploaded();
-        if let Some((_, l)) = &mut self.scene.rack_bg
-            && sf.gpu.has(l.id)
-        {
-            l.pm = None;
-        }
         for l in [self.status.as_mut().map(|(_, l)| l), self.notice.as_mut().map(|(_, l)| l), self.tip.as_mut()].into_iter().flatten() {
             if sf.gpu.has(l.id) {
                 l.pm = None;
@@ -1081,7 +1227,9 @@ impl App {
             self.prof.mark("give_back");
         }
         self.send_engine();
-        self.animating = (self.engine.on && self.engine.settling()) || moving || self.view_to.is_some() || self.drag.is_some() || self.rescale_at.is_some() || self.notice.is_some() || faces_waiting || self.panel.busy() || self.bg_job.is_some() || self.scene.noting() || (self.scene.hover != Hover::None && self.tip.is_none() && now - self.hover_since < 2 * TIP_DELAY);
+        // (a new size the rack is still to take)
+        let room_waits = self.scene.rack && !same_room(self.room_at.0, self.scene.rack_room());
+        self.animating = room_waits || (self.engine.on && self.engine.settling()) || moving || self.view_to.is_some() || self.drag.is_some() || self.rescale_at.is_some() || self.notice.is_some() || faces_waiting || self.panel.busy() || self.bg_job.is_some() || self.scene.noting() || (self.scene.hover != Hover::None && self.tip.is_none() && now - self.hover_since < 2 * TIP_DELAY);
         self.prof.mark("rest");
         let (engine, rack, s, cords, devs) = (self.engine.on, self.scene.rack, self.view.s, self.scene.cords.len(), self.scene.devs.len());
         let (drag, zoom) = (self.drag.is_some(), self.rescale_at.is_some() || faces_waiting);
@@ -1780,8 +1928,12 @@ impl App {
     fn zoom(&mut self, factor: f64) {
         let dpi = self.win.as_ref().map_or(1.0, |sf| sf.window.scale_factor());
         let w = self.world(self.cursor);
+        // (the rack doesn't zoom)
+        if self.in_rack() {
+            return;
+        }
         let s = (self.view.s * factor).clamp(0.25 * dpi, 2.5 * dpi);
-        self.view = View { s, x: self.cursor.0 - w.0 * s, y: self.cursor.1 - w.1 * s };
+        self.view = self.clamp_view(View { s, x: self.cursor.0 - w.0 * s, y: self.cursor.1 - w.1 * s });
         self.view_to = None;
         // the faces are drawn sharp again once the zooming stops, not while it goes on
         self.rescale_at = Some(Instant::now() + RESCALE_DELAY);
@@ -1977,7 +2129,11 @@ impl App {
                     // over an app's VOLUME knob, or its BAL knob when out, the wheel turns it
                     let w = self.world(self.cursor);
                     let fine = self.mods.shift_key();
-                    if let Some((di, gi)) = self.scene.knob_at(w.0, w.1) {
+                    // scrolling the rack goes on over a knob that comes under the pointer
+                    let scrolling = self.in_rack() && self.scrolled.is_some_and(|t| t.elapsed() < SCROLL_LATCH);
+                    if scrolling {
+                        self.scroll_rack(delta);
+                    } else if let Some((di, gi)) = self.scene.knob_at(w.0, w.1) {
                         if clicks != 0 {
                             let v = self.scene.devs[di].mix(gi).map_or(1.0, |m| m.0);
                             self.scene.set_volume((di, gi), v + up * if fine { 0.01 } else { 0.05 });
@@ -1989,6 +2145,8 @@ impl App {
                             self.scene.set_balance((di, gi), b + up * if fine { 0.02 } else { 0.1 });
                             self.after_patch();
                         }
+                    } else if self.in_rack() {
+                        self.scroll_rack(delta);
                     } else if f != 1.0 {
                         self.zoom(f);
                     }
@@ -2148,3 +2306,7 @@ pub fn background(w: u32, h: u32) -> Pixmap {
     pm
 }
 
+/// Two sizes of the rack's room alike (to half a unit).
+fn same_room(a: (f64, f64), b: (f64, f64)) -> bool {
+    (a.0 - b.0).abs() < 0.5 && (a.1 - b.1).abs() < 0.5
+}

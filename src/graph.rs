@@ -961,18 +961,18 @@ mod tests {
         let jd = crate::ui::face_jacks(d);
         let labels: Vec<&str> = jd.iter().filter(|j| j.0 == Dir::Out).map(|j| j.1.as_str()).collect();
         assert_eq!(labels, ["MONO"; 5], "a jack says what it carries; the number is in its frame's name");
-        // balanced: the six take two units of three, in columns; what makes sound first (the
-        // outputs, from the top-left), what takes it (the INPUT) at the right end
+        // balanced: the six take two units of three, in columns; what takes sound in first (the
+        // INPUT, at the top-left), what sends it out (the outputs) after it, on to the next unit
         let ((_, h), at) = crate::ui::face_layout(d);
         assert_eq!(h, 256.0);
-        assert_eq!(at.iter().map(|a| a.1).collect::<Vec<_>>(), [128.0, 0.0, 0.0, 0.0, 128.0, 128.0]);
+        assert_eq!(at.iter().map(|a| a.1).collect::<Vec<_>>(), [0.0, 0.0, 0.0, 128.0, 128.0, 128.0]);
         assert_eq!((at[1].0, at[2].0), (at[4].0, at[5].0));
-        // (the INPUT in OUTPUT 3's column, against its right edge: it is a little narrower)
+        // (the INPUT in OUTPUT 3's column, against its left edge: it is a little narrower)
         assert!(at[0].0 >= at[3].0 && at[0].0 < at[3].0 + 40.0);
     }
 
     /// Teams in a call records on two streams and plays on six: eight frames, two units of four,
-    /// the outputs first (they make sound), the inputs at the right, nothing left over.
+    /// the inputs first (sound comes in at the left), the outputs at the right, nothing left over.
     #[test]
     fn eight_frames_make_two_full_units() {
         let mut g = Graph::default();
@@ -990,11 +990,11 @@ mod tests {
         let ((_, h), at) = crate::ui::face_layout(d);
         assert_eq!(h, 256.0);
         let row = |u: f64| d.groups.iter().zip(&at).filter(|(_, a)| a.1 == u).map(|(g, _)| g.label.as_str()).collect::<Vec<_>>();
-        assert_eq!(row(0.0), ["OUTPUT 1", "OUTPUT 2", "OUTPUT 3", "OUTPUT 4"]);
-        assert_eq!(row(128.0), ["INPUT 1", "INPUT 2", "OUTPUT 5", "OUTPUT 6"]);
-        // sound flows left to right: the outputs first, the inputs at the right
+        assert_eq!(row(0.0), ["INPUT 1", "INPUT 2", "OUTPUT 1", "OUTPUT 2"]);
+        assert_eq!(row(128.0), ["OUTPUT 3", "OUTPUT 4", "OUTPUT 5", "OUTPUT 6"]);
+        // sound flows left to right: the inputs first, the outputs at the right
         let x = |l: &str| d.groups.iter().zip(&at).find(|(g, _)| g.label == l).map(|(_, a)| a.0).unwrap();
-        assert!(x("OUTPUT 6") < x("INPUT 1") && x("INPUT 1") < x("INPUT 2"));
+        assert!(x("INPUT 1") < x("INPUT 2") && x("INPUT 2") < x("OUTPUT 1"));
     }
 
     #[test]

@@ -111,12 +111,13 @@ fn compose(scene: &Scene, view: View, size: (u32, u32), dpi: f64, held: Option<(
             out.draw_pixmap(0, 0, pm.as_ref(), &paint, Transform::from_row(sx, 0.0, 0.0, sy, px, py), None);
         }
     };
-    // the rack's frame is kept off the rack too (see `Scene::spare_ids`): shown only in it
-    if scene.rack
-        && let Some((_, l)) = &scene.rack_bg
-        && let Some(pm) = &l.pm
-    {
-        draw(&mut out, pm, (l.x, l.y, l.w, l.h), 1.0);
+    // the rack's rails, the whole height
+    if scene.rack {
+        for (l, [x, y, lw, lh]) in scene.rails(-view.y / view.s, (h as f64 - view.y) / view.s) {
+            if let Some(pm) = &l.pm {
+                draw(&mut out, pm, (x, y, lw, lh), 1.0);
+            }
+        }
     }
     let targets: Option<Vec<String>> = held.map(|(seq, _)| scene.targets(seq));
     for (di, d) in scene.devs.iter().enumerate() {
@@ -286,6 +287,7 @@ pub fn render(path: &str, opts: &[String]) -> Result<(), String> {
     };
     let t = Instant::now();
     scene.prepare(view.s, 0);
+    scene.rail_numbers((h as f64 - view.y) / view.s);
     scene.finish();
     let mut panel = new_panel(&scene);
     let presets = config::load_presets();
@@ -422,6 +424,7 @@ impl Rec {
         }
         self.scene.tick(dt, None, held, self.dragged.is_some());
         self.scene.prepare(self.raster, (self.frame as f64 * 1000.0 / FPS) as u128);
+        self.scene.rail_numbers((SIZE.1 as f64 - self.view.y) / self.view.s);
         self.scene.finish();
         self.panel.state.rack = self.scene.rack;
         let magnet = self.held.as_ref().map(|(seq, _, m)| (*seq, m.as_deref()));

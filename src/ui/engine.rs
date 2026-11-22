@@ -447,6 +447,8 @@ pub struct Engine {
     /// a press in the graph: where, the view then, what was under it, whether it moved
     press: Option<Press>,
     zoomed: Option<Instant>,
+    /// where FIT takes the view, gliding there as the desk's does; and when it last stepped
+    view_to: Option<(View, Instant)>,
     /// the selection came from a list: bring it into view
     reveal: bool,
     /// the tabs below are put away (the inspector shows only with a selection)
@@ -549,6 +551,7 @@ impl Engine {
             hits: Vec::new(),
             press: None,
             zoomed: None,
+            view_to: None,
             reveal: false,
             bottom_shut: true,
             legend_open: false,
@@ -578,6 +581,7 @@ impl Engine {
             // drawn again: while the desk was shown the GPU let their textures go
             self.graph_layer = None;
             self.glide = None;
+            self.view_to = None;
             (self.strip, self.strip_want) = (None, None);
             (self.insp, self.insp_want) = (None, None);
             (self.bottom, self.bottom_want) = (None, None);
@@ -1638,6 +1642,7 @@ impl Engine {
         let (fw, fh) = (size.0 as f64 / dpi, size.1 as f64 / dpi);
         let [strip_a, graph_a, insp_a, bottom_a] = self.areas(fw, fh);
         self.spent.clear();
+        self.glide_view();
         let mut t = Instant::now();
         let mut lap = |spent: &mut Vec<(&'static str, Duration)>, what: &'static str| {
             spent.push((what, t.elapsed()));
@@ -2910,6 +2915,7 @@ impl Engine {
             return None;
         }
         if self.in_graph(p, (size.0 as f64, size.1 as f64), dpi) {
+            self.view_to = None;
             let w = ((p.0 - self.view.x) / self.view.s, (p.1 - self.view.y) / self.view.s);
             self.press = Some((p, self.view, self.graph_hit(w), false));
         }
@@ -3083,6 +3089,7 @@ impl Engine {
         } else if inside(bottom) {
             self.scroll[1] = (self.scroll[1].min(max(1)) + step).clamp(0.0, max(1));
         } else if self.in_graph(p, (size.0 as f64, size.1 as f64), dpi) {
+            self.view_to = None;
             let w = ((p.0 - self.view.x) / self.view.s, (p.1 - self.view.y) / self.view.s);
             let s = (self.view.s * f).clamp(0.15 * dpi, 2.5 * dpi);
             self.view = View { s, x: p.0 - w.0 * s, y: p.1 - w.1 * s };
@@ -3151,21 +3158,47 @@ impl Engine {
 
     /// Whether a re-raster after zooming is still to come (the app keeps drawing until then).
     pub fn settling(&self) -> bool {
-        self.zoomed.is_some_and(|t| t.elapsed() < Duration::from_millis(400)) || self.inbox.busy() || self.glide.is_some()
+        self.zoomed.is_some_and(|t| t.elapsed() < Duration::from_millis(400)) || self.inbox.busy() || self.glide.is_some() || self.view_to.is_some()
     }
 
     /// Fits the graph into its part of the window.
     pub fn fit(&mut self, size: (u32, u32), dpi: f64) {
         let [_, g, _, _] = self.areas(size.0 as f64 / dpi, size.1 as f64 / dpi);
         self.lay = self.layout();
-        self.fit_to(g, dpi);
+        // there as the desk goes: gliding, the graph drawn sharp again once it is there
+        self.view_to = Some((self.fitted_view(g, dpi), Instant::now()));
         self.zoomed = Some(Instant::now());
     }
 
     fn fit_to(&mut self, g: [f64; 4], dpi: f64) {
+        self.view = self.fitted_view(g, dpi);
+        self.view_to = None;
+    }
+
+    /// The view that shows the whole graph in `g` (window units).
+    fn fitted_view(&self, g: [f64; 4], dpi: f64) -> View {
         let (w, h) = (self.lay.w.max(1.0), self.lay.h.max(1.0));
         let s = ((g[2] - 40.0) / w).min((g[3] - 90.0) / h).clamp(0.2, 1.1) * dpi;
-        self.view = View { s, x: (g[0] + (g[2] - w * s / dpi) / 2.0) * dpi, y: (g[1] + 44.0) * dpi };
+        View { s, x: (g[0] + (g[2] - w * s / dpi) / 2.0) * dpi, y: (g[1] + 44.0) * dpi }
+    }
+
+    /// A step of FIT's glide, at the desk's pace; the graph's picture waits for its end to be
+    /// drawn again at the new scale (stretched until then, as a wheel's zoom is).
+    fn glide_view(&mut self) {
+        let Some((t, last)) = self.view_to else { return };
+        let dt = last.elapsed().as_secs_f32().min(0.1);
+        let k = super::ease(0.15, dt) as f64;
+        let v = &mut self.view;
+        v.x += (t.x - v.x) * k;
+        v.y += (t.y - v.y) * k;
+        v.s += (t.s - v.s) * k;
+        if (t.s - v.s).abs() < 0.001 && (t.x - v.x).abs() < 0.5 && (t.y - v.y).abs() < 0.5 {
+            self.view = t;
+            self.view_to = None;
+        } else {
+            self.view_to = Some((t, Instant::now()));
+        }
+        self.zoomed = Some(Instant::now());
     }
 
     /// For the design (`--render … engine specimen`): the graph four times, with nothing, a node,
@@ -3624,6 +3657,12 @@ mod tests {
     /// A graph from (node, name, class, [(port, direction, name)]) and (link, out node, out port,
     /// in node, in port, passive), laid out (as idle: no profiler).
     fn laid(nodes: &[TNode], links: &[(u32, u32, u32, u32, u32, bool)]) -> (Engine, Layout) {
+        let (e, lay, _) = laid_with(nodes, links);
+        (e, lay)
+    }
+
+    /// The same, and the graph it was built from.
+    fn laid_with(nodes: &[TNode], links: &[(u32, u32, u32, u32, u32, bool)]) -> (Engine, Layout, Graph) {
         let mut g = Graph::default();
         let props = |kv: &[(&str, String)]| kv.iter().map(|(k, v)| (k.to_string(), v.clone())).collect::<Props>();
         for &(id, name, class, ports) in nodes {
@@ -3645,7 +3684,7 @@ mod tests {
         e.dirty = true;
         e.build(&g, &[], &HashSet::new(), &HashMap::new());
         let lay = e.layout();
-        (e, lay)
+        (e, lay, g)
     }
 
     /// An app into the headphones, measured, and the headphones' monitor measured: the app's
@@ -3684,11 +3723,8 @@ mod tests {
         assert_eq!((x(2) - x(1), x(3) - x(2), x(4) - x(3)), (COLW, COLW, COLW), "app, effect one, effect two, speaker: a column each: {:?}", lay.pos);
     }
 
-    /// How long laying out a busy graph takes (it is done on the main thread): 12 apps into 3
-    /// outputs, each app and output measured. Run with --ignored --nocapture.
-    #[test]
-    #[ignore]
-    fn layout_time() {
+    /// A busy graph: 12 apps into 3 outputs, each app and output measured.
+    fn busy() -> (Engine, Layout, usize, Graph) {
         #[allow(clippy::type_complexity)]
         let mut nodes: Vec<(u32, String, &str, Vec<(u32, &str, String)>)> = Vec::new();
         let mut links = Vec::new();
@@ -3717,13 +3753,66 @@ mod tests {
         }
         let owned: Vec<Vec<TPort>> = nodes.iter().map(|n| n.3.iter().map(|(p, d, nm)| (*p, *d, nm.as_str())).collect()).collect();
         let ns: Vec<TNode> = nodes.iter().zip(&owned).map(|(n, o)| (n.0, n.1.as_str(), n.2, o.as_slice())).collect();
+        let (e, lay, g) = laid_with(&ns, &links);
+        (e, lay, links.len(), g)
+    }
+
+    /// How long laying out a busy graph takes (it is done on the main thread). Run with
+    /// --ignored --nocapture.
+    #[test]
+    #[ignore]
+    fn layout_time() {
         let t = std::time::Instant::now();
-        let (e, lay) = laid(&ns, &links);
+        let (e, lay, nlinks, _) = busy();
         let built = t.elapsed();
         let t = std::time::Instant::now();
         let lay2 = e.layout();
-        println!("build+layout {built:?}, layout {:?}, {} nodes, {} links", t.elapsed(), lay.pos.len(), links.len());
+        println!("build+layout {built:?}, layout {:?}, {} nodes, {nlinks} links", t.elapsed(), lay.pos.len());
         let ls: Vec<&ELink> = e.model.links.iter().collect();
         println!("through: {}", e.through(&lay2.pos, &ls).len());
+    }
+
+    /// How long one frame of ENGINE takes on the main thread when nothing changes: the details
+    /// and the tables open, each tab in turn. Run with --ignored --nocapture.
+    #[test]
+    #[ignore]
+    fn frame_time() {
+        let (mut e, _, _, _) = busy();
+        e.bottom_shut = false;
+        e.sel = Some(Sel::Node(100));
+        for tab in [Tab::Top, Tab::Issues, Tab::Objects, Tab::Metadata, Tab::Events] {
+            e.tab = tab;
+            // the first frames draw; the rest only check
+            for _ in 0..3 {
+                e.sprites((1600, 1000), 1.0, "0");
+            }
+            let n = 200;
+            let t = std::time::Instant::now();
+            let mut parts: HashMap<&str, Duration> = HashMap::new();
+            for _ in 0..n {
+                e.sprites((1600, 1000), 1.0, "0");
+                for (w, d) in &e.spent {
+                    *parts.entry(w).or_default() += *d;
+                }
+            }
+            let mut parts: Vec<_> = parts.into_iter().map(|(w, d)| (w, d / n)).collect();
+            parts.sort_by_key(|p| std::cmp::Reverse(p.1));
+            println!("{tab:?}: {:?} a frame; {parts:?}", t.elapsed() / n);
+        }
+    }
+
+    /// How long `build` takes on the busy graph: done whenever something changes, and now on
+    /// every profiler report (twice a second). Run with --ignored --nocapture.
+    #[test]
+    #[ignore]
+    fn build_time() {
+        let (mut e, _, _, g) = busy();
+        let n = 200;
+        let t = std::time::Instant::now();
+        for _ in 0..n {
+            e.dirty = true;
+            e.build(&g, &[], &HashSet::new(), &HashMap::new());
+        }
+        println!("build: {:?}, {} nodes, {} objects", t.elapsed() / n, e.model.nodes.len(), e.objects.len());
     }
 }
