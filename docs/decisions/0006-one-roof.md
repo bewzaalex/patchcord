@@ -1,6 +1,6 @@
 # A program under one roof
 
-Status: accepted · 2026-11-22
+Status: accepted · 2026-11-22 · its face (edges only, INSIDE) superseded by [0012](0012-whole-program-on-its-face.md)
 
 ## Context
 A program with several nodes spread over the rack: Easy Effects made 7–9 devices, and Bitwig

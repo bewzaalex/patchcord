@@ -26,6 +26,12 @@ pub fn face_jacks(dev: &crate::graph::Device) -> Vec<(crate::graph::Dir, String)
     face::jacks(dev, &[]).into_iter().map(|j| (j.dir, j.label)).collect()
 }
 
+/// A device's jacks' keys (what cords are matched to).
+#[cfg(test)]
+pub fn face_jack_keys(dev: &crate::graph::Device) -> Vec<String> {
+    face::jacks(dev, &[]).into_iter().map(|j| j.key).collect()
+}
+
 /// A device's face: its size, and where each group's frame starts (x, how far down its unit).
 #[cfg(test)]
 pub fn face_layout(dev: &crate::graph::Device) -> ((f64, f64), Vec<(f64, f64)>) {

@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Patchcord Mixer</title>
+<!--
+  MIXER: PipeWire as a mixing console, a fourth view beside DESK, RACK and ENGINE.
+  Channels are what makes sound (apps' streams, microphones, an effect's output); buses are where
+  sound goes (outputs, and apps that record). An assign key on a channel is a link: lit, the
+  channel's ports are linked to that bus. Links have no level in PipeWire, so a key is on or off;
+  levels are the channel's fader (its stream volume) and the bus's (its device volume).
+  The data is a live graph from 2026-11-22 (Teams and HDMI added as examples).
+-->
+<style>
+  :root { --bg: #141517; --fg: #c9cbcd; --muted: #7d8085; --amber: #f2a443; --ink: #3a2408; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--fg);
+    font: 13px/1.45 "Noto Sans", system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; }
+  * { box-sizing: border-box; }
+
+  /* ---------- top: the same painted metal as the app's panel ---------- */
+  #bar { display: flex; align-items: center; gap: 22px; padding: 10px 18px 8px; position: relative;
+    background: url(../mockup/paint.png) 0 0 / 80px 80px, #8c8e91; white-space: nowrap; user-select: none;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.35), inset 0 -1px 0 rgba(0,0,0,.5), 0 6px 18px rgba(0,0,0,.55); }
+  .logo b { font: 900 24px "Noto Sans", "Arial Black", sans-serif; color: #2a2b2e; letter-spacing: 1px; }
+  .views { display: flex; gap: 6px; }
+  .vkey { height: 28px; padding: 0 12px; border: 0; border-radius: 5px; font: bold 10.5px "Noto Sans", sans-serif;
+    color: #e6e7e8; letter-spacing: .6px; background: linear-gradient(#45464a, #232427 55%, #1b1c1e);
+    box-shadow: 0 0 0 2px #19191b, 0 0 0 3px rgba(255,255,255,.18), 0 3px 4px rgba(0,0,0,.45); opacity: .55; }
+  .vkey.on { opacity: 1; color: #ffd28a; }
+  .lcd { background: #111214; padding: 3px; border-radius: 4px; }
+  .lcd div { background: linear-gradient(#f7bb62, #e58f2c); color: var(--ink); font: bold 11px "Noto Sans Mono", monospace;
+    padding: 4px 10px; border-radius: 2px; min-width: 330px; }
+
+  /* ---------- the console ---------- */
+  #wrap { display: flex; gap: 18px; padding: 18px; align-items: flex-start; }
+  #desk { display: flex; gap: 0; padding: 14px 10px 16px; border-radius: 8px; position: relative;
+    background: url(../mockup/paint.png) 0 0 / 80px 80px, #2a2b2e; background-blend-mode: multiply;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 10px 30px rgba(0,0,0,.6); }
+  .section { display: flex; gap: 6px; padding: 0 8px; position: relative; }
+  .section + .section { border-left: 2px solid #111; box-shadow: -2px 0 0 rgba(255,255,255,.06); }
+  .shead { position: absolute; top: -12px; left: 10px; font: bold 9px "Noto Sans", sans-serif; letter-spacing: 2px; color: #8a8d91; }
+
+  .strip { width: 96px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 8px 6px 10px;
+    border-radius: 5px; background: linear-gradient(#232427, #1b1c1e); box-shadow: inset 0 0 0 1px rgba(255,255,255,.05); position: relative; }
+  .strip.bus { background: linear-gradient(#26272b, #1d1e21); }
+  .strip.dim { opacity: .45; }
+  .scribble { width: 100%; background: #111214; padding: 2px; border-radius: 3px; }
+  .scribble div { background: linear-gradient(#f7bb62, #e58f2c); color: var(--ink); font: bold 9.5px "Noto Sans Mono", monospace;
+    height: 40px; padding: 3px 4px; border-radius: 2px; overflow: hidden; line-height: 1.25; }
+  .scribble small { display: block; font-weight: normal; opacity: .8; }
+  .tag { font: bold 8px "Noto Sans", sans-serif; letter-spacing: 1.2px; color: #8a8d91; }
+  .band { width: 100%; height: 4px; border-radius: 2px; }
+
+  /* assign keys: a key per bus, lit in the bus's cord colour */
+  .assign { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; width: 100%; }
+  .akey { height: 20px; border: 0; border-radius: 3px; font: bold 8.5px "Noto Sans", sans-serif; letter-spacing: .5px;
+    color: #9a9da1; background: #2c2d31; box-shadow: inset 0 -2px 0 rgba(0,0,0,.4), 0 0 0 1px #111; cursor: pointer; padding: 0 2px; }
+  .akey.on { color: #111; box-shadow: inset 0 -2px 0 rgba(0,0,0,.25), 0 0 0 1px #111, 0 0 8px var(--c); background: var(--c); }
+  .akey.self { visibility: hidden; }
+  .akey.blink { animation: blink .6s ease-in-out infinite alternate; outline: 2px solid #fff; }
+  @keyframes blink { to { outline-color: transparent; } }
+  .custom { width: 100%; font: 9px/1.3 "Noto Sans", sans-serif; color: #e8b04a; background: rgba(232,176,74,.08);
+    border: 1px dashed #e8b04a; border-radius: 3px; padding: 4px; text-align: center; }
+  .custom button { margin-top: 4px; font: bold 8px "Noto Sans", sans-serif; letter-spacing: .5px; border: 0; border-radius: 3px; background: #3a3b3f; color: #ddd; padding: 3px 5px; cursor: pointer; }
+  .heard { width: 100%; min-height: 26px; font: 8.5px/1.3 "Noto Sans", sans-serif; color: #9a9da1; text-align: center; }
+  .heard b { color: #d9dadc; }
+  .warn { color: #ffb02e; font-weight: bold; }
+
+  /* the knob, MUTE and SOLO/CUE */
+  .knob { width: 30px; height: 30px; border-radius: 50%; position: relative; cursor: ns-resize;
+    background: radial-gradient(circle at 40% 35%, #5a5c60, #26272a 70%); box-shadow: 0 0 0 2px #111, 0 2px 3px rgba(0,0,0,.6); }
+  .knob i { position: absolute; left: 14px; top: 3px; width: 2px; height: 10px; background: #f2f2f2; transform-origin: 1px 12px; border-radius: 1px; }
+  .keys { display: flex; gap: 5px; }
+  .k { width: 34px; height: 20px; border: 0; border-radius: 3px; font: bold 9px "Noto Sans", sans-serif; color: #c9cbcd;
+    background: linear-gradient(#3e3f43, #232427); box-shadow: 0 0 0 1px #111; cursor: pointer; }
+  .k.mute.on { background: #d4232a; color: #fff; box-shadow: 0 0 0 1px #111, 0 0 8px rgba(212,35,42,.8); }
+  .k.cue.on { background: #12a5b8; color: #fff; box-shadow: 0 0 0 1px #111, 0 0 8px rgba(18,165,184,.8); }
+  .k.main.on { background: #f2a443; color: var(--ink); }
+
+  /* fader and meter */
+  .fm { display: flex; gap: 8px; align-items: stretch; height: 220px; }
+  .meter { width: 10px; display: flex; gap: 2px; }
+  .meter div { flex: 1; background: #0d0e0f; border-radius: 2px; position: relative; overflow: hidden; }
+  .meter div i { position: absolute; left: 0; right: 0; bottom: 0; height: 0;
+    background: linear-gradient(to top, #3fae5a 0 70%, #e9c53a 70% 88%, #d23b32 88%); }
+  .fader { width: 26px; position: relative; cursor: ns-resize; }
+  .fader .slot { position: absolute; left: 11px; top: 6px; bottom: 6px; width: 4px; background: #0b0b0c; border-radius: 2px; box-shadow: 0 0 0 1px #000; }
+  .fader .zero { position: absolute; left: 2px; right: 2px; height: 1px; background: #8a8d91; }
+  .fader .cap { position: absolute; left: 0; width: 26px; height: 34px; margin-top: -17px; border-radius: 3px;
+    background: linear-gradient(#5d5f63, #3a3b3f 45%, #e6e7e8 46% 54%, #3a3b3f 55%, #2a2b2e);
+    box-shadow: 0 2px 4px rgba(0,0,0,.7), 0 0 0 1px #111; }
+  .val { font: bold 9px "Noto Sans Mono", monospace; color: #c9cbcd; text-align: center; }
+  .val small { display: block; color: #7d8085; font-weight: normal; }
+
+  /* ---------- the side: what to try, and the status line ---------- */
+  #side { width: 330px; flex: none; display: flex; flex-direction: column; gap: 14px; }
+  .card { background: #1c1d20; border-radius: 6px; padding: 12px 14px; box-shadow: inset 0 0 0 1px #2a2b2e; }
+  .card h3 { margin: 0 0 8px; font: bold 11px "Noto Sans", sans-serif; letter-spacing: 2px; color: #e58f2c; }
+  .task { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 0; border-top: 1px solid #26272a; }
+  .task:first-of-type { border-top: 0; }
+  .task button { flex: none; border: 0; border-radius: 3px; background: #3a3b3f; color: #e6e7e8; font: bold 9px "Noto Sans", sans-serif; letter-spacing: .6px; padding: 4px 8px; cursor: pointer; }
+  .task.done span::after { content: "  ✓"; color: #3fae5a; font-weight: bold; }
+  .legend p { margin: 4px 0; font-size: 12px; color: #9a9da1; }
+  #status { position: sticky; bottom: 0; margin-top: auto; padding: 7px 18px; background: #0f1011; color: #c9cbcd; font: 12px "Noto Sans", sans-serif; border-top: 1px solid #26272a; min-height: 32px; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <div class="logo"><b>PATCHCORD</b></div>
+  <div class="views"><button class="vkey">DESK</button><button class="vkey">RACK</button><button class="vkey on">MIXER</button><button class="vkey">ENGINE</button></div>
+  <div class="lcd"><div id="lcd">MAIN: EASY EFFECTS · 48 kHz · 1024</div></div>
+</div>
+<div id="wrap">
+  <div id="desk"></div>
+  <div id="side">
+    <div class="card" id="tasks"><h3>TRY IT</h3></div>
+    <div class="card legend"><h3>HOW TO READ IT</h3>
+      <p><b>Channels</b> (left): what makes sound. <b>Buses</b> (right): where sound goes: outputs, and apps that record.</p>
+      <p>An <b>assign key</b> lit = that channel is linked to that bus. It is on or off: in PipeWire a link has no level.</p>
+      <p><b>Faders</b>: a channel's is its stream's volume; a bus's is its device's volume. Drag, or the wheel; double-click: 0 dB.</p>
+      <p><b>CUE</b>: listen to a channel alone, in your headphones, without changing anything.</p>
+      <p><b>MAIN</b>: where new apps play.</p>
+      <p><b>HEARD ON</b>: where the sound really ends up, through effects too.</p>
+    </div>
+  </div>
+</div>
+<div id="status">Hover anything to see what it is in PipeWire.</div>
+
+<script>
+"use strict";
+// ---------- the graph, as the console sees it ----------
+// buses: where sound goes. out: devices (and an effect's input); rec: apps that record.
+const BUSES = [
+  { id: "efx", name: "EASY EFFECTS", sub: "effects · sink", side: "out", c: "#7b4fb8", vol: 1, mute: false, insert: true,
+    sends: { phones: true }, pw: "easyeffects_sink (Audio/Sink, Easy Effects)" },
+  { id: "phones", name: "JLAB GO WORK 2", sub: "BT headphones", side: "out", c: "#12a5b8", vol: 0.8, mute: false, lag: 200,
+    pw: "bluez_output.…(Audio/Sink, Bluetooth)" },
+  { id: "speakers", name: "RYZEN SPEAKERS", sub: "analog out", side: "out", c: "#ec7a1c", vol: 0.7, mute: false, lag: 10,
+    pw: "alsa_output.pci-…analog-stereo (Audio/Sink)" },
+  { id: "hdmi", name: "HDMI / TV", sub: "nothing plugged", side: "out", c: "#1752c8", vol: 1, mute: false, lag: 30, off: true,
+    pw: "alsa_output.…hdmi-stereo (Audio/Sink, unplugged)" },
+  { id: "eemic", name: "EASY EFFECTS MIC", sub: "effects · mic in", side: "rec", c: "#7b4fb8", vol: 1, mute: false,
+    pw: "Easy Effects' mic chain input (ee_sie_equalizer)" },
+  { id: "carla", name: "CARLA", sub: "records", side: "rec", c: "#14965a", vol: 1, mute: false, pw: "Carla (Stream/Input/Audio)" },
+  { id: "teams", name: "TEAMS", sub: "records · example", side: "rec", c: "#d63c8c", vol: 1, mute: false, pw: "Teams for Linux (Stream/Input/Audio)" },
+];
+// channels: what makes sound. sends: bus id → true (stereo, both ears) or "L" (only the left: not a plain case)
+const CHANNELS = [
+  { id: "vlc", name: "VLC MEDIA PLAYER", sub: "app", vol: 1, bal: 0, sends: { efx: true }, play: 0.8, pw: "VLC media player (Stream/Output/Audio)" },
+  { id: "fooyin", name: "FOOYIN", sub: "app", vol: 0.85, bal: 0, sends: { efx: true }, play: 0.6, pw: "fooyin (Stream/Output/Audio)" },
+  { id: "hydrogen", name: "HYDROGEN", sub: "app", vol: 1, bal: 0, sends: { efx: "L" }, play: 0.7, pw: "Hydrogen (Stream/Output/Audio)" },
+  { id: "carlaout", name: "CARLA", sub: "app", vol: 1, bal: 0, sends: { efx: true }, play: 0.5, pw: "Carla (Stream/Output/Audio)" },
+  { id: "bitwig", name: "BITWIG STUDIO", sub: "app · JACK", vol: 1, bal: 0, sends: { phones: true }, play: 0.65, pw: "Bitwig Studio (Audio/Duplex, out1 out2)" },
+  { id: "mic", name: "JLAB MIC", sub: "microphone", vol: 0.9, bal: 0, sends: { eemic: true }, play: 0.5, mic: true, pw: "bluez_input.… (Audio/Source)" },
+  { id: "eeout", name: "EASY EFFECTS MIC", sub: "effects · mic out", vol: 1, bal: 0, sends: { carla: true }, play: 0, from: "eemic", mic: true, pw: "easyeffects_source (Audio/Source/Virtual)" },
+];
+let MAIN = "efx";
+const state = { mute: {}, cue: null, blink: [], done: {} };
+const bus = (id) => BUSES.find((b) => b.id === id);
+const chan = (id) => CHANNELS.find((c) => c.id === id);
+const db = (v) => (v <= 0.0001 ? "-∞" : (60 * Math.log10(v)).toFixed(1));
+
+// the outputs a channel reaches by two ways at once (straight, and through an effect)
+function twice(c) {
+  const n = {};
+  const walk = (id, seen) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    const b = bus(id);
+    if (!b) return;
+    if (b.insert) Object.keys(b.sends || {}).filter((k) => b.sends[k]).forEach((k) => walk(k, seen));
+    else if (b.side === "out") n[id] = (n[id] || 0) + 1;
+  };
+  Object.keys(c.sends).filter((k) => c.sends[k]).forEach((k) => walk(k, new Set()));
+  return Object.keys(n).filter((k) => n[k] > 1);
+}
+// where a channel's sound really ends up: its buses, and on through an effect's own sends
+function heard(c) {
+  const out = new Set();
+  const walk = (id, seen) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    const b = bus(id);
+    if (!b) return;
+    if (b.insert) Object.keys(b.sends || {}).filter((k) => b.sends[k]).forEach((k) => walk(k, seen));
+    else if (b.side === "out") out.add(id);
+  };
+  Object.keys(c.sends).filter((k) => c.sends[k]).forEach((k) => walk(k, new Set()));
+  return [...out];
+}
+function lagNote(ids) {
+  const lags = ids.map((i) => bus(i)).filter((b) => b && !b.off).map((b) => b.lag || 0);
+  if (lags.length < 2) return "";
+  const d = Math.max(...lags) - Math.min(...lags);
+  return d >= 80 ? `out of step by ~${d} ms` : "";
+}
+
+// ---------- drawing ----------
+const H = 220, PAD = 6;
+const faderY = (v) => PAD + (1 - v / 1.53) * (H - 2 * PAD);
+function knobPic(bal) { return `<div class="knob" data-knob="1"><i style="transform:rotate(${bal * 135}deg)"></i></div>`; }
+function faderPic(kind, id, v) {
+  return `<div class="fader" data-fader="${kind}:${id}"><div class="slot"></div><div class="zero" style="top:${faderY(1)}px"></div>`
+    + `<div class="cap" style="top:${faderY(v)}px"></div></div>`;
+}
+function meterPic(key) { return `<div class="meter"><div><i id="m-${key}-0"></i></div><div><i id="m-${key}-1"></i></div></div>`; }
+
+function channelStrip(c) {
+  const custom = Object.values(c.sends).some((v) => v === "L");
+  const to = heard(c);
+  const lag = lagNote(to);
+  const dup = twice(c).map((i) => `twice on ${bus(i).name.split(" ")[0]}: straight and through effects`);
+  const rows = BUSES.filter((b) => !(c.mic && b.id === c.from)).map((b) => {
+    const on = c.sends[b.id] === true;
+    const blink = state.blink.includes(`${c.id}:${b.id}`) ? " blink" : "";
+    const short = b.name.split(" ")[0].slice(0, 7);
+    return `<button class="akey${on ? " on" : ""}${blink}" style="--c:${b.c}" data-assign="${c.id}:${b.id}" ${custom ? "disabled" : ""}>${short}</button>`;
+  }).join("");
+  const assign = custom
+    ? `<div class="custom">CUSTOM<br>only its left channel goes to EASY EFFECTS<br><button data-plain="${c.id}">MAKE IT STEREO</button></div>`
+    : `<div class="assign">${rows}</div>`;
+  const heardTxt = to.length ? `HEARD ON <b>${to.map((i) => bus(i).name.split(" ")[0]).join(" + ")}</b>` : (Object.values(c.sends).some(Boolean) ? "recorded, not heard" : "<span class='warn'>NOT HEARD</span>");
+  return `<div class="strip${c.from && !anySend(c.from) ? " dim" : ""}" data-chan="${c.id}">
+    <div class="scribble"><div>${c.name}<small>${c.sub}</small></div></div>
+    ${assign}
+    <div class="heard">${heardTxt}${[lag, ...dup].filter(Boolean).map((w) => `<br><span class="warn">⚠ ${w}</span>`).join("")}</div>
+    ${knobPic(c.bal)}
+    <div class="keys"><button class="k mute${state.mute[c.id] ? " on" : ""}" data-mute="${c.id}">M</button><button class="k cue${state.cue === c.id ? " on" : ""}" data-cue="${c.id}">CUE</button></div>
+    <div class="fm">${meterPic(c.id)}${faderPic("c", c.id, c.vol)}</div>
+    <div class="val">${Math.round(c.vol * 100)}%<small>${db(c.vol ** 3)} dB</small></div>
+  </div>`;
+}
+function anySend(busId) { return CHANNELS.some((c) => c.sends[busId]); }
+function busStrip(b) {
+  const sends = b.insert
+    ? `<div class="assign">${BUSES.filter((o) => o.side === "out" && o.id !== b.id).map((o) => `<button class="akey${b.sends[o.id] ? " on" : ""}" style="--c:${o.c}" data-bsend="${b.id}:${o.id}">${o.name.split(" ")[0].slice(0, 7)}</button>`).join("")}</div>`
+    : `<div class="heard">${b.off ? "<span class='warn'>NOTHING PLUGGED IN</span>" : b.lag >= 100 ? `<span class="warn">Bluetooth: ~${b.lag} ms late</span>` : ""}</div>`;
+  const main = b.side === "out" ? `<button class="k main${MAIN === b.id ? " on" : ""}" data-main="${b.id}">MAIN</button>` : "";
+  return `<div class="strip bus${b.off ? " dim" : ""}" data-bus="${b.id}">
+    <div class="band" style="background:${b.c}"></div>
+    <div class="scribble"><div>${b.name}<small>${b.sub}</small></div></div>
+    ${sends}
+    <div class="keys"><button class="k mute${state.mute["b:" + b.id] ? " on" : ""}" data-mute="b:${b.id}">M</button>${main}</div>
+    <div class="fm">${meterPic("b-" + b.id)}${faderPic("b", b.id, b.vol)}</div>
+    <div class="val">${Math.round(b.vol * 100)}%<small>${db(b.vol ** 3)} dB</small></div>
+  </div>`;
+}
+function render() {
+  const d = document.getElementById("desk");
+  d.innerHTML = `<div class="section"><span class="shead">CHANNELS · WHAT MAKES SOUND</span>${CHANNELS.map(channelStrip).join("")}</div>`
+    + `<div class="section"><span class="shead">OUTPUTS · WHERE YOU HEAR IT</span>${BUSES.filter((b) => b.side === "out").map(busStrip).join("")}</div>`
+    + `<div class="section"><span class="shead">RECORDED BY</span>${BUSES.filter((b) => b.side === "rec").map(busStrip).join("")}</div>`;
+  document.getElementById("lcd").textContent = `MAIN: ${bus(MAIN).name} · 48 kHz · 1024${state.cue ? " · CUE: " + chan(state.cue).name : ""}`;
+  renderTasks();
+}
+
+// ---------- what to try ----------
+const TASKS = [
+  { name: "A film on the headphones and the speakers at once", keys: ["vlc:phones", "vlc:speakers"],
+    check: () => heard(chan("vlc")).includes("phones") && heard(chan("vlc")).includes("speakers") },
+  { name: "Music only on the speakers, Bitwig only in the headphones", keys: ["fooyin:speakers", "fooyin:efx", "bitwig:phones"],
+    check: () => { const h = heard(chan("fooyin")); return h.length === 1 && h[0] === "speakers" && heard(chan("bitwig")).join() === "phones"; } },
+  { name: "My microphone into Teams, with the effects", keys: ["eeout:teams"], check: () => chan("eeout").sends.teams === true },
+  { name: "Hear myself in the headphones", keys: ["mic:phones"], check: () => chan("mic").sends.phones === true },
+  { name: "Hydrogen in both ears", keys: [], check: () => chan("hydrogen").sends.efx === true },
+];
+function renderTasks() {
+  const t = document.getElementById("tasks");
+  t.innerHTML = "<h3>TRY IT</h3>" + TASKS.map((k, i) => `<div class="task${k.check() ? " done" : ""}"><span>${k.name}</span>${k.keys.length ? `<button data-show="${i}">SHOW ME</button>` : `<button data-show="${i}">WHERE?</button>`}</div>`).join("");
+}
+
+// ---------- the signal: made up, to show where it flows ----------
+const level = {};
+function tick(t) {
+  const src = {};
+  for (const c of CHANNELS) {
+    let v;
+    if (c.from) v = Math.max(...CHANNELS.filter((x) => x.sends[c.from] && !state.mute[x.id]).map((x) => src[x.id] || 0), 0);
+    else v = c.play * (c.mic ? 0.4 + 0.6 * Math.abs(Math.sin(t / 310 + c.id.length)) * Math.random() : 0.75 + 0.25 * Math.sin(t / 420 + c.id.length * 1.7) + 0.1 * Math.random());
+    v = state.mute[c.id] ? 0 : v * c.vol ** 3;
+    src[c.id] = Math.min(v, 1.2);
+    const half = Object.values(c.sends).includes("L");
+    level[c.id] = [src[c.id] * (1 - Math.max(0, c.bal)), half ? 0 : src[c.id] * (1 + Math.min(0, c.bal))];
+  }
+  const into = (id, seen = new Set()) => {
+    if (seen.has(id)) return [0, 0];
+    seen.add(id);
+    let l = 0, r = 0;
+    for (const c of CHANNELS) if (c.sends[id]) { l = Math.max(l, level[c.id][0]); r = Math.max(r, level[c.id][c.sends[id] === "L" ? 0 : 1] * (c.sends[id] === "L" ? 0 : 1)); }
+    for (const b of BUSES) if (b.insert && b.sends && b.sends[id]) { const [a, z] = into(b.id, seen); l = Math.max(l, a * b.vol ** 3); r = Math.max(r, z * b.vol ** 3); }
+    return [l, r];
+  };
+  for (const b of BUSES) {
+    const [l, r] = state.mute["b:" + b.id] || b.off ? [0, 0] : into(b.id);
+    level["b-" + b.id] = [l * b.vol ** 3, r * b.vol ** 3];
+  }
+  for (const k of Object.keys(level)) for (const i of [0, 1]) {
+    const el = document.getElementById(`m-${k}-${i}`);
+    if (el) el.style.height = `${Math.min(100, level[k][i] * 85)}%`;
+  }
+  requestAnimationFrame(tick);
+}
+
+// ---------- hands ----------
+const status = (s) => { document.getElementById("status").innerHTML = s; };
+function hint(el) {
+  const a = el.closest("[data-assign]"), m = el.closest("[data-main]"), f = el.closest("[data-fader]"), cue = el.closest("[data-cue]"), bs = el.closest("[data-bsend]");
+  if (a) { const [c, b] = a.dataset.assign.split(":"); const on = chan(c).sends[b];
+    return `${on ? "Lit" : "Dark"}: <b>${chan(c).name}</b> ${on ? "is" : "is not"} linked to <b>${bus(b).name}</b>. In PipeWire: ${on ? "two links" : "no links"} from <i>${chan(c).pw}</i> output_FL/FR to <i>${bus(b).pw}</i>. Click to ${on ? "unlink" : "link"}.`; }
+  if (bs) { const [b, o] = bs.dataset.bsend.split(":"); return `Where <b>${bus(b).name}</b> sends what it has processed: its own link to <b>${bus(o).name}</b> (Easy Effects makes it itself).`; }
+  if (m) return `MAIN: where new apps play (PipeWire's default output, set through WirePlumber). Apps already playing stay where they are.`;
+  if (cue) return `CUE: hear this channel alone in the headphones, through Patchcord's own cue stream. Nothing is relinked.`;
+  if (f) { const [k, id] = f.dataset.fader.split(":"); return k === "c" ? `The volume of <i>${chan(id).pw}</i> (its stream's channel volumes, as pavucontrol sets them). Drag, wheel; double-click: 0 dB.` : `The volume of <i>${bus(id).pw}</i>: the device's own.`; }
+  const s = el.closest("[data-chan]"), b = el.closest("[data-bus]");
+  if (s) return `<b>${chan(s.dataset.chan).name}</b>: ${chan(s.dataset.chan).pw}`;
+  if (b) return `<b>${bus(b.dataset.bus).name}</b>: ${bus(b.dataset.bus).pw}`;
+  return "Hover anything to see what it is in PipeWire.";
+}
+function click(e) {
+  const el = e.target;
+  const a = el.closest("[data-assign]");
+  if (a) { const [c, b] = a.dataset.assign.split(":"); const ch = chan(c); ch.sends[b] = !ch.sends[b]; state.blink = state.blink.filter((k) => k !== a.dataset.assign); return after(); }
+  const bs = el.closest("[data-bsend]");
+  if (bs) { const [b, o] = bs.dataset.bsend.split(":"); bus(b).sends[o] = !bus(b).sends[o]; return after(); }
+  const p = el.closest("[data-plain]");
+  if (p) { chan(p.dataset.plain).sends.efx = true; return after(); }
+  const m = el.closest("[data-mute]");
+  if (m) { state.mute[m.dataset.mute] = !state.mute[m.dataset.mute]; return after(); }
+  const c = el.closest("[data-cue]");
+  if (c) { state.cue = state.cue === c.dataset.cue ? null : c.dataset.cue; return after(); }
+  const mn = el.closest("[data-main]");
+  if (mn) { MAIN = mn.dataset.main; return after(); }
+  const sh = el.closest("[data-show]");
+  if (sh) { const k = TASKS[+sh.dataset.show];
+    state.blink = k.keys.length ? k.keys.filter((key) => { const [cc, bb] = key.split(":"); const want = !(cc === "fooyin" && bb === "efx"); return !!chan(cc).sends[bb] !== want; }) : [];
+    if (!k.keys.length) status("Hydrogen is linked by its left channel only: its strip says CUSTOM. Press MAKE IT STEREO, or fix it in the RACK.");
+    return render(); }
+}
+function after() { render(); }
+let drag = null;
+function down(e) {
+  const f = e.target.closest("[data-fader]"), k = e.target.closest("[data-knob]");
+  if (f) { const [kind, id] = f.dataset.fader.split(":"); const o = kind === "c" ? chan(id) : bus(id); drag = { o, key: "vol", y: e.clientY, v: o.vol, scale: 1.53 / (H - 2 * PAD) }; e.preventDefault(); }
+  else if (k) { const c = chan(k.closest("[data-chan]").dataset.chan); drag = { o: c, key: "bal", y: e.clientY, v: c.bal, scale: 1 / 80, min: -1, max: 1 }; e.preventDefault(); }
+}
+function move(e) {
+  if (!drag) return status(hint(e.target));
+  const v = drag.v + (drag.y - e.clientY) * drag.scale;
+  drag.o[drag.key] = Math.max(drag.min ?? 0, Math.min(drag.max ?? 1.53, v));
+  if (drag.key === "vol" && Math.abs(drag.o.vol - 1) < 0.02) drag.o.vol = 1;
+  render();
+}
+function wheel(e) {
+  const f = e.target.closest("[data-fader]");
+  if (!f) return;
+  e.preventDefault();
+  const [kind, id] = f.dataset.fader.split(":"); const o = kind === "c" ? chan(id) : bus(id);
+  o.vol = Math.max(0, Math.min(1.53, o.vol + (e.deltaY < 0 ? 0.05 : -0.05)));
+  render();
+}
+function dbl(e) {
+  const f = e.target.closest("[data-fader]"), k = e.target.closest("[data-knob]");
+  if (f) { const [kind, id] = f.dataset.fader.split(":"); (kind === "c" ? chan(id) : bus(id)).vol = 1; render(); }
+  if (k) { chan(k.closest("[data-chan]").dataset.chan).bal = 0; render(); }
+}
+document.addEventListener("click", click);
+document.addEventListener("pointerdown", down);
+document.addEventListener("pointermove", move);
+document.addEventListener("pointerup", () => { drag = null; });
+document.addEventListener("wheel", wheel, { passive: false });
+document.addEventListener("dblclick", dbl);
+render();
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

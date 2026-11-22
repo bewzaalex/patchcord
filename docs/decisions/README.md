@@ -17,3 +17,5 @@ General rules live in [principles](../principles.md). New ADRs start from [the t
 | 0009 | [Cue: listening through streams of Patchcord's own](0009-cue-own-streams.md) | 2026-11-20 |
 | 0010 | [Hiding devices, HIDDEN and SYSTEM](0010-hiding.md) | 2026-11-18 |
 | 0011 | [Narrow windows](0011-narrow-windows.md) | 2026-11-19 |
+| 0012 | [A program's whole self on its face, along its chains](0012-whole-program-on-its-face.md) | 2026-11-23 |
+| 0013 | [The frames' band colours](0013-band-colours.md) | 2026-11-23 |

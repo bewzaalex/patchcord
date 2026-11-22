@@ -25,7 +25,7 @@ PipeWire ──(pw.rs thread)── Event ──► Graph (graph.rs) ──devic
   uses it too.
 - **`ui/face.rs`** draws a device's face as SVG: plate, name, LCD, keys, frames, jacks. It
   computes the face's `Geometry` (where jacks, keys and knobs are) for hit-testing.
-- **`ui/app.rs`** is the window: input, the top panel, drop-down lists (PROFILE, PORT, INSIDE),
+- **`ui/app.rs`** is the window: input, the top panel, drop-down lists (PROFILE, PORT),
   and switching between DESK, RACK and ENGINE.
 - **`ui/engine.rs`** is ENGINE: the real graph (nodes, ports, links by driver), the inspector,
   and the diagnostics tables.

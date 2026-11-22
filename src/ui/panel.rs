@@ -7,7 +7,7 @@ use super::face::paint_uri;
 use super::print::{SECTION, SMALL};
 use super::scene::{Layer, next_id, rasterize};
 use super::text::{self, esc};
-use crate::graph::{Card, Inner, PortChoice};
+use crate::graph::{Card, PortChoice};
 
 /// height of the top panel; its shadow falls a little below
 pub const H: f64 = 64.0;
@@ -206,8 +206,6 @@ pub enum ProfileHit {
     /// in a card's port list: a port (group, route index) and a latency step (group, ms)
     Port(usize, u32),
     Latency(usize, i64),
-    /// in a program's INSIDE list: one of its nodes
-    Node(u32),
     Inside,
 }
 
@@ -267,58 +265,6 @@ pub fn profile_menu(card: &Card, dpi: f64) -> (Layer, Vec<(ProfileHit, [f64; 4])
             }
             y += 26.0;
         }
-    }
-    let h = y + 8.0;
-    hits.push((ProfileHit::Inside, [0.0, 0.0, w, h]));
-    let svg = format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" font-family="Noto Sans Mono" font-weight="bold"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f7bb62"/><stop offset="1" stop-color="#e58f2c"/></linearGradient></defs><rect width="{w}" height="{h}" rx="5" fill="#121214"/><rect x="3" y="3" width="{}" height="{}" rx="3" fill="url(#g)"/>{o}</svg>"##,
-        w - 6.0,
-        h - 6.0
-    );
-    (Layer { id: next_id(), pm: rasterize(&text::svg_options(), &svg, dpi), x: 0.0, y: 0.0, w, h }, hits)
-}
-
-/// A program's INSIDE list, amber like a card's profiles, read only: each of its nodes in the order
-/// it made them, where it sends its sound among them, those with frames on the face marked. A
-/// click on one shows it in ENGINE.
-pub fn inside_menu(inside: &[Inner], dpi: f64) -> (Layer, Vec<(ProfileHit, [f64; 4])>) {
-    const INK: &str = "#3a2408";
-    let w = PROFILE_W;
-    let cut = |s: &str, n: usize| if s.chars().count() > n { format!("{}…", s.chars().take(n - 1).collect::<String>()) } else { s.to_owned() };
-    let links: usize = inside.iter().map(|n| n.to.len()).sum();
-    let mut o = section(&format!("{} NODES · {links} LINKS OF ITS OWN", inside.len()), 6.0, w);
-    let mut hits = Vec::new();
-    let mut y = 26.0;
-    for (i, n) in inside.iter().enumerate() {
-        let fed = inside.iter().any(|m| m.to.contains(&i));
-        let face = if n.face { 82.0 } else { 0.0 };
-        let room = if n.face { 36 } else { 47 };
-        let name = cut(&n.name.to_uppercase(), room);
-        // its node.name after it, small: two of one name apart
-        let left = room.saturating_sub(name.chars().count() + 2);
-        let small = if n.node_name != n.name && left > 4 { cut(&n.node_name, left * 6 / 5) } else { String::new() };
-        let _ = write!(o, r#"<text x="12" y="{}" font-size="11.5" fill="{INK}" xml:space="preserve">{}<tspan font-size="9" font-weight="normal" opacity=".7">  {}</tspan></text>"#, y + 15.0, esc(&name), esc(&small));
-        if n.face {
-            let _ = write!(
-                o,
-                r#"<rect x="{}" y="{}" width="{face}" height="14" rx="2" fill="none" stroke="{INK}" stroke-opacity=".7"/><text x="{}" y="{}" font-size="8.5" letter-spacing=".8" fill="{INK}" opacity=".8" text-anchor="middle">ON THE FACE</text>"#,
-                w - 12.0 - face,
-                y + 4.0,
-                w - 12.0 - face / 2.0,
-                y + 14.0
-            );
-        }
-        let to: Vec<String> = n.to.iter().filter_map(|t| inside.get(*t)).map(|t| t.name.to_uppercase()).collect();
-        let line = if !to.is_empty() {
-            format!("→ {}", to.join(", "))
-        } else if fed {
-            "(the end of its chain)".to_owned()
-        } else {
-            "no links of its own".to_owned()
-        };
-        let _ = write!(o, r#"<text x="22" y="{}" font-size="10" font-weight="normal" fill="{INK}" opacity=".75" xml:space="preserve">{}</text>"#, y + 29.0, esc(&cut(&line, 52)));
-        hits.push((ProfileHit::Node(n.node), [0.0, y, w, 36.0]));
-        y += 36.0;
     }
     let h = y + 8.0;
     hits.push((ProfileHit::Inside, [0.0, 0.0, w, h]));

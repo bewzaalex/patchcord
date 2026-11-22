@@ -95,21 +95,6 @@ pub enum Finish {
     Navy,
 }
 
-/// One of a program's nodes, for the tray behind its INSIDE key: what the program does inside
-/// itself, read only.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Inner {
-    pub node: u32,
-    /// as the program named it (`node.description`), else its `node.name`
-    pub name: String,
-    /// its `node.name`, which tells apart two of one name (Easy Effects' two SPECTRUMs)
-    pub node_name: String,
-    /// some of its ports are frames on the face
-    pub face: bool,
-    /// the program's nodes it sends sound to, by their place in `Device::inside`
-    pub to: Vec<usize>,
-}
-
 #[derive(Clone, Debug)]
 pub struct Device {
     /// stays the same across restarts (`device.name` or `node.name`), for layouts and presets
@@ -126,9 +111,9 @@ pub struct Device {
     pub groups: Vec<Group>,
     /// "running", "idle" or "suspended": the busiest of its nodes
     pub state: &'static str,
-    /// a program with more than its face shows: all its nodes, in the order it made them (empty
-    /// when the face shows them all)
-    pub inside: Vec<Inner>,
+    /// a program's several nodes, in the order its sound goes through them, each its inputs then
+    /// its outputs: the face keeps its frames in this order (not all inputs at the left)
+    pub chain: bool,
     /// what it takes of PipeWire: its nodes, and all their ports
     pub nodes: usize,
     pub ports: usize,
@@ -607,9 +592,14 @@ impl Graph {
             .map(|(key, mut nodes)| {
                 let none = Props::new();
                 let program = nodes.first().and_then(|n| self.props(*n)).and_then(|p| self.program(p)).map(|(_, name)| name);
+                // its nodes linked among themselves: a chain the face follows
+                let mut chained = false;
                 if program.is_some() {
                     // a program's nodes in the order it made them
                     nodes.sort_by_key(|n| (serial(*n), *n));
+                    if nodes.len() > 1 {
+                        (nodes, chained) = chain_order(&nodes, |port| peers.get(&port).map_or(&[][..], Vec::as_slice), |n| ports.get(&n).map_or(&[][..], Vec::as_slice));
+                    }
                 } else {
                     // sinks first, then sources, then the rest, so groups read PLAYBACK, CAPTURE, MONITOR
                     nodes.sort_by_key(|n| {
@@ -662,43 +652,18 @@ impl Graph {
                 // face: nobody patches from them (the HIDDEN list names them under SYSTEM)
                 let stream_of = |g: &Group| g.ports.first().and_then(|p| self.props(p.node)).and_then(|p| p.get("media.class")).is_some_and(|c| c.starts_with("Stream/"));
                 groups.retain(|g| !(g.role == "MONITOR" && stream_of(g)));
-                // a program of several nodes shows on its face what meets the world outside it:
-                // ports with a cord to anything not its own (Patchcord's meters aside), its streams,
-                // and what other programs pick by name (its sink's input, its source's output). The
-                // rest it does inside itself, behind INSIDE.
-                let mut inside = Vec::new();
-                if several {
-                    let mine: HashSet<u32> = nodes.iter().copied().collect();
-                    let outside = |port: u32| peers.get(&port).is_some_and(|ns| ns.iter().any(|n| !mine.contains(n) && self.props(*n).is_some_and(|p| !self.hidden(*n, p))));
-                    let edge = |g: &Group| {
-                        let c = g.ports.first().and_then(|p| self.props(p.node)).and_then(|p| p.get("media.class")).map_or("", |s| s.as_str());
-                        c.starts_with("Stream/") || (g.dir == Dir::In && c.ends_with("/Sink")) || (g.dir == Dir::Out && c.starts_with("Audio/Source")) || g.ports.iter().any(|p| outside(p.id))
-                    };
-                    let all = groups.len();
-                    groups.retain(edge);
-                    if groups.len() < all {
-                        let place: HashMap<u32, usize> = nodes.iter().enumerate().map(|(i, n)| (*n, i)).collect();
-                        inside = nodes
-                            .iter()
-                            .map(|n| {
-                                let outs = ports.get(n).into_iter().flatten().filter(|(_, p)| p.get("port.direction").is_some_and(|d| d == "out")).map(|(id, _)| *id);
-                                let mut to: Vec<usize> = outs.flat_map(|o| peers.get(&o).into_iter().flatten()).filter_map(|m| place.get(m).copied()).collect();
-                                to.sort();
-                                to.dedup();
-                                let p = self.props(*n);
-                                let node_name = p.and_then(|p| p.get("node.name")).cloned().unwrap_or_default();
-                                let name = p.and_then(|p| some(p.get("node.description"))).cloned().unwrap_or_else(|| node_name.clone());
-                                Inner { node: *n, name, node_name, face: groups.iter().any(|g| g.ports.first().is_some_and(|p| p.node == *n)), to }
-                            })
-                            .collect();
-                    }
-                }
                 // a program's several streams of one kind: numbered, in the order they came
                 if several {
                     number_streams(&mut groups);
                 }
-                // inputs, then outputs, then monitors: PLAYBACK, CAPTURE, MONITOR
-                groups.sort_by_key(|g| (g.dir == Dir::Out, g.role == "MONITOR"));
+                if chained {
+                    // node by node along the program's chains, each its inputs, then its outputs
+                    let place: HashMap<u32, usize> = nodes.iter().enumerate().map(|(i, n)| (*n, i)).collect();
+                    groups.sort_by_key(|g| (g.ports.first().and_then(|p| place.get(&p.node)).copied().unwrap_or(usize::MAX), g.dir == Dir::Out, g.role == "MONITOR"));
+                } else {
+                    // inputs, then outputs, then monitors: PLAYBACK, CAPTURE, MONITOR
+                    groups.sort_by_key(|g| (g.dir == Dir::Out, g.role == "MONITOR"));
+                }
                 // what it takes of PipeWire: its nodes and all their ports (monitors too)
                 let port_count = nodes.iter().map(|n| ports.get(n).map_or(0, Vec::len)).sum();
                 // who came first, among programs of one name: its client's, or its own, serial
@@ -726,7 +691,7 @@ impl Graph {
                     name,
                     groups,
                     state,
-                    inside,
+                    chain: chained,
                     nodes: nodes.len(),
                     ports: port_count,
                     card: card_id.and_then(|id| {
@@ -755,6 +720,50 @@ impl Graph {
         out
     }
 
+}
+
+/// A program's nodes (in the order it made them) in the order its sound goes through them: each
+/// chain from where it starts (a node none of the program's own feeds), on along the program's
+/// own links, the chains in the order their first nodes were made; nodes in a loop after them,
+/// and nodes with no links of the program's own last. `peers`: the nodes at a port's other ends;
+/// `ports`: a node's ports. Also whether there are such links at all.
+fn chain_order<'a>(nodes: &[u32], peers: impl Fn(u32) -> &'a [u32], ports: impl Fn(u32) -> &'a [(u32, &'a Props)]) -> (Vec<u32>, bool) {
+    let place: HashMap<u32, usize> = nodes.iter().enumerate().map(|(i, n)| (*n, i)).collect();
+    let feeds: HashMap<u32, Vec<u32>> = nodes
+        .iter()
+        .map(|n| {
+            let mut to: Vec<u32> = ports(*n)
+                .iter()
+                .filter(|(_, p)| p.get("port.direction").is_some_and(|d| d == "out"))
+                .flat_map(|(id, _)| peers(*id).iter().copied())
+                .filter(|m| m != n && place.contains_key(m))
+                .collect();
+            to.sort_by_key(|m| place[m]);
+            to.dedup();
+            (*n, to)
+        })
+        .collect();
+    let fed: HashSet<u32> = feeds.values().flatten().copied().collect();
+    let mut out: Vec<u32> = Vec::with_capacity(nodes.len());
+    let mut seen: HashSet<u32> = HashSet::new();
+    fn walk(n: u32, feeds: &HashMap<u32, Vec<u32>>, seen: &mut HashSet<u32>, out: &mut Vec<u32>) {
+        if !seen.insert(n) {
+            return;
+        }
+        out.push(n);
+        for m in &feeds[&n] {
+            walk(*m, feeds, seen, out);
+        }
+    }
+    let alone = |n: &u32| !fed.contains(n) && feeds[n].is_empty();
+    for n in nodes.iter().filter(|n| !fed.contains(n) && !alone(n)) {
+        walk(*n, &feeds, &mut seen, &mut out);
+    }
+    for n in nodes.iter().filter(|n| !alone(n)) {
+        walk(*n, &feeds, &mut seen, &mut out);
+    }
+    out.extend(nodes.iter().filter(|n| !seen.contains(n)));
+    (out, !fed.is_empty())
 }
 
 /// An app's groups of the same label and direction (one per stream), each numbered: OUTPUT 1,
@@ -1284,34 +1293,53 @@ mod tests {
     }
 
     /// Easy Effects: its own sink and its effects (no media.class), all of one client, are one
-    /// device. On its face what meets the world (its sink's input always, a port with a cord to
-    /// another program), named as it named its nodes, two of a name kept so; the rest inside.
+    /// device with every node on its face, named as it named them (two of a name kept so), in the
+    /// order its sound goes through them: each chain from its start along the program's own links,
+    /// each node's inputs then its outputs; a node with no links of its own last.
     #[test]
-    fn a_program_is_one_device_its_edges_on_its_face() {
+    fn a_program_is_one_device_its_nodes_along_its_chains() {
         let mut g = Programs::new();
         g.client(199, &[("application.name", "easyeffects"), ("application.process.binary", "easyeffects"), ("application.process.id", "2")]);
         g.client(50, &[("application.name", "Kadence"), ("application.process.binary", "kadence"), ("application.process.id", "77")]);
+        // made in this order: the sink, a test signal, the two effects (the second first in its chain)
         g.node(281, 199, &[("media.class", "Audio/Sink"), ("node.name", "easyeffects_sink"), ("node.description", "Easy Effects Sink")], &[("in", false), ("out", true)]);
-        g.node(282, 199, &[("node.name", "ee_soe_spectrum"), ("node.description", "Spectrum")], &[("in", false), ("out", false)]);
-        g.node(283, 199, &[("node.name", "ee_sie_spectrum"), ("node.description", "Spectrum")], &[("in", false), ("out", false)]);
+        g.node(282, 199, &[("node.name", "ee_test_signals"), ("node.description", "Easy Effects Filter")], &[("out", false)]);
+        g.node(283, 199, &[("node.name", "ee_soe_spectrum"), ("node.description", "Spectrum")], &[("in", false), ("out", false)]);
+        g.node(284, 199, &[("node.name", "ee_soe_equalizer"), ("node.description", "Equalizer")], &[("in", false), ("out", false)]);
         g.node(900, 50, &[("media.class", "Stream/Input/Audio"), ("node.name", "kadence")], &[("in", false)]);
         let link = |g: &mut Programs, id: u32, out: u32, inp: u32| {
             let p: Props = [("link.output.port", out.to_string()), ("link.input.port", inp.to_string())].into_iter().map(|(k, v)| (k.to_string(), v)).collect();
             g.0.apply(&Event::Added { id, kind: Kind::Link, props: p });
         };
-        // the sink's monitor into one spectrum (its own wiring), the other's output to Kadence
-        link(&mut g, 1, 28102, 28200);
-        link(&mut g, 2, 28103, 28201);
+        // sink's monitor → equalizer → spectrum → Kadence
+        link(&mut g, 1, 28102, 28400);
+        link(&mut g, 2, 28402, 28300);
         link(&mut g, 3, 28302, 90000);
         let devs = g.devices();
         let d = devs.iter().find(|d| d.key == "app:easyeffects").expect("one device");
-        assert_eq!((d.name.as_str(), d.kind, d.nodes, d.ports), ("easyeffects", "APP", 3, 12));
-        let frames: Vec<(&str, &str, Dir)> = d.groups.iter().map(|g| (g.label.as_str(), g.role, g.dir)).collect();
-        assert_eq!(frames, [("EASY EFFECTS SINK", "PLAYBACK", Dir::In), ("SPECTRUM", "OUTPUT", Dir::Out)]);
-        let inside: Vec<(u32, &str, bool, &[usize])> = d.inside.iter().map(|n| (n.node, n.name.as_str(), n.face, n.to.as_slice())).collect();
-        assert_eq!(inside, [(281, "Easy Effects Sink", true, &[1][..]), (282, "Spectrum", false, &[][..]), (283, "Spectrum", true, &[][..])]);
-        // an app's streams are all on its face: nothing inside
-        assert!(devs.iter().all(|d| d.key == "app:easyeffects" || d.inside.is_empty()));
+        assert_eq!((d.name.as_str(), d.kind, d.nodes, d.ports, d.chain), ("easyeffects", "APP", 4, 14, true));
+        let frames: Vec<(&str, Dir)> = d.groups.iter().map(|g| (g.label.as_str(), g.dir)).collect();
+        assert_eq!(
+            frames,
+            [
+                ("EASY EFFECTS SINK", Dir::In),
+                ("EASY EFFECTS SINK", Dir::Out),
+                ("EQUALIZER", Dir::In),
+                ("EQUALIZER", Dir::Out),
+                ("SPECTRUM", Dir::In),
+                ("SPECTRUM", Dir::Out),
+                ("EASY EFFECTS FILTER", Dir::Out),
+            ]
+        );
+        // an app's own streams are not a chain: inputs left, outputs right, as on every face
+        assert!(devs.iter().all(|d| d.key == "app:easyeffects" || !d.chain));
+        // every effect's ports are named alike (input_FL…): its jacks still each their own, so
+        // every link of its own is a cord of its own
+        let keys = crate::ui::face_jack_keys(d);
+        let mut unique = keys.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), keys.len(), "{keys:?}");
     }
 
     /// Flatpaks are all process 2: programs apart by name and binary; one program's two clients

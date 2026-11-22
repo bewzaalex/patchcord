@@ -281,6 +281,9 @@ const NARROW: f64 = 700.0;
 /// What a block is, by its colour; its ports and the links out of it take it too.
 const C_DEVICE: [u8; 3] = [0x4f, 0x86, 0xd9];
 const C_APP: [u8; 3] = [0x9b, 0x6b, 0xd6];
+/// What ENGINE says of a node without `media.class`.
+const NO_CLASS: &str = "no media.class";
+
 const C_SYSTEM: [u8; 3] = [0x2f, 0xb0, 0xa6];
 const C_MIDI: [u8; 3] = [0xe0, 0x8a, 0x3c];
 const C_VIDEO: [u8; 3] = [0xd9, 0x57, 0x8f];
@@ -705,7 +708,9 @@ impl Engine {
             match kind {
                 Kind::Node => {
                     let name = get(p, "node.name");
-                    let class = get(p, "media.class");
+                    // a node's kind; not every node says it (Easy Effects' effects don't, so that
+                    // WirePlumber leaves them alone): said so, nothing made up in its place
+                    let class = p.get("media.class").filter(|c| !c.trim().is_empty()).cloned().unwrap_or_else(|| NO_CLASS.to_owned());
                     let desc = p.get("node.description").or(p.get("node.nick")).cloned().unwrap_or_else(|| name.clone());
                     let nkind = if name == "Dummy-Driver" || name == "Freewheel-Driver" || p.get("factory.name").is_some_and(|f| f == "support.node.driver") {
                         NKind::Driver
@@ -2969,11 +2974,6 @@ impl Engine {
                 self.outbox.push(Cmd::Params(id));
             }
         }
-    }
-
-    /// Selects a node, as a click on it would (from a program's INSIDE list on the desk).
-    pub fn pick(&mut self, node: u32) {
-        self.select(Some(Sel::Node(node)));
     }
 
     /// Escape: closes the legend if it is open, else drops the selection (which closes the

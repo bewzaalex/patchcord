@@ -981,7 +981,22 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                             bound.borrow_mut().insert(id, Bound { _listener: Box::new(l), proxy: Box::new(link) });
                         }
                     }
-                    Kind::Client | Kind::Other => {}
+                    Kind::Client => {
+                        // its full properties: the registry gives only its name and socket, not
+                        // its process (binary, pid) nor whether it is WirePlumber, which tell
+                        // programs apart (graph::Graph::program)
+                        if let Ok(client) = registry.bind::<pw::client::Client, _>(g) {
+                            let ev = events.clone();
+                            let l = client
+                                .add_listener_local()
+                                .info(move |info| {
+                                    ev.send(Event::Info { id, props: info.props().map(props_of).unwrap_or_default(), state: None });
+                                })
+                                .register();
+                            bound.borrow_mut().insert(id, Bound { _listener: Box::new(l), proxy: Box::new(client) });
+                        }
+                    }
+                    Kind::Other => {}
                 }
                 events.send(Event::Added { id, kind, props });
             }

@@ -263,7 +263,7 @@ impl DevView {
     /// What its face is drawn from: drawn again when this changes.
     fn sig(&self, rack_w: Option<f64>, accents: bool) -> u64 {
         let mut h = DefaultHasher::new();
-        (&self.counts, &self.split, &self.dev.name, &self.dev.model, self.dev.state, rack_w.map(f64::to_bits), accents, self.dev.inside.is_empty()).hash(&mut h);
+        (&self.counts, &self.split, &self.dev.name, &self.dev.model, self.dev.state, rack_w.map(f64::to_bits), accents, self.dev.chain).hash(&mut h);
         self.dev.groups.iter().for_each(|g| g.mix.as_ref().map(|m| m.volumes.len()).hash(&mut h));
         // the frames' names: they follow the port in use (SPEAKERS, HEADPHONES…), and the
         // layout their width
@@ -1208,8 +1208,29 @@ impl Scene {
                 }
             }
         }
-        for (key, mut list) in per {
+        for list in per.values_mut() {
             list.sort();
+        }
+        // a split stereo group's R row in the same columns as its L row: a cord on R whose other end
+        // is the R of the same frame as a cord on L stands under it, so L and R of one source read
+        // as a pair (in the order they were plugged in, they come out crossed)
+        let peer = |ci: usize, b: bool| {
+            let other = if b { &self.cords[ci].a } else { &self.cords[ci].b };
+            let &(di, ji) = self.jacks.get(other.jack.as_ref()?)?;
+            Some((di, self.devs[di].defs[ji].group))
+        };
+        for d in &self.devs {
+            for (gi, _) in d.dev.groups.iter().enumerate().filter(|(gi, g)| g.stereo && d.split.get(*gi).copied().unwrap_or(false)) {
+                let rows: Vec<&String> = d.defs.iter().filter(|j| j.group == gi).map(|j| &j.key).collect();
+                let [l, r] = rows[..] else { continue };
+                let Some(left) = per.get(l) else { continue };
+                let column: HashMap<(usize, usize), usize> = left.iter().enumerate().filter_map(|(k, &(_, ci, b))| Some((peer(ci, b)?, k))).collect();
+                if let Some(right) = per.get_mut(r) {
+                    right.sort_by_key(|&(slot, ci, b)| (peer(ci, b).and_then(|p| column.get(&p).copied()).unwrap_or(usize::MAX), slot));
+                }
+            }
+        }
+        for (key, list) in per {
             if let Some(&(di, ji)) = self.jacks.get(&key) {
                 self.devs[di].counts[ji] = list.len();
             }
@@ -2150,11 +2171,6 @@ impl Scene {
         self.devs.iter().enumerate().rev().find_map(|(di, d)| d.geo.profile.filter(|[kx, ky, kw, kh]| x >= d.x + kx && x <= d.x + kx + kw && y >= d.y + ky && y <= d.y + ky + kh).map(|_| di))
     }
 
-    /// The device whose INSIDE key is under a world point.
-    pub fn inside_key_at(&self, x: f64, y: f64) -> Option<usize> {
-        self.devs.iter().enumerate().rev().find_map(|(di, d)| d.geo.inside.filter(|[kx, ky, kw, kh]| x >= d.x + kx && x <= d.x + kx + kw && y >= d.y + ky && y <= d.y + ky + kh).map(|_| di))
-    }
-
     /// The SPLIT/JOIN switch under a world point: (device, group).
     pub fn switch_at(&self, x: f64, y: f64) -> Option<(usize, usize)> {
         self.devs.iter().enumerate().rev().find_map(|(di, d)| {
@@ -2688,10 +2704,6 @@ impl Scene {
             let card = self.devs[di].dev.card.as_ref().map_or(String::new(), |c| c.summary());
             return format!("{card}  ·  click: choose a profile");
         }
-        if let Some(di) = self.inside_key_at(x, y) {
-            let d = &self.devs[di].dev;
-            return format!("{}: {} nodes, {} on its face  ·  click: what it does inside itself", d.name, d.inside.len(), d.inside.iter().filter(|n| n.face).count());
-        }
         if let Some((di, g)) = self.switch_at(x, y) {
             return if self.devs[di].split.get(g).copied().unwrap_or(false) { "Join L and R into one stereo jack".into() } else { "Split into separate L and R jacks".into() };
         }
@@ -2799,12 +2811,14 @@ fn prepare_dev(d: &mut DevView, n: usize, c: &DevCtx, inbox: &mut painter::Inbox
     for (gi, m) in &d.geo.mix {
         let Some((vol, bal, mute)) = d.mix(*gi) else { continue };
         let mut h = DefaultHasher::new();
-        (vol.to_bits(), bal.to_bits(), mute, d.bal(*gi), c.scale.to_bits(), m.x.to_bits(), m.y.to_bits()).hash(&mut h);
+        // (its shape too: a stream gone from stereo to mono has a narrower section, without BAL)
+        (vol.to_bits(), bal.to_bits(), mute, d.bal(*gi), c.scale.to_bits(), m.x.to_bits(), m.y.to_bits(), m.w.to_bits(), m.bal.is_some()).hash(&mut h);
         let sig = h.finish();
         match (d.mix_pics.iter().position(|(g, s, _)| g == gi && *s == sig), d.mix_pics.iter().position(|(g, _, _)| g == gi)) {
             (Some(i), _) => pics.push(d.mix_pics.swap_remove(i)),
             // the knobs as they were show until they are drawn as they are now, where they are now
-            (None, Some(i)) => {
+            // (not when the section changed its width: the old one would stand out of its frame)
+            (None, Some(i)) if d.mix_pics[i].2.w == m.w => {
                 let mut p = d.mix_pics.swap_remove(i);
                 (p.2.x, p.2.y) = (m.x, m.y + MIX_Y);
                 pics.push(p);
@@ -2813,7 +2827,10 @@ fn prepare_dev(d: &mut DevView, n: usize, c: &DevCtx, inbox: &mut painter::Inbox
                     inbox.ask(painter::key("mix", (&d.dev.key, gi)), sig, face::mix_pic(m, vol, bal, mute, d.bal(*gi)), c.scale);
                 }
             }
-            (None, None) => {
+            (None, other) => {
+                if let Some(i) = other {
+                    d.mix_pics.swap_remove(i);
+                }
                 let pm = rasterize(c.opt, &face::mix_pic(m, vol, bal, mute, d.bal(*gi)), c.scale);
                 pics.push((*gi, sig, Layer { id: next_id(), pm, x: m.x, y: m.y + MIX_Y, w: m.w, h: MIX_H }));
             }
@@ -2827,7 +2844,7 @@ fn prepare_dev(d: &mut DevView, n: usize, c: &DevCtx, inbox: &mut painter::Inbox
         inbox.ask(painter::key("shade", &d.dev.key), wsig, face::shadow(d.geo.w, d.geo.h, c.rack_w.is_some()), SHADE_SCALE);
     }
     let note = d.mix_note.as_ref().filter(|(until, _)| Instant::now() < *until).map(|(_, s)| s.clone());
-    let line2 = if let Some(note) = note {
+    let links = if let Some(note) = note {
         note
     } else if d.dev.groups.is_empty() && d.dev.card.is_some() {
         "NO INPUTS OR OUTPUTS".to_owned()
@@ -2838,22 +2855,28 @@ fn prepare_dev(d: &mut DevView, n: usize, c: &DevCtx, inbox: &mut painter::Inbox
             n => format!("{n} LINKS"),
         }
     };
-    // line 3: what it takes of PipeWire
-    let line3 = match (d.dev.nodes, d.dev.ports) {
+    // what it takes of PipeWire
+    let usage = match (d.dev.nodes, d.dev.ports) {
         (0, _) => "NO NODES".to_owned(),
         (n, p) => format!("{n} NODE{}  {p} PORT{}", if n == 1 { "" } else { "S" }, if p == 1 { "" } else { "S" }),
     };
-    // line 4: a card's profile (and codec), scrolling when long; else what it carries
-    let line4 = match &d.dev.card {
+    // a card's profile (and codec), scrolling when long; else what it carries: a stereo pair, one
+    // channel, or as many channels as its widest frame has when they don't say they're L and R
+    // (a JACK app's out1, out2)
+    let channels = d.dev.groups.iter().map(|g| g.ports.iter().filter(|p| p.media == Media::Audio).count()).max().unwrap_or(0);
+    let carries = match &d.dev.card {
         Some(card) => face::marquee(&card.summary(), c.ms),
         None if d.dev.groups.iter().any(|g| g.ports.iter().any(|p| p.media == Media::Midi)) => "MIDI".to_owned(),
         None if d.dev.groups.iter().any(|g| g.stereo) => "STEREO".to_owned(),
+        None if channels > 1 => format!("{channels} CH"),
         None => "MONO".to_owned(),
     };
-    // line 1: what it is, and its state against the right edge (the name is on the plate)
+    // what it is, and its state against the right edge (the name is on the plate)
     let state = d.dev.state.to_uppercase();
-    let line1 = format!("{:<w$}{state}", d.dev.kind, w = face::LCD_CH.saturating_sub(state.chars().count()).max(d.dev.kind.chars().count() + 1));
-    let text = format!("{line1}\n{line2}\n{line3}\n{line4}");
+    let kind = format!("{:<w$}{state}", d.dev.kind, w = face::LCD_CH.saturating_sub(state.chars().count()).max(d.dev.kind.chars().count() + 1));
+    // in this order: what it is, what it carries (a card's profile), what it takes of PipeWire, its
+    // cords (or a volume note while it changes)
+    let text = format!("{kind}\n{carries}\n{usage}\n{links}");
     let x = d.geo.left + LCD_X;
     let lsig = painter::sig((&text, x.to_bits()), c.scale);
     // the screen as it was shows where it is now until it is drawn again
@@ -2970,7 +2993,7 @@ mod tests {
         let mut s = Scene::new();
         s.rack = false;
         for (k, &(x, y, w)) in at.iter().enumerate() {
-            let dev = Device { key: format!("d{k}"), name: format!("d{k}"), model: String::new(), kind: "", finish: crate::graph::Finish::Metal, color: [0; 3], groups: Vec::new(), state: "idle", inside: Vec::new(), nodes: 0, ports: 0, card: None };
+            let dev = Device { key: format!("d{k}"), name: format!("d{k}"), model: String::new(), kind: "", finish: crate::graph::Finish::Metal, color: [0; 3], groups: Vec::new(), state: "idle", chain: false, nodes: 0, ports: 0, card: None };
             let geo = Geometry { w, ..Default::default() };
             s.devs.push(DevView::new(dev, Vec::new(), geo, (x, y)));
         }
@@ -3228,6 +3251,41 @@ mod tests {
         }
         ev.push(Event::Synced);
         ev
+    }
+
+    /// Split headphones: the L and R of one app stand in one column of the mult, whatever order
+    /// PipeWire made the links in (here A's L, B's L, B's R, A's R).
+    #[test]
+    fn split_rows_keep_a_sources_l_and_r_in_one_column() {
+        use crate::pw::{Kind, Props};
+        let props = |kv: &[(&str, &str)]| kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Props>();
+        let mut ev = Vec::new();
+        for (id, name, class, dir, pname) in [(10u32, "Phones", "Audio/Sink", "in", "playback"), (20, "A", "Stream/Output/Audio", "out", "output"), (30, "B", "Stream/Output/Audio", "out", "output")] {
+            let p = props(&[("node.name", name), ("media.class", class), ("application.name", if class.starts_with("Stream") { name } else { "" }), ("application.process.id", &id.to_string())]);
+            ev.push(Event::Added { id, kind: Kind::Node, props: p.clone() });
+            ev.push(Event::Info { id, props: p, state: Some("running") });
+            for (k, ch) in ["FL", "FR"].iter().enumerate() {
+                ev.push(Event::Added { id: id + 1 + k as u32, kind: Kind::Port, props: props(&[("node.id", &id.to_string()), ("port.direction", dir), ("port.name", &format!("{pname}_{ch}")), ("audio.channel", ch), ("format.dsp", "32 bit float mono audio")]) });
+            }
+        }
+        ev.push(Event::Synced);
+        let mut s = Scene::new();
+        s.apply(ev);
+        // split first, then the links come, one by one
+        let phones = s.devs.iter().position(|d| d.dev.name == "Phones").expect("the headphones");
+        s.toggle_split(phones, 0);
+        for (lid, o, i) in [(100u32, 21, 11), (101, 31, 11), (102, 32, 12), (103, 22, 12)] {
+            let p = props(&[("link.output.port", &o.to_string()), ("link.input.port", &i.to_string())]);
+            s.apply(vec![Event::Added { id: lid, kind: Kind::Link, props: p.clone() }, Event::Info { id: lid, props: p, state: Some("active") }]);
+        }
+        let rank = |s: &Scene, src: &str, ch: &str| {
+            s.cords.iter().find_map(|c| {
+                let (a, b) = (c.a.jack.as_deref()?, c.b.jack.as_deref()?);
+                (a.contains(&format!("node:{src}|")) && b.ends_with(&format!("playback_{ch}"))).then_some(c.b.rank)
+            })
+        };
+        assert_eq!((rank(&s, "A", "FL"), rank(&s, "A", "FR")), (Some(0), Some(0)), "A's L over its R");
+        assert_eq!((rank(&s, "B", "FL"), rank(&s, "B", "FR")), (Some(1), Some(1)), "B's L over its R");
     }
 
     /// Every device its own cord colour while there are colours to go round.

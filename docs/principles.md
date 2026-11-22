@@ -9,8 +9,8 @@ Patchcord shows what PipeWire has. It never hides a real object, port or link to
 tidier.
 
 - A device may group nodes (a card's sink and source, a program's nodes). Whatever it doesn't show
-  on its face must still be reachable: under INSIDE, in the HIDDEN list (marked SYSTEM), or in
-  ENGINE.
+  on its face must still be reachable: on another device, in the HIDDEN list (marked SYSTEM), or
+  in ENGINE. Nothing a user can unplug may vanish so it can't be plugged back.
 - A cord must never lead nowhere. A device with a cord is never hidden. A hidden device that gets
   a cord comes back by itself.
 - ENGINE is the plain truth: every node, port and link as PipeWire reports it.
