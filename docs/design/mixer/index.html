@@ -5,372 +5,640 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Patchcord Mixer</title>
 <!--
-  MIXER: PipeWire as a mixing console, a fourth view beside DESK, RACK and ENGINE.
-  Channels are what makes sound (apps' streams, microphones, an effect's output); buses are where
-  sound goes (outputs, and apps that record). An assign key on a channel is a link: lit, the
-  channel's ports are linked to that bus. Links have no level in PipeWire, so a key is on or off;
-  levels are the channel's fader (its stream volume) and the bus's (its device volume).
-  The data is a live graph from 2026-11-22 (Teams and HDMI added as examples).
+  MIXER: the first of three screens (MIXER, RACK, ENGINE), for whoever wants it set in a click
+  without learning how PipeWire is built. It does what the rack does, made simple:
+  - as on a console: channels (what makes sound), groups (what mixes some of them and passes the
+    mix on), recording, and the masters at the right: where it all is mixed and played. In
+    PipeWire a master is a device's sink (it mixes whatever plays into it, one volume for the
+    mix), a group a virtual sink that goes on to a master (Easy Effects), MAIN the default sink.
+    Only what the graph has: the mixer creates no node;
+  - MIX TO / RECORD TO keys on a strip are its links: lit, every port of it is linked to that
+    strip's (L to L, R to R; mono to both). A link has no level in PipeWire, so a key is on or off;
+  - a fader is the node's volume (as the rack's VOLUME / GAIN knob), BAL, MUTE, CUE, a meter;
+  - MAIN is the default output / input; PROFILE and PORT are the card's;
+  - the #id on a strip's band opens ENGINE with that node chosen.
+  Left out for now: SPLIT (L and R apart), monitors, MIDI, video, multichannel, hiding.
+  Colours are the rack's: a band in its block's kind, a strip's paint by who owns it (hardware
+  aluminium, a program black), a send key lit in the cord colour of the strip it goes to.
+  The data is the maintainer's live graph of 2026-11-23 (Patchcord's meters and the Bluetooth
+  internal stream left out, as the rack leaves them out).
 -->
 <style>
-  :root { --bg: #141517; --fg: #c9cbcd; --muted: #7d8085; --amber: #f2a443; --ink: #3a2408; }
+  :root { --bg: #141517; --fg: #c9cbcd; --muted: #7d8085; --amber: #f2a443; --ink: #3a2408; --cue: #5fd4ff; }
   html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--fg);
     font: 13px/1.45 "Noto Sans", system-ui, sans-serif; }
-  body { display: flex; flex-direction: column; }
+  body { display: flex; flex-direction: column; min-height: 100vh; }
   * { box-sizing: border-box; }
+  button { font-family: inherit; cursor: pointer; }
 
-  /* ---------- top: the same painted metal as the app's panel ---------- */
-  #bar { display: flex; align-items: center; gap: 22px; padding: 10px 18px 8px; position: relative;
-    background: url(../mockup/paint.png) 0 0 / 80px 80px, #8c8e91; white-space: nowrap; user-select: none;
+  /* ---------- the top panel: the app's painted metal ---------- */
+  #bar { display: flex; align-items: center; gap: 18px; padding: 10px 18px 8px; flex-wrap: wrap;
+    background: url(../mockup/paint.png) 0 0 / 80px 80px, #8c8e91; user-select: none;
     box-shadow: inset 0 1px 0 rgba(255,255,255,.35), inset 0 -1px 0 rgba(0,0,0,.5), 0 6px 18px rgba(0,0,0,.55); }
-  .logo b { font: 900 24px "Noto Sans", "Arial Black", sans-serif; color: #2a2b2e; letter-spacing: 1px; }
-  .views { display: flex; gap: 6px; }
+  .logo { font: 900 24px "Noto Sans", "Arial Black", sans-serif; color: #2a2b2e; letter-spacing: 1px; }
+  .keyset { display: flex; gap: 7px; align-items: center; }
   .vkey { height: 28px; padding: 0 12px; border: 0; border-radius: 5px; font: bold 10.5px "Noto Sans", sans-serif;
     color: #e6e7e8; letter-spacing: .6px; background: linear-gradient(#45464a, #232427 55%, #1b1c1e);
-    box-shadow: 0 0 0 2px #19191b, 0 0 0 3px rgba(255,255,255,.18), 0 3px 4px rgba(0,0,0,.45); opacity: .55; }
-  .vkey.on { opacity: 1; color: #ffd28a; }
+    box-shadow: 0 0 0 2px #19191b, 0 0 0 3px rgba(255,255,255,.18), 0 3px 4px rgba(0,0,0,.45); }
+  .vkey .led { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #3a3b3e; margin-right: 6px; vertical-align: 1px; }
+  .vkey.on .led { background: #ffb02e; }
+  .vkey:disabled { opacity: .4; cursor: default; }
   .lcd { background: #111214; padding: 3px; border-radius: 4px; }
-  .lcd div { background: linear-gradient(#f7bb62, #e58f2c); color: var(--ink); font: bold 11px "Noto Sans Mono", monospace;
-    padding: 4px 10px; border-radius: 2px; min-width: 330px; }
+  .lcd > div { background: linear-gradient(#f7bb62, #e58f2c); color: var(--ink); font: bold 11px "Noto Sans Mono", monospace;
+    padding: 4px 10px; border-radius: 2px; white-space: nowrap; }
+  .lcd button { all: unset; cursor: pointer; }
+  .lcd button:hover { text-decoration: underline; }
+  .silk { font: bold 9px "Noto Sans", sans-serif; letter-spacing: 1.6px; color: #2a2b2e; }
+  #cuelevel { width: 90px; accent-color: #2a2b2e; }
 
   /* ---------- the console ---------- */
-  #wrap { display: flex; gap: 18px; padding: 18px; align-items: flex-start; }
-  #desk { display: flex; gap: 0; padding: 14px 10px 16px; border-radius: 8px; position: relative;
+  #wrap { flex: 1; overflow-x: auto; padding: 26px 16px 16px; }
+  #console { display: inline-flex; align-items: stretch; gap: 0; padding: 22px 10px 14px; border-radius: 8px;
     background: url(../mockup/paint.png) 0 0 / 80px 80px, #2a2b2e; background-blend-mode: multiply;
     box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 10px 30px rgba(0,0,0,.6); }
   .section { display: flex; gap: 6px; padding: 0 8px; position: relative; }
   .section + .section { border-left: 2px solid #111; box-shadow: -2px 0 0 rgba(255,255,255,.06); }
-  .shead { position: absolute; top: -12px; left: 10px; font: bold 9px "Noto Sans", sans-serif; letter-spacing: 2px; color: #8a8d91; }
+  .shead { position: absolute; top: -17px; left: 10px; font: bold 9px "Noto Sans", sans-serif; letter-spacing: 2px; color: #8a8d91; white-space: nowrap; }
 
-  .strip { width: 96px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 8px 6px 10px;
-    border-radius: 5px; background: linear-gradient(#232427, #1b1c1e); box-shadow: inset 0 0 0 1px rgba(255,255,255,.05); position: relative; }
-  .strip.bus { background: linear-gradient(#26272b, #1d1e21); }
-  .strip.dim { opacity: .45; }
-  .scribble { width: 100%; background: #111214; padding: 2px; border-radius: 3px; }
-  .scribble div { background: linear-gradient(#f7bb62, #e58f2c); color: var(--ink); font: bold 9.5px "Noto Sans Mono", monospace;
-    height: 40px; padding: 3px 4px; border-radius: 2px; overflow: hidden; line-height: 1.25; }
-  .scribble small { display: block; font-weight: normal; opacity: .8; }
-  .tag { font: bold 8px "Noto Sans", sans-serif; letter-spacing: 1.2px; color: #8a8d91; }
-  .band { width: 100%; height: 4px; border-radius: 2px; }
+  /* a strip, painted by who owns it */
+  .strip { width: 112px; display: flex; flex-direction: column; align-items: stretch; gap: 7px; padding: 0 6px 8px;
+    border-radius: 7px; position: relative; color: var(--print);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 0 0 1px #000, 0 3px 6px rgba(0,0,0,.5); }
+  .strip.alu   { --print: #1d1e20; --dim: rgba(29,30,32,.55); background: url(../mockup/paint.png) 0 0 / 80px 80px, #c3c6ca; }
+  .strip.black { --print: #d5d7d9; --dim: rgba(213,215,217,.5); background: #232427; }
+  .strip.olive { --print: #f1f1e6; --dim: rgba(241,241,230,.55); background: #66683f; }
+  .strip.master { width: 146px; }
+  .strip.master .cap { width: 34px; left: -4px; }
+  .strip.master .meter .col b { width: 9px; }
+  .strip.master.main { box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 0 0 1px #000, 0 0 0 3px #ffb02e, 0 3px 6px rgba(0,0,0,.5); }
+  .agrid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+  .agrid .skey { padding: 0 4px; gap: 4px; font-size: 7.5px; }
+  .strip.off > :not(.band):not(.route) { opacity: .35; pointer-events: none; }
+  .strip.hot { outline: 2px solid #f7bb62; outline-offset: 1px; }
 
-  /* assign keys: a key per bus, lit in the bus's cord colour */
-  .assign { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; width: 100%; }
-  .akey { height: 20px; border: 0; border-radius: 3px; font: bold 8.5px "Noto Sans", sans-serif; letter-spacing: .5px;
-    color: #9a9da1; background: #2c2d31; box-shadow: inset 0 -2px 0 rgba(0,0,0,.4), 0 0 0 1px #111; cursor: pointer; padding: 0 2px; }
-  .akey.on { color: #111; box-shadow: inset 0 -2px 0 rgba(0,0,0,.25), 0 0 0 1px #111, 0 0 8px var(--c); background: var(--c); }
-  .akey.self { visibility: hidden; }
-  .akey.blink { animation: blink .6s ease-in-out infinite alternate; outline: 2px solid #fff; }
-  @keyframes blink { to { outline-color: transparent; } }
-  .custom { width: 100%; font: 9px/1.3 "Noto Sans", sans-serif; color: #e8b04a; background: rgba(232,176,74,.08);
-    border: 1px dashed #e8b04a; border-radius: 3px; padding: 4px; text-align: center; }
-  .custom button { margin-top: 4px; font: bold 8px "Noto Sans", sans-serif; letter-spacing: .5px; border: 0; border-radius: 3px; background: #3a3b3f; color: #ddd; padding: 3px 5px; cursor: pointer; }
-  .heard { width: 100%; min-height: 26px; font: 8.5px/1.3 "Noto Sans", sans-serif; color: #9a9da1; text-align: center; }
-  .heard b { color: #d9dadc; }
-  .warn { color: #ffb02e; font-weight: bold; }
+  /* the band: its block's kind, as the rack's frame and ENGINE's block */
+  .band { margin: 0 -6px; height: 24px; border-radius: 7px 7px 0 0; background: var(--k); color: var(--ki);
+    display: flex; align-items: center; gap: 5px; padding: 0 6px; font: bold 8.5px "Noto Sans", sans-serif; letter-spacing: .9px; overflow: hidden; }
+  .band span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .gkey { flex: none; height: 15px; padding: 0 4px; border: 1.2px solid currentColor; border-radius: 3px; background: transparent;
+    color: inherit; font: bold 8px "Noto Sans Mono", monospace; }
 
-  /* the knob, MUTE and SOLO/CUE */
-  .knob { width: 30px; height: 30px; border-radius: 50%; position: relative; cursor: ns-resize;
-    background: radial-gradient(circle at 40% 35%, #5a5c60, #26272a 70%); box-shadow: 0 0 0 2px #111, 0 2px 3px rgba(0,0,0,.6); }
-  .knob i { position: absolute; left: 14px; top: 3px; width: 2px; height: 10px; background: #f2f2f2; transform-origin: 1px 12px; border-radius: 1px; }
+  .scribble { background: #111214; padding: 2px; border-radius: 3px; }
+  .scribble > div { background: linear-gradient(#f7bb62, #e58f2c); color: var(--ink); font: bold 9.5px "Noto Sans Mono", monospace;
+    height: 58px; padding: 3px 4px; border-radius: 2px; overflow: hidden; line-height: 1.22; }
+  .scribble small { display: block; font-weight: normal; font-size: 8.5px; opacity: .85; }
+  .scribble i { display: block; font-style: normal; font-size: 8.5px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* what a strip sends to, or its card */
+  .route { height: 214px; display: flex; flex-direction: column; gap: 4px; }
+  .silkp { font: bold 7.5px "Noto Sans", sans-serif; letter-spacing: 1.3px; color: var(--dim); text-align: center; }
+  .skey { height: 19px; border: 0; border-radius: 3px; display: flex; align-items: center; gap: 5px; padding: 0 5px;
+    font: bold 8px "Noto Sans", sans-serif; letter-spacing: .5px; color: #9a9da1; background: #2c2d31; text-align: left;
+    box-shadow: inset 0 -2px 0 rgba(0,0,0,.4), 0 0 0 1px #111; white-space: nowrap; overflow: hidden; }
+  .skey i { flex: none; width: 6px; height: 6px; border-radius: 50%; background: #45464a; }
+  .skey.on { background: var(--c); color: var(--ci); }
+  .skey.on i { background: var(--ci); }
+  .skey:disabled { opacity: .3; cursor: default; }
+  .skey.no { animation: no .5s; }
+  @keyframes no { 30% { background: #ff4a32; color: #111; } }
+  .wide { height: 21px; border: 0; border-radius: 3px; font: bold 8.5px "Noto Sans", sans-serif; letter-spacing: .6px;
+    color: #e6e7e8; background: linear-gradient(#45464a, #232427 60%, #1b1c1e); box-shadow: 0 0 0 1px #111;
+    display: flex; align-items: center; justify-content: space-between; padding: 0 6px; white-space: nowrap; overflow: hidden; }
+  .wide b { font-weight: normal; color: #9a9da1; overflow: hidden; text-overflow: ellipsis; margin-left: 5px; }
+  .wide.main.on { color: #ffd28a; }
+  .wide .led { width: 6px; height: 6px; border-radius: 50%; background: #3a3b3e; flex: none; }
+  .wide.main.on .led { background: #ffb02e; }
+  .from { font: 8.5px "Noto Sans", sans-serif; color: var(--print); line-height: 1.5; }
+  .from b { display: block; }
+
+  /* balance, cue, mute */
+  .balrow { height: 34px; display: flex; align-items: center; justify-content: center; gap: 8px; }
+  .knob { width: 28px; height: 28px; border-radius: 50%; position: relative; cursor: ns-resize; touch-action: none;
+    background: radial-gradient(circle at 40% 35%, #55565a, #1d1e20 70%); box-shadow: 0 0 0 2px #111, 0 2px 3px rgba(0,0,0,.6); }
+  .knob::after { content: ""; position: absolute; left: 13px; top: 3px; width: 2px; height: 9px; background: #e6e7e8; border-radius: 1px;
+    transform-origin: 1px 11px; transform: rotate(var(--a)); }
+  .knoblab { font: bold 7.5px "Noto Sans", sans-serif; letter-spacing: 1.2px; color: var(--dim); width: 26px; }
   .keys { display: flex; gap: 5px; }
-  .k { width: 34px; height: 20px; border: 0; border-radius: 3px; font: bold 9px "Noto Sans", sans-serif; color: #c9cbcd;
-    background: linear-gradient(#3e3f43, #232427); box-shadow: 0 0 0 1px #111; cursor: pointer; }
-  .k.mute.on { background: #d4232a; color: #fff; box-shadow: 0 0 0 1px #111, 0 0 8px rgba(212,35,42,.8); }
-  .k.cue.on { background: #12a5b8; color: #fff; box-shadow: 0 0 0 1px #111, 0 0 8px rgba(18,165,184,.8); }
-  .k.main.on { background: #f2a443; color: var(--ink); }
+  .k2 { flex: 1; height: 24px; border: 0; border-radius: 4px; font: bold 8.5px "Noto Sans", sans-serif; letter-spacing: .7px;
+    color: #e6e7e8; background: linear-gradient(#45464a, #232427 55%, #1b1c1e); box-shadow: 0 0 0 1.5px #111;
+    display: flex; align-items: center; justify-content: center; gap: 5px; }
+  .k2 i { width: 6px; height: 6px; border-radius: 50%; background: #3a3b3e; }
+  .k2.mute.on i { background: #ff4a32; }
+  .k2.cue.on { color: var(--cue); }
+  .k2.cue.on i { background: var(--cue); }
+  .k2:disabled { opacity: .35; cursor: default; }
 
-  /* fader and meter */
-  .fm { display: flex; gap: 8px; align-items: stretch; height: 220px; }
-  .meter { width: 10px; display: flex; gap: 2px; }
-  .meter div { flex: 1; background: #0d0e0f; border-radius: 2px; position: relative; overflow: hidden; }
-  .meter div i { position: absolute; left: 0; right: 0; bottom: 0; height: 0;
-    background: linear-gradient(to top, #3fae5a 0 70%, #e9c53a 70% 88%, #d23b32 88%); }
-  .fader { width: 26px; position: relative; cursor: ns-resize; }
-  .fader .slot { position: absolute; left: 11px; top: 6px; bottom: 6px; width: 4px; background: #0b0b0c; border-radius: 2px; box-shadow: 0 0 0 1px #000; }
-  .fader .zero { position: absolute; left: 2px; right: 2px; height: 1px; background: #8a8d91; }
-  .fader .cap { position: absolute; left: 0; width: 26px; height: 34px; margin-top: -17px; border-radius: 3px;
-    background: linear-gradient(#5d5f63, #3a3b3f 45%, #e6e7e8 46% 54%, #3a3b3f 55%, #2a2b2e);
-    box-shadow: 0 2px 4px rgba(0,0,0,.7), 0 0 0 1px #111; }
-  .val { font: bold 9px "Noto Sans Mono", monospace; color: #c9cbcd; text-align: center; }
-  .val small { display: block; color: #7d8085; font-weight: normal; }
+  /* the fader and the meter */
+  .fbox { display: flex; justify-content: center; gap: 7px; height: 200px; }
+  .scale { position: relative; width: 22px; font: 7.5px "Noto Sans Mono", monospace; color: var(--dim); }
+  .scale span { position: absolute; right: 0; transform: translateY(-50%); }
+  .slot { position: relative; width: 26px; touch-action: none; cursor: ns-resize; }
+  .slot::before { content: ""; position: absolute; left: 11px; top: 6px; bottom: 6px; width: 4px; border-radius: 2px; background: #0b0b0c;
+    box-shadow: 0 1px 0 rgba(255,255,255,.15); }
+  .slot .unity { position: absolute; left: 2px; right: 2px; height: 1px; background: var(--dim); }
+  .cap { position: absolute; left: 0; width: 26px; height: 34px; margin-top: -17px; border-radius: 3px;
+    background: linear-gradient(#5a5b5f, #2b2c2f 45%, #1b1c1e 55%, #3c3d41); box-shadow: 0 0 0 1px #0b0b0c, 0 3px 4px rgba(0,0,0,.6); }
+  .cap::after { content: ""; position: absolute; left: 3px; right: 3px; top: 16px; height: 2px; background: #e6e7e8; }
+  .novol { width: 56px; display: flex; align-items: center; justify-content: center; text-align: center;
+    font: bold 7.5px "Noto Sans", sans-serif; letter-spacing: 1px; color: var(--dim); writing-mode: vertical-rl; transform: rotate(180deg); }
+  .meter { display: flex; gap: 2px; padding: 3px; background: #0b0b0c; border-radius: 3px; align-self: stretch; }
+  .meter .col { display: flex; flex-direction: column-reverse; gap: 2px; }
+  .meter .col b { width: 6px; flex: 1; border-radius: 1px; background: #1c2a1f; }
+  .meter .col b.y { background: #2f2810; }
+  .meter .col b.r { background: #351612; }
+  .meter .col b.on { background: #5cff7a; }
+  .meter .col b.y.on { background: #ffb02e; }
+  .meter .col b.r.on { background: #ff4a32; }
+  .readout { text-align: center; font: bold 10px "Noto Sans Mono", monospace; color: var(--print); height: 14px; }
+  .readout.hot { color: #ff4a32; }
 
-  /* ---------- the side: what to try, and the status line ---------- */
-  #side { width: 330px; flex: none; display: flex; flex-direction: column; gap: 14px; }
-  .card { background: #1c1d20; border-radius: 6px; padding: 12px 14px; box-shadow: inset 0 0 0 1px #2a2b2e; }
-  .card h3 { margin: 0 0 8px; font: bold 11px "Noto Sans", sans-serif; letter-spacing: 2px; color: #e58f2c; }
-  .task { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 0; border-top: 1px solid #26272a; }
-  .task:first-of-type { border-top: 0; }
-  .task button { flex: none; border: 0; border-radius: 3px; background: #3a3b3f; color: #e6e7e8; font: bold 9px "Noto Sans", sans-serif; letter-spacing: .6px; padding: 4px 8px; cursor: pointer; }
-  .task.done span::after { content: "  ✓"; color: #3fae5a; font-weight: bold; }
-  .legend p { margin: 4px 0; font-size: 12px; color: #9a9da1; }
-  #status { position: sticky; bottom: 0; margin-top: auto; padding: 7px 18px; background: #0f1011; color: #c9cbcd; font: 12px "Noto Sans", sans-serif; border-top: 1px solid #26272a; min-height: 32px; }
+  /* drop-downs */
+  .menu { position: fixed; z-index: 10; min-width: 220px; background: #1b1c1e; border: 1px solid #000; border-radius: 4px;
+    box-shadow: 0 8px 20px rgba(0,0,0,.7); padding: 4px 0; font-size: 12px; }
+  .menu div { padding: 4px 12px; cursor: pointer; white-space: nowrap; color: #c9cbcd; }
+  .menu div:hover { background: #2c2d31; }
+  .menu div.cur { color: #ffd28a; }
+  .menu div.cur::before { content: "● "; }
+  .menu div.na { color: #6d7075; }
+  .menu div.na::after { content: "  · nothing plugged"; font-size: 10.5px; }
+  .menu .sep { height: 1px; padding: 0; margin: 4px 0; background: #2c2d31; cursor: default; }
+  .menu .hd { font: bold 9px "Noto Sans", sans-serif; letter-spacing: 1.5px; color: #8a8d91; cursor: default; }
+  .menu .hd:hover { background: none; }
+
+  #help { margin: 0 16px 12px; padding: 10px 14px; background: #1a1b1d; border: 1px solid #26272a; border-radius: 6px; color: #9a9da1; font-size: 12px; }
+  #help b { color: #c9cbcd; }
+  #status { position: sticky; bottom: 0; padding: 7px 18px; background: #0f1011; color: #c9cbcd; font: 12px "Noto Sans", sans-serif;
+    border-top: 1px solid #26272a; min-height: 32px; }
+  #status code { font: 11.5px "Noto Sans Mono", monospace; color: #e6c48a; }
 </style>
 </head>
 <body>
 <div id="bar">
-  <div class="logo"><b>PATCHCORD</b></div>
-  <div class="views"><button class="vkey">DESK</button><button class="vkey">RACK</button><button class="vkey on">MIXER</button><button class="vkey">ENGINE</button></div>
-  <div class="lcd"><div id="lcd">MAIN: EASY EFFECTS · 48 kHz · 1024</div></div>
-</div>
-<div id="wrap">
-  <div id="desk"></div>
-  <div id="side">
-    <div class="card" id="tasks"><h3>TRY IT</h3></div>
-    <div class="card legend"><h3>HOW TO READ IT</h3>
-      <p><b>Channels</b> (left): what makes sound. <b>Buses</b> (right): where sound goes: outputs, and apps that record.</p>
-      <p>An <b>assign key</b> lit = that channel is linked to that bus. It is on or off: in PipeWire a link has no level.</p>
-      <p><b>Faders</b>: a channel's is its stream's volume; a bus's is its device's volume. Drag, or the wheel; double-click: 0 dB.</p>
-      <p><b>CUE</b>: listen to a channel alone, in your headphones, without changing anything.</p>
-      <p><b>MAIN</b>: where new apps play.</p>
-      <p><b>HEARD ON</b>: where the sound really ends up, through effects too.</p>
-    </div>
+  <div class="logo">PATCHCORD</div>
+  <div class="keyset">
+    <button class="vkey on" data-view="MIXER"><span class="led"></span>MIXER</button>
+    <button class="vkey" data-view="RACK"><span class="led"></span>RACK</button>
+    <button class="vkey" data-view="ENGINE"><span class="led"></span>ENGINE</button>
   </div>
+  <div class="lcd"><div><button id="outkey"></button> &nbsp; <button id="inkey"></button></div></div>
+  <div class="lcd"><div><button id="presetkey"></button></div></div>
+  <div class="keyset">
+    <button class="vkey" id="undo">UNDO</button><button class="vkey" id="redo">REDO</button>
+  </div>
+  <div class="keyset"><span class="silk">CUE LEVEL</span><input id="cuelevel" type="range" min="0" max="100" value="70"></div>
+</div>
+<div id="wrap"><div id="console"></div></div>
+<div id="help">
+  <b>Channels</b> make sound, <b>groups</b> mix some of them and pass the mix on (Easy Effects), <b>masters</b> at the right mix it all and play it; the outlined one is MAIN, where new apps play.
+  <b>MIX TO / RECORD TO</b>: lit = linked; click to link or unlink (a key that would feed a strip back into itself refuses).
+  <b>Fader</b>: drag or wheel; double-click: 100%. <b>BAL</b>: drag up or down; double-click: centre.
+  <b>CUE</b>: hear a strip in the MAIN output, nothing else changes (several mix). <b>MAIN IN</b>: where new apps record from.
+  <b>PROFILE / PORT</b>: the card's. <b>#id</b>: opens ENGINE with that node. <b>Ctrl+Z / Ctrl+Shift+Z</b>, presets on the LCD.
+  The strip's last line on the screen is where its sound ends up, through effects too.
 </div>
 <div id="status">Hover anything to see what it is in PipeWire.</div>
 
 <script>
 "use strict";
-// ---------- the graph, as the console sees it ----------
-// buses: where sound goes. out: devices (and an effect's input); rec: apps that record.
-const BUSES = [
-  { id: "efx", name: "EASY EFFECTS", sub: "effects · sink", side: "out", c: "#7b4fb8", vol: 1, mute: false, insert: true,
-    sends: { phones: true }, pw: "easyeffects_sink (Audio/Sink, Easy Effects)" },
-  { id: "phones", name: "JLAB GO WORK 2", sub: "BT headphones", side: "out", c: "#12a5b8", vol: 0.8, mute: false, lag: 200,
-    pw: "bluez_output.…(Audio/Sink, Bluetooth)" },
-  { id: "speakers", name: "RYZEN SPEAKERS", sub: "analog out", side: "out", c: "#ec7a1c", vol: 0.7, mute: false, lag: 10,
-    pw: "alsa_output.pci-…analog-stereo (Audio/Sink)" },
-  { id: "hdmi", name: "HDMI / TV", sub: "nothing plugged", side: "out", c: "#1752c8", vol: 1, mute: false, lag: 30, off: true,
-    pw: "alsa_output.…hdmi-stereo (Audio/Sink, unplugged)" },
-  { id: "eemic", name: "EASY EFFECTS MIC", sub: "effects · mic in", side: "rec", c: "#7b4fb8", vol: 1, mute: false,
-    pw: "Easy Effects' mic chain input (ee_sie_equalizer)" },
-  { id: "carla", name: "CARLA", sub: "records", side: "rec", c: "#14965a", vol: 1, mute: false, pw: "Carla (Stream/Input/Audio)" },
-  { id: "teams", name: "TEAMS", sub: "records · example", side: "rec", c: "#d63c8c", vol: 1, mute: false, pw: "Teams for Linux (Stream/Input/Audio)" },
-];
-// channels: what makes sound. sends: bus id → true (stereo, both ears) or "L" (only the left: not a plain case)
-const CHANNELS = [
-  { id: "vlc", name: "VLC MEDIA PLAYER", sub: "app", vol: 1, bal: 0, sends: { efx: true }, play: 0.8, pw: "VLC media player (Stream/Output/Audio)" },
-  { id: "fooyin", name: "FOOYIN", sub: "app", vol: 0.85, bal: 0, sends: { efx: true }, play: 0.6, pw: "fooyin (Stream/Output/Audio)" },
-  { id: "hydrogen", name: "HYDROGEN", sub: "app", vol: 1, bal: 0, sends: { efx: "L" }, play: 0.7, pw: "Hydrogen (Stream/Output/Audio)" },
-  { id: "carlaout", name: "CARLA", sub: "app", vol: 1, bal: 0, sends: { efx: true }, play: 0.5, pw: "Carla (Stream/Output/Audio)" },
-  { id: "bitwig", name: "BITWIG STUDIO", sub: "app · JACK", vol: 1, bal: 0, sends: { phones: true }, play: 0.65, pw: "Bitwig Studio (Audio/Duplex, out1 out2)" },
-  { id: "mic", name: "JLAB MIC", sub: "microphone", vol: 0.9, bal: 0, sends: { eemic: true }, play: 0.5, mic: true, pw: "bluez_input.… (Audio/Source)" },
-  { id: "eeout", name: "EASY EFFECTS MIC", sub: "effects · mic out", vol: 1, bal: 0, sends: { carla: true }, play: 0, from: "eemic", mic: true, pw: "easyeffects_source (Audio/Source/Virtual)" },
-];
-let MAIN = "efx";
-const state = { mute: {}, cue: null, blink: [], done: {} };
-const bus = (id) => BUSES.find((b) => b.id === id);
-const chan = (id) => CHANNELS.find((c) => c.id === id);
-const db = (v) => (v <= 0.0001 ? "-∞" : (60 * Math.log10(v)).toFixed(1));
+// ---------- the colours: the rack's ----------
+const KIND = { "SINK": "#007c7d", "SOURCE": "#206ea6", "PLAYBACK STREAM": "#7e5a42", "RECORDING STREAM": "#427935",
+  "MIDI": "#934c7e", "VIDEO": "#876200", "DUPLEX": "#73348d", "NO CLASS": "#cba553" };
+const kindInk = (k) => (k === "NO CLASS" ? "#1d1e20" : "#f3efe6");
+const cordInk = (c) => (["#f0cc1c", "#12a5b8", "#ec7a1c"].includes(c) ? "#111" : "#f3efe6");
 
-// the outputs a channel reaches by two ways at once (straight, and through an effect)
-function twice(c) {
-  const n = {};
-  const walk = (id, seen) => {
-    if (seen.has(id)) return;
-    seen.add(id);
-    const b = bus(id);
-    if (!b) return;
-    if (b.insert) Object.keys(b.sends || {}).filter((k) => b.sends[k]).forEach((k) => walk(k, seen));
-    else if (b.side === "out") n[id] = (n[id] || 0) + 1;
-  };
-  Object.keys(c.sends).filter((k) => c.sends[k]).forEach((k) => walk(k, new Set()));
-  return Object.keys(n).filter((k) => n[k] > 1);
+// ---------- the cards: a profile says which of the card's nodes exist ----------
+const CARDS = {
+  ryzen: { name: "Ryzen HD Audio Controller", profile: 1, profiles: [
+    { d: "Off" }, { d: "Analog Stereo Duplex", o: 1, i: 1 }, { d: "Analog Stereo Output", o: 1 },
+    { d: "Analog Surround 4.0 Output + Analog Stereo Input", o: 1, i: 1 }, { d: "Analog Surround 4.0 Output", o: 1 },
+    { d: "Analog Stereo Input", i: 1 }, { d: "Pro Audio", o: 1, i: 1 } ] },
+  jlab: { name: "JLab GO Work 2", profile: 3, profiles: [
+    { d: "Off" }, { d: "High Fidelity Playback (A2DP Sink, codec SBC)", o: 1, i: 1 },
+    { d: "High Fidelity Playback (A2DP Sink, codec SBC-XQ)", o: 1, i: 1 }, { d: "High Fidelity Playback (A2DP Sink, codec AAC)", o: 1, i: 1 },
+    { d: "Headset Head Unit (HSP/HFP, codec CVSD)", o: 1, i: 1 }, { d: "Headset Head Unit (HSP/HFP, codec mSBC)", o: 1, i: 1 } ] },
+  radeon: { name: "Radeon High Definition Audio Controller", profile: 0, profiles: [
+    { d: "Off" }, { d: "Digital Stereo (HDMI) Output", o: 1, na: 1 }, { d: "Digital Stereo (HDMI 2) Output", o: 1, na: 1 },
+    { d: "Digital Surround 5.1 (HDMI) Output", o: 1, na: 1 }, { d: "Digital Surround 7.1 (HDMI) Output", o: 1, na: 1 },
+    { d: "Digital Surround 5.1 (HDMI 2) Output", o: 1, na: 1 }, { d: "Digital Surround 7.1 (HDMI 2) Output", o: 1, na: 1 },
+    { d: "Pro Audio", o: 1 } ] },
+};
+
+// ---------- the strips, as PipeWire has them (pct = the rack's volume: cube root of PipeWire's) ----------
+// sect: where it sits; dest: other strips can send to it; side: what a card profile must have for it
+const STRIPS = [
+  { id: "hydrogen", node: 127, sect: "PLAYING", name: "HYDROGEN", sub: "APP", kind: "PLAYBACK STREAM", paint: "black",
+    ch: 2, pct: 100, sends: ["efx"], sig: 0.72, state: "RUNNING", pw: "Hydrogen · Stream/Output/Audio · output_FL, output_FR" },
+  { id: "ocenplay", node: 141, sect: "PLAYING", name: "OCENAUDIO", sub: "APP", kind: "PLAYBACK STREAM", paint: "black",
+    ch: 2, pct: 100, sends: ["efx"], sig: 0.55, state: "RUNNING", pw: "ocenaudio · Stream/Output/Audio · output_FL, output_FR" },
+  { id: "kadence", node: 300, sect: "PLAYING", name: "KADENCE", sub: "APP · ALSA PLUG-IN", kind: "PLAYBACK STREAM", paint: "black",
+    ch: 2, pct: 100, sends: ["efx"], sig: 0.5, state: "RUNNING", pw: "ALSA plug-in [kadence] · ALSA Playback · Stream/Output/Audio" },
+  { id: "soundcraft", node: 311, sect: "PLAYING", name: "SOUNDCRAFT", sub: "APP · ALSA PLUG-IN", kind: "PLAYBACK STREAM", paint: "black",
+    ch: 2, pct: 100, sends: ["efx"], sig: 0.45, state: "RUNNING", pw: "ALSA plug-in [soundcraft] · ALSA Playback · Stream/Output/Audio" },
+  { id: "bitwig", node: 299, sect: "PLAYING", name: "BITWIG STUDIO", sub: "APP · ENGINE", kind: "DUPLEX", paint: "black",
+    ch: 2, pct: null, sends: ["jlab"], sig: 0.6, state: "RUNNING", pw: "Bitwig Studio's audio engine · Audio/Duplex · out4, out5 (no volume in PipeWire)" },
+  { id: "eefilter", node: 264, sect: "PLAYING", name: "EASY EFFECTS FILTER", sub: "TEST SIGNALS", kind: "NO CLASS", paint: "black",
+    ch: 2, pct: null, sends: [], sig: 0, state: "RUNNING", pw: "ee_test_signals · Easy Effects Filter · no media.class · output_FL, output_FR" },
+  { id: "jlabmic", node: 197, sect: "MICROPHONES", name: "JLAB GO WORK 2", sub: "MIC · BLUETOOTH", kind: "SOURCE", paint: "alu",
+    ch: 1, pct: 100, sends: ["efxmic"], sig: 0.3, state: "RUNNING", card: "jlab", side: "i", main: "in",
+    ports: ["Handsfree"], port: 0, pw: "bluez_input.… · JLab GO Work 2 · Audio/Source · capture_MONO" },
+  { id: "ryzenmic", node: 51, sect: "MICROPHONES", name: "RYZEN MIC", sub: "MIC · BUILT IN", kind: "SOURCE", paint: "alu",
+    ch: 2, pct: 5, mute: true, sends: [], sig: 0.25, state: "SUSPENDED", card: "ryzen", side: "i", main: "in",
+    ports: ["Internal Microphone", "Microphone|na"], port: 0, pw: "alsa_input.pci-…analog-stereo · Ryzen HD Audio Controller Analog Stereo · Audio/Source" },
+  { id: "efx", node: 128, sect: "GROUPS", name: "EASY EFFECTS", sub: "EFFECTS: BASS LOUDNESS · EQUALIZER · SPECTRUM · LEVEL", kind: "SINK", paint: "black",
+    ch: 2, pct: 100, sends: ["jlab"], dest: true, short: "EFFECTS", cord: "#7b4fb8", state: "RUNNING", main: "out",
+    pw: "easyeffects_sink · Easy Effects Sink · Audio/Sink, then ee_soe_bass_loudness → ee_soe_equalizer → ee_soe_spectrum → ee_soe_output_level" },
+  { id: "efxmic", node: 336, sect: "GROUPS", name: "EASY EFFECTS MIC", sub: "EFFECTS: SPECTRUM · LEVEL", kind: "SOURCE", paint: "black",
+    ch: 2, pct: 100, sends: ["ocenrec"], dest: true, short: "EE MIC", cord: "#7b4fb8", state: "RUNNING", main: "in",
+    pw: "ee_sie_spectrum → ee_sie_output_level → easyeffects_source · Easy Effects Source · Audio/Source/Virtual" },
+  { id: "jlab", node: 95, sect: "MASTERS", name: "JLAB GO WORK 2", sub: "BLUETOOTH", kind: "SINK", paint: "alu",
+    ch: 2, pct: 55, sends: [], dest: true, out: true, short: "JLAB", cord: "#12a5b8", state: "RUNNING",
+    card: "jlab", side: "o", main: "out", ports: ["Headphones", "Handsfree"], port: 0,
+    pw: "bluez_output.….1 · JLab GO Work 2 · Audio/Sink · playback_FL, playback_FR" },
+  { id: "ryzen", node: 50, sect: "MASTERS", name: "RYZEN SPEAKERS", sub: "ANALOG", kind: "SINK", paint: "alu",
+    ch: 2, pct: 0, sends: [], dest: true, out: true, short: "RYZEN", cord: "#ec7a1c", state: "SUSPENDED",
+    card: "ryzen", side: "o", main: "out", ports: ["Speakers", "Headphones|na"], port: 0,
+    pw: "alsa_output.pci-…analog-stereo · Ryzen HD Audio Controller Analog Stereo · Audio/Sink" },
+  { id: "hdmi", node: null, sect: "MASTERS", name: "RADEON HDMI", sub: "HDMI / DISPLAYPORT", kind: "SINK", paint: "alu",
+    ch: 2, pct: 100, sends: [], dest: true, out: true, short: "HDMI", cord: "#1752c8", state: "",
+    card: "radeon", side: "o", main: "out", ports: ["HDMI / DisplayPort|na", "HDMI / DisplayPort 2|na"], port: 0,
+    pw: "Radeon High Definition Audio Controller · a card whose profile is Off: it has no node now" },
+  { id: "ocenrec", node: 189, sect: "RECORDING", name: "OCENAUDIO", sub: "APP · RECORDS", kind: "RECORDING STREAM", paint: "black",
+    ch: 1, pct: 100, sends: [], dest: true, rec: true, short: "OCENAUDIO", cord: "#14965a", state: "PAUSED",
+    pw: "ocenaudio · Stream/Input/Audio · input_FL, input_FR (its links paused: not recording now)" },
+];
+const SECTIONS = ["PLAYING", "MICROPHONES", "GROUPS", "RECORDING", "MASTERS"];
+const S = (id) => STRIPS.find((s) => s.id === id);
+const DESTS = STRIPS.filter((s) => s.dest);
+
+// ---------- what can change, kept apart for undo and presets ----------
+let st = {
+  sends: Object.fromEntries(STRIPS.map((s) => [s.id, [...s.sends]])),
+  pct: Object.fromEntries(STRIPS.map((s) => [s.id, s.pct])),
+  mute: Object.fromEntries(STRIPS.map((s) => [s.id, !!s.mute])),
+  bal: Object.fromEntries(STRIPS.map((s) => [s.id, 0])),
+  port: Object.fromEntries(STRIPS.map((s) => [s.id, s.port || 0])),
+  profile: Object.fromEntries(Object.entries(CARDS).map(([k, c]) => [k, c.profile])),
+  mainOut: "jlab", mainIn: "jlabmic",
+};
+let cue = new Set();
+let undo = [], redo = [];
+let presets = [], preset = null;
+const snap = () => JSON.parse(JSON.stringify(st));
+function change(f) { undo.push(snap()); redo = []; preset = null; f(); render(); }
+
+// a strip exists while its card's profile has its side (no card: always)
+function alive(s) {
+  if (!s.card) return true;
+  const p = CARDS[s.card].profiles[st.profile[s.card]];
+  return !!p[s.side];
 }
-// where a channel's sound really ends up: its buses, and on through an effect's own sends
-function heard(c) {
+function reaches(from, to, seen = new Set()) {
+  if (from === to) return true;
+  if (seen.has(from)) return false;
+  seen.add(from);
+  return st.sends[from].some((d) => reaches(d, to, seen));
+}
+// where a strip's sound ends up: outputs and recorders, on through effects
+function heard(id, seen = new Set()) {
   const out = new Set();
-  const walk = (id, seen) => {
-    if (seen.has(id)) return;
-    seen.add(id);
-    const b = bus(id);
-    if (!b) return;
-    if (b.insert) Object.keys(b.sends || {}).filter((k) => b.sends[k]).forEach((k) => walk(k, seen));
-    else if (b.side === "out") out.add(id);
-  };
-  Object.keys(c.sends).filter((k) => c.sends[k]).forEach((k) => walk(k, new Set()));
+  for (const d of st.sends[id]) {
+    if (seen.has(d)) continue;
+    seen.add(d);
+    const t = S(d);
+    if (t.out || t.rec) out.add(d);
+    else heard(d, seen).forEach((x) => out.add(x));
+  }
   return [...out];
 }
-function lagNote(ids) {
-  const lags = ids.map((i) => bus(i)).filter((b) => b && !b.off).map((b) => b.lag || 0);
-  if (lags.length < 2) return "";
-  const d = Math.max(...lags) - Math.min(...lags);
-  return d >= 80 ? `out of step by ~${d} ms` : "";
-}
+const pctToY = (p) => 6 + (1 - p / 153) * 188;
+const yToPct = (y) => Math.round(Math.max(0, Math.min(153, (1 - (y - 6) / 188) * 153)));
 
 // ---------- drawing ----------
-const H = 220, PAD = 6;
-const faderY = (v) => PAD + (1 - v / 1.53) * (H - 2 * PAD);
-function knobPic(bal) { return `<div class="knob" data-knob="1"><i style="transform:rotate(${bal * 135}deg)"></i></div>`; }
-function faderPic(kind, id, v) {
-  return `<div class="fader" data-fader="${kind}:${id}"><div class="slot"></div><div class="zero" style="top:${faderY(1)}px"></div>`
-    + `<div class="cap" style="top:${faderY(v)}px"></div></div>`;
-}
-function meterPic(key) { return `<div class="meter"><div><i id="m-${key}-0"></i></div><div><i id="m-${key}-1"></i></div></div>`; }
+const con = document.getElementById("console");
+const statusEl = document.getElementById("status");
+const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;");
 
-function channelStrip(c) {
-  const custom = Object.values(c.sends).some((v) => v === "L");
-  const to = heard(c);
-  const lag = lagNote(to);
-  const dup = twice(c).map((i) => `twice on ${bus(i).name.split(" ")[0]}: straight and through effects`);
-  const rows = BUSES.filter((b) => !(c.mic && b.id === c.from)).map((b) => {
-    const on = c.sends[b.id] === true;
-    const blink = state.blink.includes(`${c.id}:${b.id}`) ? " blink" : "";
-    const short = b.name.split(" ")[0].slice(0, 7);
-    return `<button class="akey${on ? " on" : ""}${blink}" style="--c:${b.c}" data-assign="${c.id}:${b.id}" ${custom ? "disabled" : ""}>${short}</button>`;
-  }).join("");
-  const assign = custom
-    ? `<div class="custom">CUSTOM<br>only its left channel goes to EASY EFFECTS<br><button data-plain="${c.id}">MAKE IT STEREO</button></div>`
-    : `<div class="assign">${rows}</div>`;
-  const heardTxt = to.length ? `HEARD ON <b>${to.map((i) => bus(i).name.split(" ")[0]).join(" + ")}</b>` : (Object.values(c.sends).some(Boolean) ? "recorded, not heard" : "<span class='warn'>NOT HEARD</span>");
-  return `<div class="strip${c.from && !anySend(c.from) ? " dim" : ""}" data-chan="${c.id}">
-    <div class="scribble"><div>${c.name}<small>${c.sub}</small></div></div>
-    ${assign}
-    <div class="heard">${heardTxt}${[lag, ...dup].filter(Boolean).map((w) => `<br><span class="warn">⚠ ${w}</span>`).join("")}</div>
-    ${knobPic(c.bal)}
-    <div class="keys"><button class="k mute${state.mute[c.id] ? " on" : ""}" data-mute="${c.id}">M</button><button class="k cue${state.cue === c.id ? " on" : ""}" data-cue="${c.id}">CUE</button></div>
-    <div class="fm">${meterPic(c.id)}${faderPic("c", c.id, c.vol)}</div>
-    <div class="val">${Math.round(c.vol * 100)}%<small>${db(c.vol ** 3)} dB</small></div>
+function stripHtml(s) {
+  const on = alive(s);
+  const k = KIND[s.kind];
+  const ids = heard(s.id).filter((d) => alive(S(d)));
+  let where = "";
+  if (s.out) where = st.mainOut === s.id ? "MAIN OUTPUT" : "";
+  else if (!s.rec) where = ids.length ? "→ " + ids.map((d) => S(d).short).join(", ") : "→ NOWHERE";
+  const state = on ? (s.state || "") : "OFF";
+  let route = "";
+  if (s.out || (s.card && !s.dest)) {
+    // a card's strip: MAIN, PROFILE, PORT
+    const c = CARDS[s.card];
+    const prof = c.profiles[st.profile[s.card]].d;
+    const port = (s.ports[st.port[s.id]] || "").split("|")[0];
+    if (s.card && s.side === "i" && !s.dest) {
+      route += sendKeys(s);
+      route += `<button class="wide main ${st.mainIn === s.id ? "on" : ""}" data-act="main" data-id="${s.id}" ${on ? "" : "disabled"}>MAIN IN<span class="led"></span></button>`;
+      route += `<button class="wide" data-act="port" data-id="${s.id}" ${on ? "" : "disabled"}>PORT<b>${esc(port)}</b></button>`;
+    } else {
+      route += `<button class="wide main ${st.mainOut === s.id ? "on" : ""}" data-act="main" data-id="${s.id}" ${on ? "" : "disabled"}>${st.mainOut === s.id ? "MAIN MASTER" : "MAKE IT MAIN"}<span class="led"></span></button>`;
+      route += `<button class="wide" data-act="profile" data-id="${s.id}">PROFILE<b>${esc(prof)}</b></button>`;
+      route += `<button class="wide" data-act="port" data-id="${s.id}" ${on ? "" : "disabled"}>PORT<b>${esc(port)}</b></button>`;
+      route += `<div class="silkp" style="margin-top:6px">MIX OF</div><div class="from">${fromList(s)}</div>`;
+    }
+  } else if (s.rec) {
+    route = `<div class="silkp">RECORDS FROM</div><div class="from">${fromList(s)}</div>`;
+  } else {
+    route = sendKeys(s);
+    if (s.main) {
+      const isOn = s.main === "out" ? st.mainOut === s.id : st.mainIn === s.id;
+      route += `<button class="wide main ${isOn ? "on" : ""}" data-act="main" data-id="${s.id}" style="margin-top:auto">MAIN ${s.main.toUpperCase()}<span class="led"></span></button>`;
+    }
+  }
+  const vol = st.pct[s.id];
+  let fader;
+  if (vol === null) {
+    fader = `<div class="novol">NO VOLUME IN PIPEWIRE</div>`;
+  } else {
+    const marks = [153, 100, 75, 50, 25, 0].map((m) => `<span style="top:${pctToY(m)}px">${m}</span>`).join("");
+    fader = `<div class="scale">${marks}</div><div class="slot" data-id="${s.id}"><div class="unity" style="top:${pctToY(100)}px"></div>
+      <div class="cap" style="top:${pctToY(vol)}px"></div></div>`;
+  }
+  const cols = Array.from({ length: s.ch }, () => `<div class="col">${Array.from({ length: 16 }, (_, i) =>
+    `<b class="${i >= 14 ? "r" : i >= 11 ? "y" : ""}"></b>`).join("")}</div>`).join("");
+  const bal = s.ch === 2 && vol !== null
+    ? `<span class="knoblab">BAL</span><div class="knob" data-id="${s.id}" style="--a:${st.bal[s.id] * 135}deg"></div><span class="knoblab"></span>` : "";
+  const master = s.out ? `master ${st.mainOut === s.id ? "main" : ""}` : "";
+  return `<div class="strip ${s.paint} ${master} ${on ? "" : "off"}" data-strip="${s.id}">
+    <div class="band" style="--k:${k};--ki:${kindInk(s.kind)}">${s.node ? `<button class="gkey" data-act="graph" data-id="${s.id}">#${s.node}</button>` : ""}<span>${esc(s.name)}</span></div>
+    <div class="scribble"><div>${esc(s.name)}<small>${esc(s.sub)}${state ? " · " + state : ""}</small><i>${esc(where)}</i></div></div>
+    <div class="route">${route}</div>
+    <div class="balrow">${bal}</div>
+    <div class="keys">
+      <button class="k2 cue ${cue.has(s.id) ? "on" : ""}" data-act="cue" data-id="${s.id}" ${on ? "" : "disabled"}><i></i>CUE</button>
+      <button class="k2 mute ${st.mute[s.id] ? "on" : ""}" data-act="mute" data-id="${s.id}" ${vol === null || !on ? "disabled" : ""}><i></i>MUTE</button>
+    </div>
+    <div class="fbox">${fader}<div class="meter" data-meter="${s.id}">${cols}</div></div>
+    <div class="readout ${vol > 100 ? "hot" : ""}" data-read="${s.id}">${vol === null ? "" : vol + "%"}</div>
   </div>`;
 }
-function anySend(busId) { return CHANNELS.some((c) => c.sends[busId]); }
-function busStrip(b) {
-  const sends = b.insert
-    ? `<div class="assign">${BUSES.filter((o) => o.side === "out" && o.id !== b.id).map((o) => `<button class="akey${b.sends[o.id] ? " on" : ""}" style="--c:${o.c}" data-bsend="${b.id}:${o.id}">${o.name.split(" ")[0].slice(0, 7)}</button>`).join("")}</div>`
-    : `<div class="heard">${b.off ? "<span class='warn'>NOTHING PLUGGED IN</span>" : b.lag >= 100 ? `<span class="warn">Bluetooth: ~${b.lag} ms late</span>` : ""}</div>`;
-  const main = b.side === "out" ? `<button class="k main${MAIN === b.id ? " on" : ""}" data-main="${b.id}">MAIN</button>` : "";
-  return `<div class="strip bus${b.off ? " dim" : ""}" data-bus="${b.id}">
-    <div class="band" style="background:${b.c}"></div>
-    <div class="scribble"><div>${b.name}<small>${b.sub}</small></div></div>
-    ${sends}
-    <div class="keys"><button class="k mute${state.mute["b:" + b.id] ? " on" : ""}" data-mute="b:${b.id}">M</button>${main}</div>
-    <div class="fm">${meterPic("b-" + b.id)}${faderPic("b", b.id, b.vol)}</div>
-    <div class="val">${Math.round(b.vol * 100)}%<small>${db(b.vol ** 3)} dB</small></div>
-  </div>`;
+// a channel's assign keys, as on a console: the masters and the groups it mixes into, and what records it
+const mixes = (d) => d.out || d.main === "out";
+function sendKeys(s) {
+  const keys = (list) => `<div class="agrid">${list.filter((d) => d.id !== s.id).map(key).join("")}</div>`;
+  const mix = DESTS.filter(mixes), rec = DESTS.filter((d) => !mixes(d));
+  return `<div class="silkp">MIX TO</div>${keys(mix)}<div class="silkp" style="margin-top:3px">RECORD TO</div>${keys(rec)}`;
+  function key(d) {
+    const lit = st.sends[s.id].includes(d.id);
+    const dead = !alive(d) || !alive(s);
+    return `<button class="skey ${lit ? "on" : ""}" style="--c:${d.cord};--ci:${cordInk(d.cord)}" data-act="send" data-id="${s.id}" data-to="${d.id}" ${dead ? "disabled" : ""}><i></i>${esc(d.short)}</button>`;
+  }
+}
+function fromList(s) {
+  const f = STRIPS.filter((x) => st.sends[x.id].includes(s.id)).map((x) => `<b>${esc(x.name)}</b>`);
+  return f.length ? f.join("") : `<span style="opacity:.6">nothing</span>`;
 }
 function render() {
-  const d = document.getElementById("desk");
-  d.innerHTML = `<div class="section"><span class="shead">CHANNELS · WHAT MAKES SOUND</span>${CHANNELS.map(channelStrip).join("")}</div>`
-    + `<div class="section"><span class="shead">OUTPUTS · WHERE YOU HEAR IT</span>${BUSES.filter((b) => b.side === "out").map(busStrip).join("")}</div>`
-    + `<div class="section"><span class="shead">RECORDED BY</span>${BUSES.filter((b) => b.side === "rec").map(busStrip).join("")}</div>`;
-  document.getElementById("lcd").textContent = `MAIN: ${bus(MAIN).name} · 48 kHz · 1024${state.cue ? " · CUE: " + chan(state.cue).name : ""}`;
-  renderTasks();
+  con.innerHTML = SECTIONS.map((sec) => `<div class="section"><div class="shead">${sec}</div>${
+    STRIPS.filter((s) => s.sect === sec).sort((a, b) => (a.id === st.mainOut) - (b.id === st.mainOut)).map(stripHtml).join("")}</div>`).join("");
+  const mo = S(st.mainOut), mi = S(st.mainIn);
+  document.getElementById("outkey").textContent = `OUT ▸ ${mo && alive(mo) ? mo.name : "NONE"}`;
+  document.getElementById("inkey").textContent = `IN ▸ ${mi && alive(mi) ? mi.name : "NONE"}`;
+  document.getElementById("presetkey").textContent = cue.size
+    ? `CUE ▸ ${[...cue].map((c) => S(c).name).join(" + ")} IN ${mo ? mo.name : "—"}`
+    : `PRESET ▸ ${preset || "UNSAVED"}`;
+  document.getElementById("undo").disabled = !undo.length;
+  document.getElementById("redo").disabled = !redo.length;
+  meterEls = {};
+  document.querySelectorAll("[data-meter]").forEach((m) => { meterEls[m.dataset.meter] = [...m.children].map((c) => [...c.children]); });
 }
 
-// ---------- what to try ----------
-const TASKS = [
-  { name: "A film on the headphones and the speakers at once", keys: ["vlc:phones", "vlc:speakers"],
-    check: () => heard(chan("vlc")).includes("phones") && heard(chan("vlc")).includes("speakers") },
-  { name: "Music only on the speakers, Bitwig only in the headphones", keys: ["fooyin:speakers", "fooyin:efx", "bitwig:phones"],
-    check: () => { const h = heard(chan("fooyin")); return h.length === 1 && h[0] === "speakers" && heard(chan("bitwig")).join() === "phones"; } },
-  { name: "My microphone into Teams, with the effects", keys: ["eeout:teams"], check: () => chan("eeout").sends.teams === true },
-  { name: "Hear myself in the headphones", keys: ["mic:phones"], check: () => chan("mic").sends.phones === true },
-  { name: "Hydrogen in both ears", keys: [], check: () => chan("hydrogen").sends.efx === true },
-];
-function renderTasks() {
-  const t = document.getElementById("tasks");
-  t.innerHTML = "<h3>TRY IT</h3>" + TASKS.map((k, i) => `<div class="task${k.check() ? " done" : ""}"><span>${k.name}</span>${k.keys.length ? `<button data-show="${i}">SHOW ME</button>` : `<button data-show="${i}">WHERE?</button>`}</div>`).join("");
+// ---------- the meters: what each strip passes on, after its fader ----------
+let meterEls = {};
+const lvl = {};
+function level(id, t, seen) {
+  const s = S(id);
+  if (!alive(s) || st.mute[id]) return [0, 0];
+  let l = 0, r = 0;
+  if (s.sig) {
+    const n = 0.75 + 0.25 * Math.sin(t * 7.3 + s.node) * Math.sin(t * 2.1 + s.node * 3);
+    l = r = s.sig * n;
+    if (s.ch === 1) r = l;
+  }
+  for (const x of STRIPS) {
+    if (x.id === id || !st.sends[x.id].includes(id) || seen.has(x.id)) continue;
+    const [a, b] = level(x.id, t, new Set([...seen, id]));
+    l = Math.hypot(l, a); r = Math.hypot(r, b);
+  }
+  // CUE plays in the MAIN output, at its own level
+  if (id === st.mainOut) {
+    const cl = document.getElementById("cuelevel").value / 100;
+    for (const c of cue) {
+      if (c === id) continue;
+      const [a, b] = level(c, t, new Set([id]));
+      l = Math.hypot(l, a * cl); r = Math.hypot(r, b * cl);
+    }
+  }
+  if (s.rec && s.state === "PAUSED") return [0, 0];
+  const g = st.pct[id] === null ? 1 : st.pct[id] / 100;
+  const b = st.bal[id];
+  return [l * g * Math.min(1, 1 - b), r * g * Math.min(1, 1 + b)];
 }
-
-// ---------- the signal: made up, to show where it flows ----------
-const level = {};
-function tick(t) {
-  const src = {};
-  for (const c of CHANNELS) {
-    let v;
-    if (c.from) v = Math.max(...CHANNELS.filter((x) => x.sends[c.from] && !state.mute[x.id]).map((x) => src[x.id] || 0), 0);
-    else v = c.play * (c.mic ? 0.4 + 0.6 * Math.abs(Math.sin(t / 310 + c.id.length)) * Math.random() : 0.75 + 0.25 * Math.sin(t / 420 + c.id.length * 1.7) + 0.1 * Math.random());
-    v = state.mute[c.id] ? 0 : v * c.vol ** 3;
-    src[c.id] = Math.min(v, 1.2);
-    const half = Object.values(c.sends).includes("L");
-    level[c.id] = [src[c.id] * (1 - Math.max(0, c.bal)), half ? 0 : src[c.id] * (1 + Math.min(0, c.bal))];
-  }
-  const into = (id, seen = new Set()) => {
-    if (seen.has(id)) return [0, 0];
-    seen.add(id);
-    let l = 0, r = 0;
-    for (const c of CHANNELS) if (c.sends[id]) { l = Math.max(l, level[c.id][0]); r = Math.max(r, level[c.id][c.sends[id] === "L" ? 0 : 1] * (c.sends[id] === "L" ? 0 : 1)); }
-    for (const b of BUSES) if (b.insert && b.sends && b.sends[id]) { const [a, z] = into(b.id, seen); l = Math.max(l, a * b.vol ** 3); r = Math.max(r, z * b.vol ** 3); }
-    return [l, r];
-  };
-  for (const b of BUSES) {
-    const [l, r] = state.mute["b:" + b.id] || b.off ? [0, 0] : into(b.id);
-    level["b-" + b.id] = [l * b.vol ** 3, r * b.vol ** 3];
-  }
-  for (const k of Object.keys(level)) for (const i of [0, 1]) {
-    const el = document.getElementById(`m-${k}-${i}`);
-    if (el) el.style.height = `${Math.min(100, level[k][i] * 85)}%`;
+function tick(ms) {
+  const t = ms / 1000;
+  for (const id in meterEls) {
+    const v = level(id, t, new Set());
+    meterEls[id].forEach((leds, c) => {
+      const db = 20 * Math.log10(Math.max(v[c] ?? v[0], 1e-6));
+      const n = Math.round(((db + 48) / 54) * 16);
+      leds.forEach((e, i) => e.classList.toggle("on", i < n));
+    });
   }
   requestAnimationFrame(tick);
 }
 
-// ---------- hands ----------
-const status = (s) => { document.getElementById("status").innerHTML = s; };
-function hint(el) {
-  const a = el.closest("[data-assign]"), m = el.closest("[data-main]"), f = el.closest("[data-fader]"), cue = el.closest("[data-cue]"), bs = el.closest("[data-bsend]");
-  if (a) { const [c, b] = a.dataset.assign.split(":"); const on = chan(c).sends[b];
-    return `${on ? "Lit" : "Dark"}: <b>${chan(c).name}</b> ${on ? "is" : "is not"} linked to <b>${bus(b).name}</b>. In PipeWire: ${on ? "two links" : "no links"} from <i>${chan(c).pw}</i> output_FL/FR to <i>${bus(b).pw}</i>. Click to ${on ? "unlink" : "link"}.`; }
-  if (bs) { const [b, o] = bs.dataset.bsend.split(":"); return `Where <b>${bus(b).name}</b> sends what it has processed: its own link to <b>${bus(o).name}</b> (Easy Effects makes it itself).`; }
-  if (m) return `MAIN: where new apps play (PipeWire's default output, set through WirePlumber). Apps already playing stay where they are.`;
-  if (cue) return `CUE: hear this channel alone in the headphones, through Patchcord's own cue stream. Nothing is relinked.`;
-  if (f) { const [k, id] = f.dataset.fader.split(":"); return k === "c" ? `The volume of <i>${chan(id).pw}</i> (its stream's channel volumes, as pavucontrol sets them). Drag, wheel; double-click: 0 dB.` : `The volume of <i>${bus(id).pw}</i>: the device's own.`; }
-  const s = el.closest("[data-chan]"), b = el.closest("[data-bus]");
-  if (s) return `<b>${chan(s.dataset.chan).name}</b>: ${chan(s.dataset.chan).pw}`;
-  if (b) return `<b>${bus(b.dataset.bus).name}</b>: ${bus(b.dataset.bus).pw}`;
-  return "Hover anything to see what it is in PipeWire.";
+// ---------- menus ----------
+let menuEl = null;
+function closeMenu() { if (menuEl) { menuEl.remove(); menuEl = null; } }
+function openMenu(anchor, items) {
+  closeMenu();
+  menuEl = document.createElement("div");
+  menuEl.className = "menu";
+  for (const it of items) {
+    const d = document.createElement("div");
+    if (it.sep) d.className = "sep";
+    else {
+      d.textContent = it.t;
+      if (it.hd) d.className = "hd";
+      if (it.cur) d.classList.add("cur");
+      if (it.na) d.classList.add("na");
+      if (it.f) d.onclick = (e) => { e.stopPropagation(); closeMenu(); it.f(); };
+      if (it.tip) d.onmouseenter = () => say(it.tip);
+    }
+    menuEl.appendChild(d);
+  }
+  document.body.appendChild(menuEl);
+  const r = anchor.getBoundingClientRect();
+  menuEl.style.left = Math.min(r.left, innerWidth - menuEl.offsetWidth - 8) + "px";
+  menuEl.style.top = Math.min(r.bottom + 3, innerHeight - menuEl.offsetHeight - 8) + "px";
 }
-function click(e) {
-  const el = e.target;
-  const a = el.closest("[data-assign]");
-  if (a) { const [c, b] = a.dataset.assign.split(":"); const ch = chan(c); ch.sends[b] = !ch.sends[b]; state.blink = state.blink.filter((k) => k !== a.dataset.assign); return after(); }
-  const bs = el.closest("[data-bsend]");
-  if (bs) { const [b, o] = bs.dataset.bsend.split(":"); bus(b).sends[o] = !bus(b).sends[o]; return after(); }
-  const p = el.closest("[data-plain]");
-  if (p) { chan(p.dataset.plain).sends.efx = true; return after(); }
-  const m = el.closest("[data-mute]");
-  if (m) { state.mute[m.dataset.mute] = !state.mute[m.dataset.mute]; return after(); }
-  const c = el.closest("[data-cue]");
-  if (c) { state.cue = state.cue === c.dataset.cue ? null : c.dataset.cue; return after(); }
-  const mn = el.closest("[data-main]");
-  if (mn) { MAIN = mn.dataset.main; return after(); }
-  const sh = el.closest("[data-show]");
-  if (sh) { const k = TASKS[+sh.dataset.show];
-    state.blink = k.keys.length ? k.keys.filter((key) => { const [cc, bb] = key.split(":"); const want = !(cc === "fooyin" && bb === "efx"); return !!chan(cc).sends[bb] !== want; }) : [];
-    if (!k.keys.length) status("Hydrogen is linked by its left channel only: its strip says CUSTOM. Press MAKE IT STEREO, or fix it in the RACK.");
-    return render(); }
+
+// ---------- what a click does, and what it is in PipeWire ----------
+function say(h) { statusEl.innerHTML = h; }
+function act(b) {
+  const s = S(b.dataset.id);
+  switch (b.dataset.act) {
+    case "send": {
+      const to = b.dataset.to;
+      const lit = st.sends[s.id].includes(to);
+      if (!lit && reaches(to, s.id)) {
+        b.classList.remove("no"); void b.offsetWidth; b.classList.add("no");
+        say(`Refused: ${esc(S(to).name)} already sends to ${esc(s.name)}, so this link would feed its sound back into itself.`);
+        return;
+      }
+      change(() => { st.sends[s.id] = lit ? st.sends[s.id].filter((x) => x !== to) : [...st.sends[s.id], to]; });
+      say(`${lit ? "Unlinked" : "Linked"}: ${linkText(s, S(to))}`);
+      break;
+    }
+    case "mute": change(() => { st.mute[s.id] = !st.mute[s.id]; });
+      say(`<code>mute</code> of node #${s.node} set to ${st.mute[s.id]}`); break;
+    case "cue":
+      if (cue.has(s.id)) cue.delete(s.id); else cue.add(s.id);
+      render();
+      say(cue.has(s.id) ? `CUE: Patchcord's own stream plays ${esc(s.name)} in ${esc(S(st.mainOut).name)} (MAIN), at CUE LEVEL. No link of yours changes.` : "CUE off for it.");
+      break;
+    case "main":
+      change(() => { if (s.main === "in" || s.side === "i") st.mainIn = s.id; else st.mainOut = s.id; });
+      say(`<code>default.configured.audio.${s.main === "in" || s.side === "i" ? "source" : "sink"}</code> set to ${esc(s.name)}: new apps ${s.main === "in" || s.side === "i" ? "record from" : "play in"} it; streams on the default follow.`);
+      break;
+    case "profile": {
+      const c = CARDS[s.card];
+      openMenu(b, [{ t: c.name.toUpperCase() + " · PROFILE", hd: 1 }, ...c.profiles.map((p, i) => ({
+        t: p.d, cur: i === st.profile[s.card], na: p.na,
+        tip: `Profile ${i}: ${p.o ? "an output" : "no output"}, ${p.i ? "an input" : "no input"}${p.na ? "; nothing is plugged in for it" : ""}.`,
+        f: () => change(() => {
+          st.profile[s.card] = i;
+          // a node the profile takes away goes, and its links with it
+          for (const x of STRIPS.filter((x) => x.card === s.card && !alive(x))) {
+            st.sends[x.id] = [];
+            for (const y of STRIPS) st.sends[y.id] = st.sends[y.id].filter((d) => d !== x.id);
+            cue.delete(x.id);
+          }
+        }),
+      }))]);
+      break;
+    }
+    case "port":
+      openMenu(b, [{ t: "PORT", hd: 1 }, ...s.ports.map((p, i) => ({
+        t: p.split("|")[0], cur: i === st.port[s.id], na: p.endsWith("|na"),
+        f: () => change(() => { st.port[s.id] = i; }),
+      }))]);
+      break;
+    case "graph":
+      say(`Opens ENGINE with node <code>#${s.node}</code> (${esc(s.pw)}) chosen and in view.`);
+      break;
+  }
 }
-function after() { render(); }
+function linkText(a, b) {
+  const L = a.ch === 1 ? "MONO → FL and FR" : "FL → FL, FR → FR";
+  return `${esc(a.name)} → ${esc(b.name)}: ${a.node ? `#${a.node}` : ""} to ${b.node ? `#${b.node}` : ""}, ${L} (two links in PipeWire).`;
+}
+
+con.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-act]");
+  if (b && !b.disabled) { e.stopPropagation(); act(b); }
+});
+con.addEventListener("dblclick", (e) => {
+  const sl = e.target.closest(".slot"), kn = e.target.closest(".knob");
+  if (sl) change(() => { st.pct[sl.dataset.id] = 100; });
+  if (kn) change(() => { st.bal[kn.dataset.id] = 0; });
+});
+con.addEventListener("mouseover", (e) => {
+  const b = e.target.closest("[data-act]"), sl = e.target.closest(".slot"), kn = e.target.closest(".knob"), str = e.target.closest("[data-strip]");
+  if (b && b.dataset.act === "send") {
+    const a = S(b.dataset.id), t = S(b.dataset.to);
+    say(`${st.sends[a.id].includes(t.id) ? "Linked" : "Not linked"}: ${linkText(a, t)}`);
+  } else if (sl) say(`Fader: <code>channelVolumes</code> of node #${S(sl.dataset.id).node}, ${st.pct[sl.dataset.id]}% (the cube root of PipeWire's value, as pavucontrol shows it; red past 100%).`);
+  else if (kn) say(`BAL: the left and right of <code>channelVolumes</code> apart.`);
+  else if (b && b.dataset.act === "cue") say("CUE: listen to it in the MAIN output without changing any link or volume.");
+  else if (b && b.dataset.act === "profile") say(`The card's profile: which of its nodes exist (an output, an input, both, or none).`);
+  else if (b && b.dataset.act === "port") say(`The card's port: where it plays or records from; unplugged ones are marked.`);
+  else if (str) {
+    const s = S(str.dataset.strip);
+    say(`<b>${esc(s.name)}</b> · ${s.kind} · <code>${esc(s.pw)}</code>`);
+  }
+});
+
+// fader and BAL: drag; the wheel
 let drag = null;
-function down(e) {
-  const f = e.target.closest("[data-fader]"), k = e.target.closest("[data-knob]");
-  if (f) { const [kind, id] = f.dataset.fader.split(":"); const o = kind === "c" ? chan(id) : bus(id); drag = { o, key: "vol", y: e.clientY, v: o.vol, scale: 1.53 / (H - 2 * PAD) }; e.preventDefault(); }
-  else if (k) { const c = chan(k.closest("[data-chan]").dataset.chan); drag = { o: c, key: "bal", y: e.clientY, v: c.bal, scale: 1 / 80, min: -1, max: 1 }; e.preventDefault(); }
-}
-function move(e) {
-  if (!drag) return status(hint(e.target));
-  const v = drag.v + (drag.y - e.clientY) * drag.scale;
-  drag.o[drag.key] = Math.max(drag.min ?? 0, Math.min(drag.max ?? 1.53, v));
-  if (drag.key === "vol" && Math.abs(drag.o.vol - 1) < 0.02) drag.o.vol = 1;
-  render();
-}
-function wheel(e) {
-  const f = e.target.closest("[data-fader]");
-  if (!f) return;
+con.addEventListener("pointerdown", (e) => {
+  const sl = e.target.closest(".slot"), kn = e.target.closest(".knob");
+  if (!sl && !kn) return;
   e.preventDefault();
-  const [kind, id] = f.dataset.fader.split(":"); const o = kind === "c" ? chan(id) : bus(id);
-  o.vol = Math.max(0, Math.min(1.53, o.vol + (e.deltaY < 0 ? 0.05 : -0.05)));
+  const el = sl || kn;
+  el.setPointerCapture(e.pointerId);
+  drag = { el, id: el.dataset.id, knob: !!kn, y: e.clientY, b0: st.bal[el.dataset.id], before: snap() };
+  if (sl) setFader(drag.id, yToPct(e.clientY - sl.getBoundingClientRect().top));
+});
+con.addEventListener("pointermove", (e) => {
+  if (!drag) return;
+  if (drag.knob) {
+    const b = Math.max(-1, Math.min(1, drag.b0 + (drag.y - e.clientY) / 80));
+    st.bal[drag.id] = Math.round(b * 20) / 20;
+    drag.el.style.setProperty("--a", st.bal[drag.id] * 135 + "deg");
+    say(`BAL ${st.bal[drag.id] === 0 ? "centre" : (st.bal[drag.id] < 0 ? "L " : "R ") + Math.round(Math.abs(st.bal[drag.id]) * 100) + "%"}`);
+  } else setFader(drag.id, yToPct(e.clientY - drag.el.getBoundingClientRect().top));
+});
+con.addEventListener("pointerup", () => {
+  if (!drag) return;
+  if (JSON.stringify(drag.before) !== JSON.stringify(st)) { undo.push(drag.before); redo = []; preset = null; }
+  drag = null;
   render();
+});
+function setFader(id, p) {
+  st.pct[id] = p;
+  const sl = con.querySelector(`.slot[data-id="${id}"]`);
+  sl.querySelector(".cap").style.top = pctToY(p) + "px";
+  const r = con.querySelector(`[data-read="${id}"]`);
+  r.textContent = p + "%";
+  r.classList.toggle("hot", p > 100);
 }
-function dbl(e) {
-  const f = e.target.closest("[data-fader]"), k = e.target.closest("[data-knob]");
-  if (f) { const [kind, id] = f.dataset.fader.split(":"); (kind === "c" ? chan(id) : bus(id)).vol = 1; render(); }
-  if (k) { chan(k.closest("[data-chan]").dataset.chan).bal = 0; render(); }
+con.addEventListener("wheel", (e) => {
+  const sl = e.target.closest(".slot");
+  if (!sl) return;
+  e.preventDefault();
+  change(() => { st.pct[sl.dataset.id] = Math.max(0, Math.min(153, st.pct[sl.dataset.id] + (e.deltaY < 0 ? 2 : -2))); });
+}, { passive: false });
+
+// the top panel
+document.getElementById("outkey").onclick = (e) => { e.stopPropagation(); mainMenu(e.target, "out"); };
+document.getElementById("inkey").onclick = (e) => { e.stopPropagation(); mainMenu(e.target, "in"); };
+function mainMenu(b, side) {
+  const list = STRIPS.filter((s) => (side === "out" ? s.main === "out" : s.main === "in") && alive(s));
+  openMenu(b, [{ t: side === "out" ? "DEFAULT OUTPUT" : "DEFAULT INPUT", hd: 1 }, ...list.map((s) => ({
+    t: s.name, cur: (side === "out" ? st.mainOut : st.mainIn) === s.id,
+    f: () => change(() => { if (side === "out") st.mainOut = s.id; else st.mainIn = s.id; }),
+  }))]);
 }
-document.addEventListener("click", click);
-document.addEventListener("pointerdown", down);
-document.addEventListener("pointermove", move);
-document.addEventListener("pointerup", () => { drag = null; });
-document.addEventListener("wheel", wheel, { passive: false });
-document.addEventListener("dblclick", dbl);
+document.getElementById("presetkey").onclick = (e) => {
+  e.stopPropagation();
+  if (cue.size) { cue.clear(); render(); say("CUE stopped."); return; }
+  openMenu(e.target, [{ t: "SAVE A NEW PRESET", f: () => {
+      const name = `PRESET ${presets.length + 1}`;
+      presets.push({ name, st: snap() }); preset = name; render(); say(`Saved as ${name}: links, volumes, mutes, MAIN, profiles.`);
+    } }, { sep: 1 }, ...(presets.length ? presets.map((p) => ({ t: p.name, cur: p.name === preset,
+      f: () => { undo.push(snap()); redo = []; st = JSON.parse(JSON.stringify(p.st)); preset = p.name; render(); } }))
+    : [{ t: "no presets yet", hd: 1 }])]);
+};
+document.getElementById("undo").onclick = () => doUndo();
+document.getElementById("redo").onclick = () => doRedo();
+function doUndo() { if (!undo.length) return; redo.push(snap()); st = undo.pop(); preset = null; render(); say("Undone."); }
+function doRedo() { if (!redo.length) return; undo.push(snap()); st = redo.pop(); preset = null; render(); say("Redone."); }
+document.querySelectorAll("[data-view]").forEach((b) => b.onclick = () => {
+  if (b.dataset.view !== "MIXER") say(`${b.dataset.view}: the same graph as it is, not in this mockup.`);
+});
+document.addEventListener("click", () => closeMenu());
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { if (menuEl) closeMenu(); else if (cue.size) { cue.clear(); render(); say("CUE stopped."); } }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? doRedo() : doUndo(); }
+});
+
 render();
 requestAnimationFrame(tick);
 </script>

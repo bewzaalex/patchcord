@@ -1582,12 +1582,13 @@ impl Scene {
     }
 
     /// The rack's ends, in the rack: the left rail's outer edge, the right one's, and how far down
-    /// it has something (the last device, or a cord hanging lower). The scene never shows beyond
-    /// them (but below, while the window is taller).
+    /// it has something (the last device, or a cord hanging lower, but no more than one empty unit
+    /// past the last device: a plug carried down doesn't take the rack on for ever). The scene
+    /// never shows beyond them (but below, while the window is taller).
     pub fn rack_extent(&self) -> Option<(f64, f64, f64)> {
         let rw = self.rack_w.filter(|_| self.rack)?;
         let cords = self.cords.iter().flat_map(|c| c.pts.iter().map(|p| p.y as f64)).fold(0.0, f64::max);
-        Some((-RAIL_NUMS, self.racks as f64 * rack_pitch(rw) - RAIL_NUMS, self.rack_h.max(cords)))
+        Some((-RAIL_NUMS, self.racks as f64 * rack_pitch(rw) - RAIL_NUMS, self.rack_h.max(cords).min(self.rack_h + RACK_U)))
     }
 
     /// The units' numbers up to the unit at `y` (world units) drawn, for `rails` to show.
