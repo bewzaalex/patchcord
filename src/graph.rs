@@ -42,11 +42,17 @@ pub struct Port {
 
 #[derive(Clone, Debug)]
 pub struct Group {
-    /// its name on the face: what it is (`role`), or what its program named its node
-    /// (`node.description`), or the client it belongs to (on a MIDI bridge)
+    /// its frame's name: what it is (`role`), or what its program named its node
+    /// (`node.description`)
     pub label: String,
-    /// what it is, whatever its name: PLAYBACK, CAPTURE, MONITOR, INPUT, OUTPUT, MIDI, VIDEO
+    /// on a MIDI bridge, the ALSA client its ports belong to (MIDI THROUGH, HYDROGEN): printed
+    /// under its jacks in the bridge's one frame
+    pub client: Option<String>,
+    /// what its ports are for, whatever its name: PLAYBACK, CAPTURE, MONITOR, INPUT, OUTPUT, MIDI,
+    /// VIDEO (`port_role`): its jacks' colour
     pub role: &'static str,
+    /// the kind of block its node is (`block_kind`): its frame's colour
+    pub kind: &'static str,
     pub dir: Dir,
     pub ports: Vec<Port>,
     /// exactly a left and a right audio channel: shown as one stereo jack unless split
@@ -88,11 +94,12 @@ pub struct RouteRef {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// A device's paint: who owns it (ADR 0014). Hardware (a node with a `device.id`) is aluminium, a
+/// program black, a node of PipeWire's or WirePlumber's own olive.
 pub enum Finish {
-    Metal,
+    Aluminium,
     Black,
-    Cream,
-    Navy,
+    Olive,
 }
 
 #[derive(Clone, Debug)]
@@ -430,14 +437,6 @@ impl Graph {
             };
             *m.entry(who_what).or_default() += 1;
         }
-        // an app's recording streams' monitors (a copy of what each records): left off its face
-        let monitored: HashSet<u32> = self.of(Kind::Port).filter(|(_, pp)| pp.get("port.monitor").is_some_and(|v| v == "true")).filter_map(|(_, pp)| pp.get("node.id")?.parse().ok()).collect();
-        for (id, np) in self.of(Kind::Node) {
-            if monitored.contains(&id) && np.get("media.class").is_some_and(|c| c == "Stream/Input/Audio") && !self.hidden(id, np) {
-                let who = some(np.get("application.name")).or(some(np.get("node.name"))).cloned().unwrap_or_else(|| "?".into());
-                *m.entry((who, "monitors of its recording streams")).or_default() += 1;
-            }
-        }
         m.into_iter().map(|((who, what), n)| (who, what, n)).collect()
     }
 
@@ -631,7 +630,6 @@ impl Graph {
                         _ => 2,
                     })
                     .unwrap_or("suspended");
-                let class = first.get("media.class").map_or("", |s| s.as_str());
                 let several = program.is_some() && nodes.len() > 1;
                 let mut groups: Vec<Group> = Vec::new();
                 for n in &nodes {
@@ -648,10 +646,8 @@ impl Graph {
                     }
                     groups.extend(gs);
                 }
-                // a stream's monitors (a copy of what each recording stream records) stay off its
-                // face: nobody patches from them (the HIDDEN list names them under SYSTEM)
-                let stream_of = |g: &Group| g.ports.first().and_then(|p| self.props(p.node)).and_then(|p| p.get("media.class")).is_some_and(|c| c.starts_with("Stream/"));
-                groups.retain(|g| !(g.role == "MONITOR" && stream_of(g)));
+                // (a stream's monitors are on its frame too: the rack patches whatever PipeWire
+                // can link, ADR 0014)
                 // a program's several streams of one kind: numbered, in the order they came
                 if several {
                     number_streams(&mut groups);
@@ -685,7 +681,13 @@ impl Graph {
                         model(dev, first)
                     },
                     kind: if program.is_some() { "APP" } else { kind(dev, card_id.and_then(|id| self.profiles.get(&id)).map(|(l, _)| l.as_slice()), first) },
-                    finish: if program.is_some() { Finish::Black } else { finish(dev.is_some(), class) },
+                    finish: if program.is_some() {
+                        Finish::Black
+                    } else if dev.is_some() {
+                        Finish::Aluminium
+                    } else {
+                        Finish::Olive
+                    },
                     color: PALETTE[(h.finish() % PALETTE.len() as u64) as usize],
                     key,
                     name,
@@ -889,21 +891,10 @@ impl Graph {
     fn group(&self, node: u32, dir: Dir, mon: bool, client: Option<String>, ps: Vec<Port>) -> Group {
         let np = self.props(node).expect("node");
         let class = np.get("media.class").map_or("", |s| s.as_str());
-        let role = if mon {
-            "MONITOR"
-        } else if ps[0].media == Media::Midi {
-            "MIDI"
-        } else if ps[0].media == Media::Video {
-            "VIDEO"
-        } else {
-            match (class, dir) {
-                (c, Dir::In) if c.ends_with("Sink") => "PLAYBACK",
-                (c, Dir::Out) if c.ends_with("Source") => "CAPTURE",
-                (_, Dir::In) => "INPUT",
-                (_, Dir::Out) => "OUTPUT",
-            }
-        };
-        let label = client.unwrap_or_else(|| role.to_owned());
+        let role = port_role(class, dir, mon, ps[0].media);
+        // a virtual source's outputs are what apps record from, though flagged as monitors
+        let mon = role == "MONITOR";
+        let label = role.to_owned();
         let stereo = ps.len() == 2 && ps[0].media == Media::Audio && ps[0].channel == "FL" && ps[1].channel == "FR";
         // not Bluetooth's internal capture stream, either way: a meter on what it records links
         // to the headset's microphone, which keeps it open
@@ -912,7 +903,8 @@ impl Graph {
         // plays (its PLAYBACK) or its input takes in (its CAPTURE)
         let audio = ps[0].media == Media::Audio && !mon;
         let stream = (dir == Dir::Out && class == "Stream/Output/Audio") || (dir == Dir::In && class == "Stream/Input/Audio");
-        let device = (dir == Dir::In && class == "Audio/Sink") || (dir == Dir::Out && class == "Audio/Source");
+        // (a virtual source's too: Easy Effects Source has a volume of its own)
+        let device = (dir == Dir::In && class == "Audio/Sink") || (dir == Dir::Out && class.starts_with("Audio/Source"));
         let gain = dir == Dir::In && stream || dir == Dir::Out && device;
         // a card keeps it on its port in use; a virtual device (and an app) on the node
         let route = if audio && device { self.route_of(np, dir) } else { None };
@@ -929,7 +921,7 @@ impl Graph {
             None if audio && device => self.ports_of(np, dir),
             None => Vec::new(),
         };
-        Group { label, role, dir, ports: ps, stereo, meter, mix, ports_to, stream: 0 }
+        Group { label, client, role, kind: block_kind(class), dir, ports: ps, stereo, meter, mix, ports_to, stream: 0 }
     }
 }
 
@@ -1082,16 +1074,39 @@ fn kind(dev: Option<&Props>, profiles: Option<&[Profile]>, node: &Props) -> &'st
     }
 }
 
-fn finish(hardware: bool, class: &str) -> Finish {
-    if hardware {
-        Finish::Metal
-    } else if class.starts_with("Midi") {
-        Finish::Navy
-    } else if class.contains("Internal") || class.starts_with("Audio") {
-        // internal streams and virtual devices (filters, effects)
-        Finish::Cream
-    } else {
-        Finish::Black
+/// What kind of block a node is, by its `media.class` (ADR 0014): its frame's colour on the rack
+/// and its block's in ENGINE, whoever owns it (a program's virtual sink is a SINK).
+pub fn block_kind(class: &str) -> &'static str {
+    match class {
+        c if c.starts_with("Midi") => "MIDI",
+        c if c.starts_with("Video") || (c.starts_with("Stream/") && c.ends_with("/Video")) => "VIDEO",
+        c if c.starts_with("Audio/Sink") => "SINK",
+        c if c.starts_with("Audio/Source") => "SOURCE",
+        c if c.starts_with("Audio/Duplex") => "DUPLEX",
+        c if c.starts_with("Stream/Output") => "PLAYBACK STREAM",
+        c if c.starts_with("Stream/Input") => "RECORDING STREAM",
+        // none (Easy Effects' effects), or one Patchcord doesn't know: said as none, nothing made up
+        _ => "NO CLASS",
+    }
+}
+
+/// What a group of ports is for (ADR 0014): its jacks' colour on the rack and its ports' in
+/// ENGINE. A sink's inputs are PLAYBACK, a source's outputs CAPTURE (a virtual source's too,
+/// though PipeWire flags them `port.monitor`), other outputs flagged so MONITOR; anything else's
+/// INPUT or OUTPUT; MIDI and video ports by their media; a port of a format Patchcord doesn't
+/// know, or of none, OTHER.
+pub fn port_role(class: &str, dir: Dir, monitor: bool, media: Media) -> &'static str {
+    let source = class.starts_with("Audio/Source");
+    match (class, dir) {
+        _ if media == Media::Midi => "MIDI",
+        _ if media == Media::Video => "VIDEO",
+        // a format Patchcord doesn't know (or none): said so, NO CLASS's colour
+        _ if media == Media::Other => "OTHER",
+        _ if monitor && !(source && dir == Dir::Out) => "MONITOR",
+        (c, Dir::In) if c.ends_with("Sink") => "PLAYBACK",
+        (_, Dir::Out) if source => "CAPTURE",
+        (_, Dir::In) => "INPUT",
+        (_, Dir::Out) => "OUTPUT",
     }
 }
 
@@ -1176,22 +1191,26 @@ mod tests {
         assert_eq!(d.model, "APP · RECORD & PLAY");
         // each stream a frame of its own, numbered, with its own volume
         let outs: Vec<(&str, usize, bool)> = d.groups.iter().filter(|g| g.dir == Dir::Out).map(|g| (g.label.as_str(), g.stream, g.mix.is_some())).collect();
-        assert_eq!(outs, [("OUTPUT 1", 1, true), ("OUTPUT 2", 2, true), ("OUTPUT 3", 3, true), ("OUTPUT 4", 4, true), ("OUTPUT 5", 5, true)]);
-        assert!(d.groups.iter().all(|g| !g.label.starts_with("MONITOR")), "an app's monitors stay off its face");
-        assert_eq!(g.system().iter().find(|s| s.1 == "monitors of its recording streams").map(|s| (s.0.as_str(), s.2)), Some(("Teams for Linux", 1)), "and are listed as system");
+        // and its recording stream's monitor, on its face: the rack patches whatever PipeWire can
+        // link (ADR 0014), so it isn't listed as the system's
+        assert_eq!(outs, [("OUTPUT 1", 1, true), ("OUTPUT 2", 2, true), ("OUTPUT 3", 3, true), ("OUTPUT 4", 4, true), ("OUTPUT 5", 5, true), ("MONITOR", 0, false)]);
+        assert!(g.system().iter().all(|s| !s.1.contains("monitor")), "{:?}", g.system());
         let input = d.groups.iter().find(|g| g.dir == Dir::In).expect("an INPUT");
         assert_eq!((input.label.as_str(), input.stream), ("INPUT", 0));
         let jd = crate::ui::face_jacks(d);
         let labels: Vec<&str> = jd.iter().filter(|j| j.0 == Dir::Out).map(|j| j.1.as_str()).collect();
-        assert_eq!(labels, ["MONO"; 5], "a jack says what it carries; the number is in its frame's name");
+        // (the sixth: the INPUT's MONITOR)
+        assert_eq!(labels, ["MONO"; 6], "a jack says what it carries; the number is in its frame's name");
         // balanced: the six take two units of three, in columns; what takes sound in first (the
         // INPUT, at the top-left), what sends it out (the outputs) after it, on to the next unit
         let ((_, h), at) = crate::ui::face_layout(d);
         assert_eq!(h, 256.0);
-        assert_eq!(at.iter().map(|a| a.1).collect::<Vec<_>>(), [0.0, 0.0, 0.0, 128.0, 128.0, 128.0]);
+        // (the seventh group: the INPUT's MONITOR, inside its frame)
+        assert_eq!(at.iter().map(|a| a.1).collect::<Vec<_>>(), [0.0, 0.0, 0.0, 128.0, 128.0, 128.0, 0.0]);
         assert_eq!((at[1].0, at[2].0), (at[4].0, at[5].0));
-        // (the INPUT in OUTPUT 3's column, against its left edge: it is a little narrower)
-        assert!(at[0].0 >= at[3].0 && at[0].0 < at[3].0 + 40.0);
+        // (the INPUT in OUTPUT 3's column, against its left edge; OUTPUT 3 against its right: the
+        // INPUT, with its MONITOR, is the wider)
+        assert!(at[0].0 <= at[3].0 && at[3].0 < at[0].0 + 120.0, "{at:?}");
     }
 
     /// Teams in a call records on two streams and plays on six: eight frames, two units of four,
@@ -1292,6 +1311,62 @@ mod tests {
         }
     }
 
+    /// A frame is a block (ADR 0014): a node's every port in its one frame, whatever ways they go,
+    /// its frame coloured by its kind and its ports by what they are for.
+    #[test]
+    fn a_frame_is_a_block() {
+        let mut g = Programs::new();
+        g.client(50, &[("application.name", "easyeffects"), ("application.process.binary", "easyeffects"), ("application.process.id", "7")]);
+        g.node(141, 50, &[("media.class", "Audio/Sink"), ("node.name", "easyeffects_sink"), ("node.description", "Easy Effects Sink")], &[("in", false), ("out", true)]);
+        g.node(88, 50, &[("media.class", "Audio/Source/Virtual"), ("node.name", "easyeffects_source"), ("node.description", "Easy Effects Source")], &[("in", false), ("out", true)]);
+        g.0.apply(&Event::Mix { id: 88, volumes: vec![1.0, 1.0], mute: false, soft: None });
+        g.client(60, &[("application.name", "Bitwig Studio"), ("application.process.binary", "bitwig"), ("application.process.id", "8")]);
+        g.node(77, 60, &[("media.class", "Audio/Duplex"), ("node.name", "Bitwig Studio")], &[("in", false), ("out", false)]);
+        g.client(70, &[("application.name", "Teams"), ("application.process.binary", "teams"), ("application.process.id", "9")]);
+        g.node(119, 70, &[("media.class", "Stream/Input/Audio"), ("node.name", "teams")], &[("in", false), ("out", true)]);
+        let devs = g.devices();
+        let ee = devs.iter().find(|d| d.name == "easyeffects").unwrap();
+        // a frame a node (in the order the program made them), the sink's MONITOR inside it, the
+        // source's input and output together
+        assert_eq!(crate::ui::face_frames(ee), [88, 141]);
+        let roles: Vec<(&str, &str)> = ee.groups.iter().map(|g| (g.kind, g.role)).collect();
+        assert!(roles.contains(&("SOURCE", "CAPTURE")), "a virtual source's outputs are what apps record from: {roles:?}");
+        assert!(roles.contains(&("SINK", "MONITOR")) && roles.contains(&("SINK", "PLAYBACK")) && roles.contains(&("SOURCE", "INPUT")), "{roles:?}");
+        assert_eq!(ee.finish, Finish::Black);
+        let src = ee.groups.iter().find(|g| g.role == "CAPTURE").unwrap();
+        assert!(src.mix.is_some(), "a virtual source has a volume of its own");
+        // a duplex block: its inputs and outputs one frame, though no chain
+        let bitwig = devs.iter().find(|d| d.name == "Bitwig Studio").unwrap();
+        assert_eq!(crate::ui::face_frames(bitwig), [77]);
+        assert!(bitwig.groups.iter().all(|g| g.kind == "DUPLEX"));
+        // a recording stream: its MONITOR on its frame
+        let teams = devs.iter().find(|d| d.name == "Teams").unwrap();
+        assert_eq!(crate::ui::face_frames(teams), [119]);
+        assert_eq!(teams.groups.iter().map(|g| (g.kind, g.role)).collect::<Vec<_>>(), [("RECORDING STREAM", "INPUT"), ("RECORDING STREAM", "MONITOR")]);
+    }
+
+    /// Each kind of block from its media.class, whoever owns it.
+    #[test]
+    fn a_block_is_of_its_class() {
+        for (class, kind) in [
+            ("Audio/Sink", "SINK"),
+            ("Audio/Source", "SOURCE"),
+            ("Audio/Source/Virtual", "SOURCE"),
+            ("Stream/Output/Audio", "PLAYBACK STREAM"),
+            ("Stream/Input/Audio", "RECORDING STREAM"),
+            ("Stream/Input/Audio/Internal", "RECORDING STREAM"),
+            ("Midi/Bridge", "MIDI"),
+            ("Video/Source", "VIDEO"),
+            ("Stream/Input/Video", "VIDEO"),
+            ("Audio/Duplex", "DUPLEX"),
+            ("", "NO CLASS"),
+        ] {
+            assert_eq!(block_kind(class), kind, "{class}");
+        }
+        // a port of a format Patchcord doesn't know: OTHER, whichever way it goes
+        assert_eq!((port_role("Audio/Sink", Dir::In, false, Media::Other), port_role("", Dir::Out, false, Media::Other)), ("OTHER", "OTHER"));
+    }
+
     /// Easy Effects: its own sink and its effects (no media.class), all of one client, are one
     /// device with every node on its face, named as it named them (two of a name kept so), in the
     /// order its sound goes through them: each chain from its start along the program's own links,
@@ -1357,8 +1432,8 @@ mod tests {
         let names: Vec<(&str, &str, &str)> = devs.iter().map(|d| (d.key.as_str(), d.name.as_str(), d.kind)).collect();
         assert!(names.contains(&("app:Carla", "Carla", "APP")) && names.contains(&("node:ALSA plug-in [kadence]", "kadence", "APP")), "{names:?}");
         let carla = devs.iter().find(|d| d.name == "Carla").unwrap();
-        // its recording stream's monitor stays off its face, as every stream's
-        assert_eq!(carla.groups.iter().map(|g| g.label.as_str()).collect::<Vec<_>>(), ["INPUT", "OUTPUT"]);
+        // its recording stream's monitor on its face, as every port (ADR 0014)
+        assert_eq!(carla.groups.iter().map(|g| g.label.as_str()).collect::<Vec<_>>(), ["INPUT", "OUTPUT", "MONITOR"]);
         assert_eq!((carla.nodes, carla.ports), (2, 6));
     }
 
@@ -1415,9 +1490,12 @@ mod tests {
         }
         let devs = g.devices();
         let bridge = devs.iter().find(|d| d.name == "Midi-Bridge").unwrap();
-        let frames: Vec<(&str, Dir, Vec<&str>)> = bridge.groups.iter().map(|g| (g.label.as_str(), g.dir, g.ports.iter().map(|p| p.label.as_str()).collect())).collect();
-        assert_eq!(frames, [("MIDI THROUGH", Dir::In, vec!["PORT-0"]), ("HYDROGEN", Dir::In, vec!["MIDI-IN"]), ("MIDI THROUGH", Dir::Out, vec!["PORT-0"]), ("HYDROGEN", Dir::Out, vec!["MIDI-OU"])]);
-        assert!(bridge.groups.iter().all(|g| g.role == "MIDI"));
+        // a group a client, all of them in the bridge's one frame (ADR 0014), named by its client
+        let frames: Vec<(Option<&str>, Dir, Vec<&str>)> = bridge.groups.iter().map(|g| (g.client.as_deref(), g.dir, g.ports.iter().map(|p| p.label.as_str()).collect())).collect();
+        assert_eq!(frames, [(Some("MIDI THROUGH"), Dir::In, vec!["PORT-0"]), (Some("HYDROGEN"), Dir::In, vec!["MIDI-IN"]), (Some("MIDI THROUGH"), Dir::Out, vec!["PORT-0"]), (Some("HYDROGEN"), Dir::Out, vec!["MIDI-OU"])]);
+        assert!(bridge.groups.iter().all(|g| g.role == "MIDI" && g.label == "MIDI" && g.kind == "MIDI"));
+        assert_eq!(bridge.finish, Finish::Olive, "PipeWire's own: olive");
+        assert_eq!(crate::ui::face_frames(bridge), [42], "one frame: the bridge is one node");
         let bitwig = devs.iter().find(|d| d.name == "Bitwig Studio").unwrap();
         assert_eq!(bitwig.groups.iter().map(|g| (g.label.as_str(), g.ports.len())).collect::<Vec<_>>(), [("OUTPUT", 2)]);
     }

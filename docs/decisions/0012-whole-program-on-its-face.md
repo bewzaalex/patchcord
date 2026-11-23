@@ -1,6 +1,7 @@
 # A program's whole self on its face, along its chains
 
-Status: accepted · 2026-11-23 · supersedes the face of [0006](0006-one-roof.md) (edges only, INSIDE)
+Status: accepted · 2026-11-23 · supersedes the face of [0006](0006-one-roof.md) (edges only, INSIDE);
+its half-and-half band and IN/OUT tags superseded by [0014](0014-a-frame-is-a-block.md)
 
 ## Context
 0006 put only a program's edges on its face and the rest behind INSIDE: a port came onto the face

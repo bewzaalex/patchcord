@@ -15,10 +15,10 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt::Write;
 use std::time::{Duration, Instant, SystemTime};
 
-use super::{painter, panel};
+use super::{face, painter, panel};
 use super::scene::{Layer, View, next_id, rasterize};
 use super::text::{self, esc};
-use crate::graph::{Device, Graph};
+use crate::graph::{Device, Dir, Graph, Media, block_kind, port_role};
 use crate::pw::{CUE_NODE, Cmd, DriverTiming, Event, Kind, METER_PREFIX, NodeTiming, Props};
 
 /// What can be selected and inspected.
@@ -166,6 +166,10 @@ struct EPort {
     channel: String,
     monitor: bool,
     midi: bool,
+    video: bool,
+    audio: bool,
+    /// what it is for (`graph::port_role`): its colour
+    role: &'static str,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -278,18 +282,15 @@ const INFO_W: f64 = 30.0;
 const CURVE_W: f64 = 186.0;
 /// a window narrower than this has the details over the graph
 const NARROW: f64 = 700.0;
-/// What a block is, by its colour; its ports and the links out of it take it too.
-const C_DEVICE: [u8; 3] = [0x4f, 0x86, 0xd9];
-const C_APP: [u8; 3] = [0x9b, 0x6b, 0xd6];
+// A block's colour is its kind's, as its frame's on the rack (ADR 0014: `face::kind_colour`); a
+// port's is its group's (`face::role_colour`), and a link takes the colour of the port it leaves.
+// Patchcord's own meters and cue too (their PATCHCORD tag says whose). (Dummy-Driver and
+// Freewheel-Driver have no class: NO CLASS.)
+
 /// What ENGINE says of a node without `media.class`.
 const NO_CLASS: &str = "no media.class";
 
-const C_SYSTEM: [u8; 3] = [0x2f, 0xb0, 0xa6];
-const C_MIDI: [u8; 3] = [0xe0, 0x8a, 0x3c];
-const C_VIDEO: [u8; 3] = [0xd9, 0x57, 0x8f];
-const C_PATCHCORD: [u8; 3] = [0x5f, 0xa3, 0x6a];
-/// the cue, as its marks on the desk
-const C_CUE: [u8; 3] = [0x5f, 0xd4, 0xff];
+/// the cue's marks on a port kept on, as on the desk
 const CUE: &str = "#5fd4ff";
 /// text on a port filled in the cue's colour
 const CUE_TEXT: &str = "#062533";
@@ -304,6 +305,12 @@ const OBJECT_TYPES: [&str; 12] = ["Core", "Module", "Factory", "Client", "Device
 
 fn cut(t: &str, n: usize) -> String {
     if t.chars().count() > n { format!("{}…", t.chars().take(n.saturating_sub(1)).collect::<String>()) } else { t.to_owned() }
+}
+
+/// "#rrggbb" as bytes.
+fn rgb(c: &str) -> [u8; 3] {
+    let b = |i: usize| u8::from_str_radix(c.get(i..i + 2).unwrap_or("00"), 16).unwrap_or(0);
+    [b(1), b(3), b(5)]
 }
 
 fn hex(c: [u8; 3]) -> String {
@@ -732,16 +739,7 @@ impl Engine {
                     let d = desk.get(&id);
                     let system = class.ends_with("/Internal") || (!matches!(nkind, NKind::Meter | NKind::Cue) && p.get("stream.monitor").is_some_and(|v| v == "true"));
                     // a block's colour says what it is (the legend's COLOURS)
-                    let color = match nkind {
-                        NKind::Meter => C_PATCHCORD,
-                        NKind::Cue => C_CUE,
-                        NKind::Midi => C_MIDI,
-                        NKind::Video => C_VIDEO,
-                        _ if system => C_SYSTEM,
-                        NKind::Stream => C_APP,
-                        NKind::Device => C_DEVICE,
-                        NKind::Driver | NKind::Other => C_SYSTEM,
-                    };
+                    let color = rgb(face::kind_colour(block_kind(p.get("media.class").map_or("", |s| s.as_str()))));
                     nodes.push(ENode {
                         id,
                         name,
@@ -770,6 +768,9 @@ impl Engine {
                             channel: get(p, "audio.channel"),
                             monitor: p.get("port.monitor").is_some_and(|v| v == "true"),
                             midi: p.get("format.dsp").is_some_and(|f| f.contains("midi")) || name.contains("midi") && !p.contains_key("audio.channel"),
+                            video: p.get("format.dsp").is_some_and(|f| f.contains("video")),
+                            audio: p.get("format.dsp").is_some_and(|f| f.contains("audio")),
+                            role: "",
                             name,
                         },
                     ));
@@ -811,6 +812,22 @@ impl Engine {
             if n.kind == NKind::Midi || n.ins.iter().chain(&n.outs).all(|p| p.midi) && !n.ins.is_empty() {
                 for p in n.ins.iter_mut().chain(n.outs.iter_mut()) {
                     p.midi = true;
+                }
+            }
+            // each port's group, as on the rack
+            let class = if n.class == NO_CLASS { String::new() } else { n.class.clone() };
+            for (dir, ps) in [(Dir::In, &mut n.ins), (Dir::Out, &mut n.outs)] {
+                for p in ps.iter_mut() {
+                    let media = if p.midi {
+                        Media::Midi
+                    } else if p.video {
+                        Media::Video
+                    } else if p.audio {
+                        Media::Audio
+                    } else {
+                        Media::Other
+                    };
+                    p.role = port_role(&class, dir, p.monitor, media);
                 }
             }
         }
@@ -1443,7 +1460,8 @@ impl Engine {
                 Some(g) => {
                     let d = m.node(g.driver);
                     (
-                        d.map_or([0x8c, 0x8e, 0x91], |n| n.color),
+                        // (a driver not known yet: nothing said of it, NO CLASS)
+                        d.map_or_else(|| rgb(face::kind_colour("NO CLASS")), |n| n.color),
                         format!(
                             r##"<tspan fill="#e58f2c" letter-spacing="1">DRIVER</tspan>  {}  <tspan fill="#7d8085" font-weight="normal">{}{}</tspan>"##,
                             esc(&d.map_or("?".into(), |n| n.desc.clone())),
@@ -1483,7 +1501,7 @@ impl Engine {
             let d = format!("M{},{} C{},{} {},{} {},{}", c[0].0, c[0].1, c[1].0, c[1].1, c[2].0, c[2].1, c[3].0, c[3].1);
             let hl = self.sel == Some(Sel::Link(l.id)) || focus.contains(&l.out_node) || focus.contains(&l.in_node) || self.sel.is_some_and(|s| s == Sel::Port(l.out_port) || s == Sel::Port(l.in_port));
             // the colour of the block the sound comes out of; the state in its width, dashes and fading
-            let from = hex(m.node(l.out_node).map_or(C_SYSTEM, |n| n.color));
+            let from = m.node(l.out_node).and_then(|n| n.outs.iter().find(|p| p.id == l.out_port)).map_or_else(|| face::kind_colour("NO CLASS").to_owned(), |p| face::role_colour(p.role).to_owned());
             let (stroke, width, extra) = if l.state == "error" {
                 ("#ff4a32".to_owned(), 2.0, "")
             } else if l.passive {
@@ -1584,6 +1602,8 @@ impl Engine {
                             py - 6.3
                         )
                     } else {
+                        // a port in its group's colour (the block's own when it is chosen)
+                        let c = if picked { c.as_str() } else { face::role_colour(p.role) };
                         write!(o, r##"<path d="{d}" fill="{c}" fill-opacity=".1"/><circle cx="{px}" cy="{py}" r="4" fill="{c}" stroke="#0f1011" stroke-width="1.5"/><text x="{tx}" y="{}"{anchor} font-family="Noto Sans Mono" font-size="10" fill="#a8abae">{}</text>"##, py + 3.5, esc(&label))
                     };
                 }
@@ -2014,21 +2034,22 @@ impl Engine {
             ("ALLOWED".into(), cut(allowed.trim_matches(|c| c == '[' || c == ']').trim(), 22)),
             ("OBJECTS".into(), format!("{} · {} nodes · {ports} ports · {} links", self.objects.len(), m.nodes.len(), m.links.len())),
         ];
-        // what matters first; the rest while there is room, then behind the i cell (DSP LOAD's
-        // curve before them)
-        let (first, rest) = cells.split_at(4);
+        // in this order while there is room (DSP LOAD with its curve when that fits too), the rest
+        // behind the i cell; nothing under HEALTH, however narrow the window
         let cw = |k: &str, v: &str| text::width(text::MONO_BOLD, v, 12.0, 0.0).max(text::width(text::MONO_BOLD, k, 9.0, 1.2)) + 20.0;
         let room = w - 12.0 - HEALTH_W - 10.0;
-        let used = 12.0 + first.iter().map(|(k, v)| cw(k, v) + 10.0).sum::<f64>();
-        let all = used + CURVE_W + rest.iter().map(|(k, v)| cw(k, v) + 10.0).sum::<f64>();
-        let (room, curve) = if all <= room { (room, true) } else { (room - INFO_W - 10.0, used + CURVE_W <= room - INFO_W - 10.0) };
-        let mut shown: Vec<(&str, &str, bool)> = first.iter().map(|(k, v)| (k.as_str(), v.as_str(), curve && k == "DSP LOAD")).collect();
-        let mut x = used + if curve { CURVE_W } else { 0.0 };
+        let all = 12.0 + CURVE_W + cells.iter().map(|(k, v)| cw(k, v) + 10.0).sum::<f64>();
+        let (room, curve) = if all <= room { (room, true) } else { (room - INFO_W - 10.0, false) };
+        let mut shown: Vec<(&str, &str, bool)> = Vec::new();
         let mut hidden = Vec::new();
-        for (k, v) in rest {
-            if hidden.is_empty() && x + cw(k, v) <= room {
-                shown.push((k, v, false));
-                x += cw(k, v) + 10.0;
+        let mut x = 12.0;
+        for (k, v) in &cells {
+            let w = cw(k, v);
+            if hidden.is_empty() && x + w <= room {
+                // the curve too, if it still leaves room for the rest of what matters first
+                let with = k == "DSP LOAD" && (curve || x + w + CURVE_W + cells.iter().skip(3).take(1).map(|(k, v)| cw(k, v) + 10.0).sum::<f64>() <= room);
+                shown.push((k, v, with));
+                x += w + 10.0 + if with { CURVE_W } else { 0.0 };
             } else {
                 hidden.push((k.clone(), v.clone()));
             }
@@ -2974,6 +2995,13 @@ impl Engine {
                 self.outbox.push(Cmd::Params(id));
             }
         }
+    }
+
+    /// A frame's GRAPH key on the rack: its node chosen, and the graph moved to show it when it is
+    /// out of sight (as when it is chosen in a list).
+    pub fn show_node(&mut self, id: u32) {
+        self.select(Some(Sel::Node(id)));
+        self.reveal = true;
     }
 
     /// Escape: closes the legend if it is open, else drops the selection (which closes the

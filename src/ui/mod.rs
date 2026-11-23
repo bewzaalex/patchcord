@@ -32,6 +32,13 @@ pub fn face_jack_keys(dev: &crate::graph::Device) -> Vec<String> {
     face::jacks(dev, &[]).into_iter().map(|j| j.key).collect()
 }
 
+/// A device's frames, by their GRAPH keys: the node each is (a frame is a block, ADR 0014).
+#[cfg(test)]
+pub fn face_frames(dev: &crate::graph::Device) -> Vec<u32> {
+    let jd = face::jacks(dev, &[]);
+    face::face_geometry(dev, &jd, &vec![0; jd.len()], None, true).graph.iter().map(|g| g.0).collect()
+}
+
 /// A device's face: its size, and where each group's frame starts (x, how far down its unit).
 #[cfg(test)]
 pub fn face_layout(dev: &crate::graph::Device) -> ((f64, f64), Vec<(f64, f64)>) {

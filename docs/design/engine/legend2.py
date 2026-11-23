@@ -17,10 +17,12 @@ def head(x, y, s):
     t(x, y, s, 9.5, "#e58f2c", True, True, ls=1.2)
 
 
-COLOURS = [("#4f86d9", "device"), ("#9b6bd6", "app"), ("#2fb0a6", "system"), ("#e08a3c", "MIDI"), ("#d9578f", "video"), ("#5fa36a", "Patchcord"), ("#5fd4ff", "cue")]
+# a block's kind, as its frame on the rack (ADR 0014)
+COLOURS = [("#007c7d", "sink"), ("#206ea6", "source"), ("#7e5a42", "playback"), ("#427935", "recording"), ("#934c7e", "MIDI"),
+           ("#876200", "video"), ("#73348d", "duplex"), ("#cba553", "other")]
 LIGHTS = [("#5cff7a", "running"), ("#ffb02e", "idle"), ("#4a4c50", "asleep"), ("#ff4a32", "xruns")]
-LINKS = [('stroke="#9b6bd6" stroke-width="2"', "active"), ('stroke="#9b6bd6" stroke-width="1.6" stroke-opacity=".45"', "paused"),
-         ('stroke="#9b6bd6" stroke-width="1.2" stroke-dasharray="3 4"', "passive: listens only"), ('stroke="#ff4a32" stroke-width="2"', "error: no common format")]
+LINKS = [('stroke="#7e5a42" stroke-width="2"', "active"), ('stroke="#7e5a42" stroke-width="1.6" stroke-opacity=".45"', "paused"),
+         ('stroke="#7e5a42" stroke-width="1.2" stroke-dasharray="3 4"', "passive: listens only"), ('stroke="#ff4a32" stroke-width="2"', "error: no common format")]
 TAGS = [("DRIVER", "clocks its group"), ("SYSTEM", "WirePlumber's own"), ("PATCHCORD", "ours: a meter, the cue"), ("HIDDEN ON DESK", "you hid it"), ("44100→48000", "resampled")]
 GROUPS = [("DRIVER", "one clock and what it runs"), ("NOT RUNNING", "no clock now, no CPU"), ("INTERNAL DRIVERS", "PipeWire's own clocks")]
 
@@ -91,9 +93,9 @@ def legend_card():
     card(0, 0, CW, CH)
     t(16, 24, "HOW TO READ THE GRAPH", 11, "#e6e7e8", bold=True, ls=1)
     c1, c2, c3, top, cwid = 16, 206, 412, 54, 176
-    section(c1, top, "COLOURS", cwid)
+    section(c1, top, "BLOCKS", cwid)
     for i, (c, s_) in enumerate(COLOURS):
-        colour(c1 + (i // 4) * 88, top + 24 + (i % 4) * 18, c, s_)
+        colour(c1 + (i // 5) * 88, top + 22 + (i % 5) * 15, c, s_)
     section(c1, top + 100, "LIGHTS", cwid)
     for i, (c, s_) in enumerate(LIGHTS):
         light(c1 + (i // 2) * 88, top + 124 + (i % 2) * 18, c, s_)
@@ -101,7 +103,7 @@ def legend_card():
     section(c2, top, "LINKS", 190)
     for i, (st, s_) in enumerate(LINKS):
         line(c2, top + 24 + i * 18, st, s_)
-    t(c2, top + 100, "in the colour they come from", 10, "#7d8085")
+    t(c2, top + 100, "a port, and links from it: its jack's colour", 10, "#7d8085")
     section(c2, top + 126, "GROUPS", 190)
     table(c2, top + 150, [("NOT RUNNING", "no clock now"), ("INTERNAL DRIVERS", "PipeWire's own")])
     section(c3, top, "TAGS", 212)

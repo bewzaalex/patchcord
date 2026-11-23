@@ -421,6 +421,8 @@ pub struct Scene {
     pub rev: u64,
     /// what the last `tick` spent on each of its parts, for the frame log
     pub spent: Vec<(&'static str, Duration)>,
+    /// what the last `prepare` spent on each of its parts, for the frame log
+    pub prep_spent: Vec<(&'static str, Duration)>,
     pics_scale: f64,
     /// what the pointer is over; its cords stand out, the others fade (`lit` eases in and out,
     /// `lit_for` keeps what was hovered while it fades out)
@@ -522,8 +524,9 @@ impl Scene {
             snapped: (None, None),
             align: true,
             accents: true,
-            jack_pics: Default::default(),
+            jack_pics: std::array::from_fn(|_| None),
             spent: Vec::new(),
+            prep_spent: Vec::new(),
             pics_scale: 0.0,
             hover: Hover::None,
             lit_for: Hover::None,
@@ -1395,12 +1398,11 @@ impl Scene {
                 }
             }
         }
-        // the kinds, in the order they come: sound cards, apps, MIDI, internal streams
+        // the kinds, in the order they come: hardware, programs, PipeWire's own (MIDI bridges…)
         let kind = |d: &DevView| match d.dev.finish {
-            crate::graph::Finish::Metal => 0,
+            crate::graph::Finish::Aluminium => 0,
             crate::graph::Finish::Black => 1,
-            crate::graph::Finish::Navy => 2,
-            crate::graph::Finish::Cream => 3,
+            crate::graph::Finish::Olive => 2,
         };
         let by_kind = |a: &usize, b: &usize| kind(&self.devs[*a]).cmp(&kind(&self.devs[*b])).then_with(|| self.devs[*a].dev.name.to_lowercase().cmp(&self.devs[*b].dev.name.to_lowercase()));
         let mut cols: Vec<Vec<usize>> = Vec::new();
@@ -1519,6 +1521,11 @@ impl Scene {
             let [kx, ky, kw, kh] = d.geo.hide;
             (kw > 0.0 && x >= d.x + kx && x <= d.x + kx + kw && y >= d.y + ky && y <= d.y + ky + kh).then_some(di)
         })
+    }
+
+    /// The GRAPH key under (x, y): the node whose frame it is on (ADR 0014).
+    pub fn graph_key_at(&self, x: f64, y: f64) -> Option<u32> {
+        self.devs.iter().rev().find_map(|d| d.geo.graph.iter().find(|(_, [kx, ky, kw, kh])| x >= d.x + kx && x <= d.x + kx + kw && y >= d.y + ky && y <= d.y + ky + kh).map(|(n, _)| *n))
     }
 
     /// Devices that appeared later go below everything else.
@@ -1666,17 +1673,20 @@ impl Scene {
         };
         // each device's pictures: the faces and shadows asked of the painter's threads
         let c = DevCtx { opt: &self.opt, rack_w: self.rack_w, accents: self.accents, scale, ms };
+        let mut t = Times::default();
         for (di, d) in self.devs.iter_mut().enumerate() {
-            prepare_dev(d, links.get(&di).copied().unwrap_or(0), &c, &mut self.inbox);
+            prepare_dev(d, links.get(&di).copied().unwrap_or(0), &c, &mut self.inbox, &mut t);
         }
         // a device seen for the first time has nothing to show meanwhile: waited for (side by
         // side on the threads), whatever else comes back first
+        let waited = Instant::now();
         let until = Instant::now() + Duration::from_secs(2);
         while self.inbox.busy() && self.devs.iter().any(|d| d.face.is_none() || d.shade.is_none()) {
             let Some(left) = until.checked_duration_since(Instant::now()) else { break };
             let Some(done) = self.inbox.wait(left) else { break };
             self.install(done);
         }
+        self.prep_spent = vec![("faces.svg", t.svg), ("faces.knobs", t.knobs), ("faces.lcd", t.lcd), ("faces.meters", t.meters), ("faces.wait", waited.elapsed())];
         self.inbox.busy()
     }
 
@@ -2191,6 +2201,13 @@ impl Scene {
         let mut k = 0;
         while k < flip.len() {
             let here = flip[k];
+            // a frame's one SPLIT splits its input and the MONITOR inside it together
+            let dev = &self.devs[here.0].dev;
+            for o in (0..dev.groups.len()).filter(|o| face::host(dev, *o) == Some(here.1) || face::host(dev, here.1) == Some(*o)) {
+                if !flip.contains(&(here.0, o)) {
+                    flip.push((here.0, o));
+                }
+            }
             for l in &links {
                 let (a, b) = (group_of.get(&l.out_port), group_of.get(&l.in_port));
                 let far = if a == Some(&here) { b } else if b == Some(&here) { a } else { None };
@@ -2760,6 +2777,19 @@ fn ease_lit(lit: f32, to: f32, dt: f32) -> f32 {
     if lit < to { (lit + dt * 8.0).min(to) } else { (lit - dt * 5.0).max(to) }
 }
 
+/// What `Scene::prepare` spent on drawing in the frame itself, by part (for the frame log).
+#[derive(Default)]
+struct Times {
+    /// faces' SVG built (and their geometry), to be rasterized on the painter's threads
+    svg: Duration,
+    /// knobs rasterized here
+    knobs: Duration,
+    /// LCDs rasterized here
+    lcd: Duration,
+    /// lit meters rasterized here
+    meters: Duration,
+}
+
 /// What `Scene::prepare` hands each device's drawing: the same for all of them.
 struct DevCtx<'a> {
     opt: &'a usvg::Options<'static>,
@@ -2772,14 +2802,19 @@ struct DevCtx<'a> {
 /// A device's pictures, brought up to date (see `Scene::prepare`): its face and shadow asked of
 /// the painter (the old ones show meanwhile), its knobs, LCD and meters drawn here (they are
 /// small). `n`: how many cords it has.
-fn prepare_dev(d: &mut DevView, n: usize, c: &DevCtx, inbox: &mut painter::Inbox) {
+fn prepare_dev(d: &mut DevView, n: usize, c: &DevCtx, inbox: &mut painter::Inbox, t: &mut Times) {
     let sig = d.sig(c.rack_w, c.accents);
     let want = painter::sig(sig, c.scale);
     if (d.face.is_none() || want != painter::sig(d.face_sig, d.face_scale)) && d.face_want.map(|w| w.0) != Some(want) {
         // its geometry (where its jacks and knobs are) changes at once; its picture follows
+        let t0 = Instant::now();
         let (svg, geo, skin) = face::face(&d.dev, &d.defs, &d.counts, &d.split, c.rack_w, c.accents);
-        // (by the face shown: its geometry may have changed already, as the rack's width does)
-        let reshaped = d.face.as_ref().is_some_and(|f| (f.w, f.h) != (geo.w + 2.0 * FACE_PAD, geo.h + 2.0 * FACE_PAD));
+        t.svg += t0.elapsed();
+        // (by the face shown: its geometry may have changed already, as the rack's width does). Only
+        // a new height moves its frames (they go on to another unit): a face only wider or
+        // narrower (the rack's width following the window's) has them where they were, from its
+        // left edge, so the old picture shows, at its own size, until the new one comes
+        let reshaped = d.face.as_ref().is_some_and(|f| f.h != geo.h + 2.0 * FACE_PAD);
         d.geo = geo;
         // back to the other screen: its face as it was shows (scaled) until this one comes
         if d.face_sig != sig
@@ -2831,7 +2866,9 @@ fn prepare_dev(d: &mut DevView, n: usize, c: &DevCtx, inbox: &mut painter::Inbox
                 if let Some(i) = other {
                     d.mix_pics.swap_remove(i);
                 }
+                let t0 = Instant::now();
                 let pm = rasterize(c.opt, &face::mix_pic(m, vol, bal, mute, d.bal(*gi)), c.scale);
+                t.knobs += t0.elapsed();
                 pics.push((*gi, sig, Layer { id: next_id(), pm, x: m.x, y: m.y + MIX_Y, w: m.w, h: MIX_H }));
             }
         }
@@ -2887,7 +2924,9 @@ fn prepare_dev(d: &mut DevView, n: usize, c: &DevCtx, inbox: &mut painter::Inbox
         let l: Vec<&str> = text.split('\n').collect();
         let svg = face::lcd([l[0], l[1], l[2], l[3]]);
         if d.lcd.is_none() {
+            let t0 = Instant::now();
             let pm = rasterize(c.opt, &svg, c.scale);
+            t.lcd += t0.elapsed();
             d.lcd = Some((lsig, Layer { id: next_id(), pm, x, y: LCD_Y, w: LCD_W, h: LCD_H }));
         } else {
             // the old one shows until this one is drawn
@@ -2906,7 +2945,11 @@ fn prepare_dev(d: &mut DevView, n: usize, c: &DevCtx, inbox: &mut painter::Inbox
         }
         match d.gmeters.iter().position(|(g, l, _)| g == gi && *l == lit) {
             Some(i) => meters.push(d.gmeters.swap_remove(i)),
-            None => meters.push((*gi, lit, meter_layer(lit, Leds::strip(x, oy, cols, c.accents), c.scale))),
+            None => {
+                let t0 = Instant::now();
+                meters.push((*gi, lit, meter_layer(lit, Leds::strip(x, oy, cols, c.accents), c.scale)));
+                t.meters += t0.elapsed();
+            }
         }
     }
     d.gmeters = meters;
@@ -2993,7 +3036,7 @@ mod tests {
         let mut s = Scene::new();
         s.rack = false;
         for (k, &(x, y, w)) in at.iter().enumerate() {
-            let dev = Device { key: format!("d{k}"), name: format!("d{k}"), model: String::new(), kind: "", finish: crate::graph::Finish::Metal, color: [0; 3], groups: Vec::new(), state: "idle", chain: false, nodes: 0, ports: 0, card: None };
+            let dev = Device { key: format!("d{k}"), name: format!("d{k}"), model: String::new(), kind: "", finish: crate::graph::Finish::Aluminium, color: [0; 3], groups: Vec::new(), state: "idle", chain: false, nodes: 0, ports: 0, card: None };
             let geo = Geometry { w, ..Default::default() };
             s.devs.push(DevView::new(dev, Vec::new(), geo, (x, y)));
         }
@@ -3011,7 +3054,7 @@ mod tests {
     fn arrange_puts_unused_devices_together_by_kind() {
         use crate::graph::Finish;
         let mut s = desk(&[(0.0, 0.0, 300.0), (0.0, 300.0, 300.0), (0.0, 600.0, 300.0), (0.0, 900.0, 300.0)]);
-        for (d, f) in s.devs.iter_mut().zip([Finish::Navy, Finish::Metal, Finish::Navy, Finish::Black]) {
+        for (d, f) in s.devs.iter_mut().zip([Finish::Olive, Finish::Aluminium, Finish::Olive, Finish::Black]) {
             d.dev.finish = f;
         }
         for (view, what) in [((1400.0, 820.0), "wide"), ((500.0, 1400.0), "tall")] {
@@ -3086,7 +3129,9 @@ mod tests {
         use crate::graph::{Group, Port};
         let group = |label: &str, dir: Dir, ids: [u32; 2]| Group {
             label: label.into(),
+            client: None,
             role: if label == "PLAYBACK" { "PLAYBACK" } else { "OUTPUT" },
+            kind: if label == "PLAYBACK" { "SINK" } else { "PLAYBACK STREAM" },
             dir,
             ports: ids.iter().zip(["FL", "FR"]).map(|(&id, ch)| Port { id, node: id, name: format!("p{id}"), label: ch.into(), dir, media: Media::Audio, channel: ch.into() }).collect(),
             stereo: true,
@@ -3110,13 +3155,43 @@ mod tests {
         assert!(!t.contains(&b), "the input it is already patched to is offered: {t:?}");
     }
 
+    /// A frame's one SPLIT splits its input and the MONITOR inside it together, and JOIN joins both.
+    #[test]
+    fn one_split_splits_an_input_and_its_monitor() {
+        use crate::graph::{Group, Mix, Port};
+        let port = |id: u32, dir: Dir, ch: &str| Port { id, node: 1, name: format!("p{id}"), label: if ch == "FL" { "L" } else { "R" }.into(), dir, media: Media::Audio, channel: ch.into() };
+        let group = |role: &'static str, dir: Dir, ids: [u32; 2], mix: bool| Group {
+            label: role.into(),
+            client: None,
+            role,
+            kind: "SINK",
+            dir,
+            ports: vec![port(ids[0], dir, "FL"), port(ids[1], dir, "FR")],
+            stereo: true,
+            meter: true,
+            mix: mix.then(|| Mix { node: 1, volumes: vec![1.0, 1.0], mute: false, gain: false, route: None }),
+            ports_to: Vec::new(),
+            stream: 0,
+        };
+        let mut s = desk(&[(0.0, 0.0, 300.0)]);
+        s.devs[0].dev.groups = vec![group("PLAYBACK", Dir::In, [1, 2], true), group("MONITOR", Dir::Out, [3, 4], false)];
+        s.devs[0].split = vec![false, false];
+        s.index();
+        s.toggle_split(0, 0);
+        assert_eq!(s.devs[0].split, [true, true]);
+        s.toggle_split(0, 0);
+        assert_eq!(s.devs[0].split, [false, false]);
+    }
+
     /// A plugged-in cord has its light running, sound or not, and it is drawn; off, it fades out.
     #[test]
     fn a_plugged_in_cord_glows() {
         use crate::graph::{Group, Port};
         let group = |label: &str, dir: Dir, ids: [u32; 2]| Group {
             label: label.into(),
+            client: None,
             role: if label == "PLAYBACK" { "PLAYBACK" } else { "OUTPUT" },
+            kind: if label == "PLAYBACK" { "SINK" } else { "PLAYBACK STREAM" },
             dir,
             ports: ids.iter().zip(["FL", "FR"]).map(|(&id, ch)| Port { id, node: id, name: format!("p{id}"), label: ch.into(), dir, media: Media::Audio, channel: ch.into() }).collect(),
             stereo: true,

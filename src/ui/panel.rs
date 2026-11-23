@@ -584,6 +584,11 @@ impl Panel {
     /// order), and the screen's width. When the panel is too wide, first the logo goes, then the
     /// grey keys (what this screen can't use), then groups fold into MORE from the right: the
     /// screen, CUE · LEVEL, VIEW, CABLES, LOCK · ALIGN, EDIT. DESK · RACK · ENGINE stay.
+    /// The narrowest the window may be: the panel folded all it can, DESK · RACK · ENGINE and MORE.
+    pub fn min_w(&self) -> f64 {
+        18.0 + self.part(Part::Layout, 0.0, false, true, 0.0).2 + 12.0 + MORE_W + 10.0
+    }
+
     fn plan(&self, w: f64) -> (Vec<Part>, bool, bool, Vec<Part>, f64) {
         let width = |p: Part, attached: bool, bare: bool| self.part(p, 0.0, attached, bare, 0.0).2;
         let main = [Part::Edit, Part::Layout, Part::Cables, Part::View, Part::Cue];

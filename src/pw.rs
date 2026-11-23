@@ -510,7 +510,7 @@ impl Cue {
                 "media.type" => "Audio",
                 "media.category" => "Capture",
                 "node.name" => CUE_NODE,
-                "node.description" => "Patchcord cue · in",
+                "node.description" => "Patchcord cue in",
                 // it only listens: never keeps anything awake, never moved by the session
                 "stream.monitor" => "true",
                 "node.passive" => "true",
@@ -548,7 +548,7 @@ impl Cue {
                 "media.type" => "Audio",
                 "media.category" => "Playback",
                 "node.name" => CUE_OUT,
-                "node.description" => "Patchcord cue · out",
+                "node.description" => "Patchcord cue out",
             };
             let stream = pw::stream::StreamRc::new(core.clone(), CUE_OUT, props)?;
             let level = self.level.clone();

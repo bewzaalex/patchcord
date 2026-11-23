@@ -19,3 +19,4 @@ General rules live in [principles](../principles.md). New ADRs start from [the t
 | 0011 | [Narrow windows](0011-narrow-windows.md) | 2026-11-19 |
 | 0012 | [A program's whole self on its face, along its chains](0012-whole-program-on-its-face.md) | 2026-11-23 |
 | 0013 | [The frames' band colours](0013-band-colours.md) | 2026-11-23 |
+| 0014 | [A frame is a block: one frame a node, one table of colours with ENGINE](0014-a-frame-is-a-block.md) | 2026-11-23 |

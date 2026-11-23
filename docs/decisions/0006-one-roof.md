@@ -16,7 +16,7 @@ showed as a VIRTUAL DEVICE named after its engine. A DAW would make a mess.
   (`wireplumber.daemon`). Their nodes are the system's and keep their own rules.
 - **All its nodes, one device**, whatever their `media.class`: streams, its own sinks and
   sources, effects with no class, a JACK-style `Audio/Duplex` node. The kind is APP, the name is
-  `application.name`, and the finish is black.
+  `application.name`, and the finish is black (the paints: [0014](0014-a-frame-is-a-block.md)).
 - **Two programs of one name**: the first (by its client's serial) keeps the name, and the next
   get 2, 3. When a name is cut, it is cut before the number.
 - **Frame names**:
@@ -32,7 +32,7 @@ showed as a VIRTUAL DEVICE named after its engine. A DAW would make a mess.
   - any port with a cord to another device (Patchcord's meters don't count).
 
   A frame comes onto the face when its port gets a cord from outside, and goes back when the cord
-  goes. A stream's monitors stay off the face (listed in HIDDEN), as before.
+  goes. A stream's monitors stay off the face (listed in HIDDEN), as before. (Superseded by [0014](0014-a-frame-is-a-block.md): they are on its frame.)
 - **INSIDE**, a key under the LCD, shows only when the face doesn't show all the nodes. It opens
   an amber list (like PROFILE) of all the program's nodes, in the order it made them: where each
   sends sound among them, and which are on the face. It is read only. A click on a node shows it

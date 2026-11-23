@@ -7,7 +7,8 @@ Status: accepted · 2026-11-18
   Hidden devices stay hidden after a restart and come back by themselves when they get a cord.
 - The HIDDEN key lists them, to show again. It also lists, dimmed and marked SYSTEM, what
   Patchcord always leaves off the desk: other programs' level meters, its own meters and cue,
-  apps' recording monitors, and the plumbing behind a Bluetooth MIC.
+  apps' recording monitors, and the plumbing behind a Bluetooth MIC. (Recording monitors are on
+  their frames since [0014](0014-a-frame-is-a-block.md).)
 
 ## Rejected
 - Right-click to hide: people expect a menu there.

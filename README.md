@@ -130,22 +130,26 @@ To uninstall, delete those three files.
 
 ### Devices and their frames
 
-Every device is a panel; each of its inputs and outputs is a frame with jacks, a name and, for
-audio, its own SIG meter (what comes in, or what goes out, after its volume or gain).
+Every device is a panel; each of its nodes is one frame, as it is one block in ENGINE: every port
+of the node in it, its inputs at the left, its outputs at the right, a monitor beside the input it
+copies, each group of ports with its jacks and, for audio, its own SIG meter (what comes in, or
+what goes out, after its volume or gain).
 
 | | |
 | --- | --- |
 | Programs | everything one program makes in PipeWire is one device, APP on its screen, under the program's own name (`application.name`): its streams, its own sinks and sources, its effects (Easy Effects), a DAW's engine (Bitwig). A program is known by its name, binary and process, as PipeWire gives them; PipeWire's own processes and WirePlumber are not programs, their nodes stay devices of their own. Two programs of one name (two VLCs): the first keeps it, the next is numbered (VLC MEDIA PLAYER 2) |
-| On a program's face | all its nodes, nothing hidden: a program that wires its own nodes together (Easy Effects) shows them in the order its sound goes through them, each node's IN then its OUT, its own cords running between them on the face, a node's IN and OUT as one frame (one object in PipeWire): its name once across a band half the input's colour, half the output's, IN at its left end, OUT at its right, each half with its own jacks, meter and SPLIT; any of them can be patched by hand. A program whose nodes aren't linked among themselves (an app's streams) has its inputs at the left and outputs at the right, as every face |
-| Frame names | an app's say which way the sound goes: INPUT, OUTPUT; a program with several nodes names each frame as it named the node (EASY EFFECTS SINK, SPECTRUM), two of a name kept so. A sound card's say what it is, from the port in use, and follow it: SPEAKERS, HEADPHONES, HDMI, BUILT-IN MIC, MIC (SOUND OUT / SOUND IN when the card doesn't tell). A Bluetooth headset has HEADPHONES and MIC. WirePlumber's MIDI bridge has a frame for each MIDI client on it (MIDI THROUGH, a keyboard, HYDROGEN) |
+| On a program's face | all its nodes, nothing hidden: a program that wires its own nodes together (Easy Effects) shows them in the order its sound goes through them, each node's IN then its OUT, its own cords running between them on the face; any of them can be patched by hand. A program whose nodes aren't linked among themselves (an app's streams) has its inputs at the left and outputs at the right, as every face |
+| Frame names | an app's say which way the sound goes: INPUT, OUTPUT; a program with several nodes names each frame as it named the node (EASY EFFECTS SINK, SPECTRUM), two of a name kept so. A sound card's say what it is, from the port in use, and follow it: SPEAKERS, HEADPHONES, HDMI, BUILT-IN MIC, MIC (SOUND OUT / SOUND IN when the card doesn't tell). A Bluetooth headset has HEADPHONES and MIC. WirePlumber's MIDI bridge is one frame, a jack for each MIDI client on it, named in its tag (IN · MIDI THROUGH, OUT · HYDROGEN) |
+| GRAPH key | on a frame's band before its name, its node's number (#180): opens ENGINE with that block chosen and in view |
 | Screen | four lines: what the device is and its state (RUNNING); a card's profile (scrolling when long) or what it carries (STEREO, MONO, MIDI, or 2 CH for channels that don't say they're L and R); what it takes of PipeWire (2 NODES 6 PORTS); its cords (2 LINKS), or the volume while it changes |
-| IN / OUT tags | which way a cord goes at that frame: into it (IN) or out of it (OUT) |
-| MONITOR | inside an output's frame (a sound card's, a virtual sink's), after a dotted rule: a copy of what it plays, to record or listen to it (PipeWire's monitor) |
+| IN / OUT / MONITOR tags | under the jacks, what each port is: into it (IN), out of it (OUT), a copy of what goes in (MONITOR), each outlined; a split pair's rows are IN L, IN R |
+| MONITOR | beside the input it copies, after a dotted rule (a sound card's, a virtual sink's, an app's recording stream's): to record or listen to it (PipeWire's monitor) |
 | OUTPUT 1, OUTPUT 2… | an app with several streams of a kind (Teams in a call records on two and plays on six) is one device with a numbered frame for each, each with its own controls and meter |
 | Units | up to four frames side by side; more make the device two or three units high, the frames spread evenly (eight: two units of four), inputs first and outputs last, vents where a unit has nothing to show |
-| Colours (K) | coloured bands behind the frames' names by kind (a device's output teal, its input blue, its monitor violet, an app's input green and output rust, MIDI plum, video ochre: one lightness, each its own hue), or plain frames; the jacks keep their coloured rings either way |
+| Colours (K) | a frame's band and outline in its block's kind, as in ENGINE: a sink teal, a source blue, a playback stream brown, a recording stream green, MIDI plum, video ochre, a duplex block magenta, a node without a class sand; or plain frames. A jack's ring is what its port is for, either way: a sink's input teal, a source's output blue, a monitor violet, any other input green and output brown, MIDI plum, video ochre, a port of a format Patchcord doesn't know sand |
+| Paint | who owns the device: hardware aluminium, a program black, a node of PipeWire's or WirePlumber's own (a MIDI bridge) olive |
 | HIDE key | the struck-through eye at the left of the keys under a device's screen, on every device (or H over it), hides a device without cords; with cords it is dimmed. Hidden devices stay hidden after a restart and come back by themselves when something connects to them |
-| HIDDEN key | the eye on the top panel (or H over the desk), with how many are hidden: click one to show it again. It also lists, dimmed and marked SYSTEM, what Patchcord always leaves out: other programs' level meters and its own, apps' monitors, and the plumbing behind a Bluetooth headset's MIC |
+| HIDDEN key | the eye on the top panel (or H over the desk), with how many are hidden: click one to show it again. It also lists, dimmed and marked SYSTEM, what Patchcord always leaves out: other programs' level meters and its own, and the plumbing behind a Bluetooth headset's MIC |
 
 ### Patching
 
@@ -155,7 +159,7 @@ audio, its own SIG meter (what comes in, or what goes out, after its volume or g
 | Drag a cord's end | move it to another jack, or drop it in empty space to unlink |
 | Double-click a cord or its end | pull it out (unlink) |
 | Drag a cord | grab it and swing it |
-| SPLIT / JOIN | one stereo jack, or separate L and R jacks, L above R; the stereo jacks its cords lead to follow, and theirs in turn, and so does a new stream that starts playing into a split pair. On a frame with controls it sits beside MUTE |
+| SPLIT / JOIN | one stereo jack, or separate L and R jacks, L above R (a frame's input and the MONITOR inside it together); the stereo jacks its cords lead to follow, and theirs in turn, and so does a new stream that starts playing into a split pair. On a frame with controls it sits beside MUTE |
 | FLOW key (W) | which way each cord goes: a light runs inside every plugged-in cord from its output to its input, one at a time; on by default |
 | Hover a jack, cord or device | its cords stand out (even with CABLES on fade or hide) and the others fade; after a moment a tooltip gives the full names |
 | Ctrl+Z / Ctrl+Shift+Z | undo / redo |
@@ -209,9 +213,9 @@ on: what the panels leave out, which clock drives what, and why something crackl
 
 | | |
 | --- | --- |
-| Blocks | a block per node, grouped under the driver that clocks it (NOT RUNNING: nothing clocks it now, no CPU used). Coloured by what it is: device, app, system, MIDI, video, Patchcord's own meters and cue. Its ports are ears on its edges, inputs left, outputs right; a light shows if it runs, idles, sleeps or had xruns |
+| Blocks | a block per node, grouped under the driver that clocks it (NOT RUNNING: nothing clocks it now, no CPU used). Coloured by its kind, as its frame on the rack (sink, source, playback, recording, MIDI, video, duplex, no class), Patchcord's own meters and cue too (tagged PATCHCORD). Its ports are ears on its edges, inputs left, outputs right, each in its group's colour, as its jack's ring; a light shows if it runs, idles, sleeps or had xruns |
 | Where they go | by their links as they are now, left to right: no links; only links out; links in and out, a column further for each step along; only links in, then Patchcord's meters and cue. Each group takes as many columns as fit a wide view, and no link runs through another block's port. When the graph changes, the blocks glide to their new places |
-| Links | one curve each, in the colour of the block they come out of; faded when paused, dashed when they only listen (meters, the cue), red when the ends share no format |
+| Links | one curve each, in the colour of the port they come out of; faded when paused, dashed when they only listen (meters, the cue), red when the ends share no format |
 | Click | a node, port or link turns amber with what belongs to it, and its details open on the right: INFO, PROPS, PARAMS, TIMING, where it is on the desk (SHOW ON DESK goes there), its ports and links |
 | ALSO SHOW | Patchcord's meters, MIDI, what isn't running, PipeWire's internal drivers, on and off |
 | The strip | the clock, the quantum, the DSP load with its last 45 seconds, xruns, then (when there is room) drivers, server, session, allowed rates and objects; in a narrow window those are behind **i**. HEALTH counts errors, warnings and notes |

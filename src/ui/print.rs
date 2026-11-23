@@ -13,8 +13,6 @@ pub struct Style {
 pub const SECTION: Style = Style { size: 9.0, spacing: 1.2 };
 /// Small print: SHOW · FADE · HIDE, SIG, the IN/OUT tags, a device's type line.
 pub const SMALL: Style = Style { size: 7.5, spacing: 0.8 };
-/// Jack names: L, R, MONO, STEREO, PORT-0.
-pub const JACK: Style = Style { size: 9.0, spacing: 0.0 };
 /// Text on the little dark switch chips: SPLIT, JOIN.
 pub const SWITCH: Style = Style { size: 6.8, spacing: 0.5 };
 

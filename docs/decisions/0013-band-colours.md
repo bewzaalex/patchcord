@@ -1,6 +1,6 @@
 # The frames' band colours
 
-Status: accepted · 2026-11-23
+Status: superseded in part by [0014](0014-a-frame-is-a-block.md) · 2026-11-23 (the seven are the groups' colours now; a band is its block's kind)
 
 ## Context
 An app's (and a program's) INPUT band was ochre (`#a8862c`) and its OUTPUT rust (`#b45a2e`): 42° of

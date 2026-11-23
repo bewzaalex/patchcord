@@ -958,6 +958,9 @@ impl App {
         let faces_waiting = self.scene.prepare(self.raster, (now - self.start).as_millis());
         self.scene.rail_numbers((self.field().1 - self.view.y) / self.view.s);
         self.prof.mark("faces");
+        for (what, d) in &self.scene.prep_spent {
+            self.prof.add(what, *d);
+        }
         // the background for a new window size: drawn on a thread (the old one stretches meanwhile),
         // the first one here
         if let Some(rx) = &self.bg_job
@@ -1304,15 +1307,13 @@ impl App {
         let (top, bottom) = self.field();
         let (px, py) = (self.cursor.0 / self.dpi(), self.cursor.1 / self.dpi());
         let in_more = self.panel.in_more(px, py);
-        // a click off MORE's drop-down closes it (one on the panel also does what it does there)
+        // a click off MORE's drop-down closes it, and does what it does there too (on the panel, or
+        // on the field: a jack heard in CUE mode at once, a plug taken)
         if self.panel.state.more && !in_more && self.panel.hit(px, py) != Some(Key::More) && self.panel.menu_hit(px, py).is_none() {
             // and a list opened from it
             self.panel.state.more = false;
             self.panel.menu = None;
             self.redraw();
-            if self.cursor.1 >= top {
-                return;
-            }
         }
         // ENGINE takes the clicks between the panel and the status bar
         if self.engine.on && self.cursor.1 >= top && self.cursor.1 <= bottom && self.panel.menu.is_none() && !in_more {
@@ -1524,6 +1525,12 @@ impl App {
         // a device's HIDE key
         if let Some(di) = self.scene.hide_key_at(w.0, w.1) {
             return self.hide_device(di);
+        }
+        // a frame's GRAPH key: its block in ENGINE, chosen and in view (a frame is a block)
+        if let Some(node) = self.scene.graph_key_at(w.0, w.1) {
+            self.set_engine(true);
+            self.engine.show_node(node);
+            return self.redraw();
         }
         // a card's PROFILE and PORT keys open their lists under them
         if let Some((di, what)) = self
@@ -1937,7 +1944,7 @@ impl App {
             CursorIcon::Crosshair
         } else if self.scene.knob_at(w.0, w.1).is_some() || self.scene.bal_at(w.0, w.1).is_some_and(|(di, gi)| self.scene.devs[di].bal(gi) == BalKnob::Out) {
             CursorIcon::NsResize
-        } else if self.scene.switch_at(w.0, w.1).is_some() || self.scene.hide_key_at(w.0, w.1).is_some() || self.scene.profile_key_at(w.0, w.1).is_some() || self.scene.port_key_at(w.0, w.1).is_some() || self.scene.mix_control_at(w.0, w.1) {
+        } else if self.scene.switch_at(w.0, w.1).is_some() || self.scene.hide_key_at(w.0, w.1).is_some() || self.scene.graph_key_at(w.0, w.1).is_some() || self.scene.profile_key_at(w.0, w.1).is_some() || self.scene.port_key_at(w.0, w.1).is_some() || self.scene.mix_control_at(w.0, w.1) {
             CursorIcon::Pointer
         } else if self.scene.device_at(w.0, w.1).is_some() && !self.panel.state.locked {
             CursorIcon::Move
@@ -2210,7 +2217,7 @@ impl ApplicationHandler<()> for App {
             return;
         }
         let (w, h) = self.settings.window.unwrap_or((1400, 880));
-        let attrs = with_app_id(Window::default_attributes().with_title("Patchcord").with_inner_size(LogicalSize::new(w as f64, h as f64)).with_min_inner_size(LogicalSize::new(480.0, 320.0)));
+        let attrs = with_app_id(Window::default_attributes().with_title("Patchcord").with_inner_size(LogicalSize::new(w as f64, h as f64)).with_min_inner_size(LogicalSize::new(self.panel.min_w().ceil(), 320.0)));
         let window = Arc::new(event_loop.create_window(attrs).expect("window"));
         let gpu = match Gpu::new(window.clone(), event_loop.owned_display_handle()) {
             Ok(g) => g,

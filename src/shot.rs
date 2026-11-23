@@ -807,8 +807,8 @@ fn render_specimen(path: &str) -> Result<(), String> {
     node(&mut g, 125, "synth", "Synth", "Midi/Bridge", "suspended");
     node(&mut g, 130, "v4l2_input.webcam", "Webcam", "Video/Source", "suspended");
     // the cue: Firefox's left channel kept on, played into the Scarlett
-    node(&mut g, 150, "patchcord-cue", "Patchcord cue · in", "Stream/Input/Audio", "running");
-    node(&mut g, 155, "patchcord-cue-out", "Patchcord cue · out", "Stream/Output/Audio", "running");
+    node(&mut g, 150, "patchcord-cue", "Patchcord cue in", "Stream/Input/Audio", "running");
+    node(&mut g, 155, "patchcord-cue-out", "Patchcord cue out", "Stream/Output/Audio", "running");
     node(&mut g, 140, "Dummy-Driver", "Dummy-Driver", "", "suspended");
     node(&mut g, 141, "Freewheel-Driver", "Freewheel-Driver", "", "suspended");
     for &(id, n, dir, name, ch, mon, midi) in ports {

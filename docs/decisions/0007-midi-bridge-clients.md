@@ -1,6 +1,6 @@
 # The MIDI bridge: a frame for each client
 
-Status: accepted · 2026-11-22
+Status: superseded by [0014](0014-a-frame-is-a-block.md) · 2026-11-22 (one frame, a jack a client)
 
 ## Context
 WirePlumber's MIDI bridge is one node holding every ALSA MIDI client (Midi Through, keyboards,
