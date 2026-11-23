@@ -136,8 +136,6 @@ pub struct Geometry {
     pub jacks: Vec<(f64, f64)>,
     /// split/join switches: group and rectangle (x, y, w, h)
     pub switches: Vec<(usize, [f64; 4])>,
-    /// the groups whose switch is a key beside their MUTE (a stereo group with controls)
-    pub keyed: Vec<usize>,
     /// left edge of the panel proper (after a rack ear)
     pub left: f64,
     /// each group's left edge, width, the width of its jacks part (the rest is its controls), and
@@ -453,7 +451,7 @@ fn rec_w(dev: &Device, gi: usize, jd: &[JackDef], counts: &[usize]) -> f64 {
             // split with its input: L over R, its tags at their left, the longest row
             mon_row_x() + (mine().max().unwrap_or(1) - 1) as f64 * JP + 26.0
         } else {
-            mine().sum::<usize>() as f64 * JP + 18.0
+            jd.iter().enumerate().filter(|(_, j)| j.group == m).map(|(i, _)| cell_w(dev, m, jd, i, slots(counts[i]))).sum::<f64>() + 18.0
         }
     })
 }
@@ -474,34 +472,54 @@ fn group_w(dev: &Device, gi: usize, jd: &[JackDef], counts: &[usize]) -> f64 {
 }
 
 /// A port's tag under its jacks: IN or OUT, and a MIDI bridge's client in it (IN · HYDROGEN).
-fn tag_text(g: &crate::graph::Group) -> String {
-    let word = if g.dir == Dir::In { "IN" } else { "OUT" };
-    g.client.as_ref().map_or_else(|| word.to_owned(), |c| format!("{word} · {c}"))
+/// The tag under jack `i` of group `gi`: what the port is (IN, OUT, MONITOR in its input's
+/// frame) and, inside it, a MIDI client's name (IN · HYDROGEN) or, in a group of several jacks
+/// side by side, its channel (OUT · OUT5, MONITOR · FC).
+fn jack_tag(dev: &Device, gi: usize, jd: &[JackDef], i: usize) -> String {
+    let g = &dev.groups[gi];
+    let word = if host(dev, gi).is_some() { "MONITOR" } else if g.dir == Dir::In { "IN" } else { "OUT" };
+    if let Some(c) = &g.client {
+        format!("{word} · {c}")
+    } else if jd.iter().filter(|j| j.group == gi).count() > 1 && !stacked(dev, gi, jd) {
+        format!("{word} · {}", jd[i].label)
+    } else {
+        word.to_owned()
+    }
 }
 
-/// A jack's room in a row: its mult (a jack a cord, and a free one), or its tag, the wider.
-fn cell_w(g: &crate::graph::Group, slots_n: usize) -> f64 {
+/// Jack `i`'s room in a row: its mult (a jack a cord, and a free one), or its tag, the wider.
+fn cell_w(dev: &Device, gi: usize, jd: &[JackDef], i: usize, slots_n: usize) -> f64 {
     let jacks = slots_n as f64 * JP;
-    if g.client.is_some() { jacks.max(SMALL.width(&tag_text(g)) + 18.0) } else { jacks }
+    let t = jack_tag(dev, gi, jd, i);
+    if t.contains(" · ") { jacks.max(SMALL.width(&t) + 18.0) } else { jacks }
 }
 
 fn jacks_w(dev: &Device, gi: usize, jd: &[JackDef], counts: &[usize]) -> f64 {
-    let g = &dev.groups[gi];
     let mine = || jd.iter().enumerate().filter(|(_, j)| j.group == gi).map(|(i, _)| slots(counts[i]));
     let jacks = if stacked(dev, gi, jd) {
-        // the longest row, and room for the switch right of its lower jacks (one with controls
-        // has it as a key beside its MUTE)
-        ROW_X + (mine().max().unwrap_or(1) - 1) as f64 * JP + 22.0 + if g.mix.is_none() { 46.0 } else { 14.0 }
+        // the longest row
+        ROW_X + (mine().max().unwrap_or(1) - 1) as f64 * JP + 36.0
     } else {
-        mine().map(|k| cell_w(g, k)).sum::<f64>() + 14.0
+        jd.iter().enumerate().filter(|(_, j)| j.group == gi).map(|(i, _)| cell_w(dev, gi, jd, i, slots(counts[i]))).sum::<f64>() + 14.0
     };
     // GRAPH and the name span the MONITOR too: room for them is found over both
     let rec = rec_w(dev, gi, jd, counts);
-    // a stereo group without controls has its SPLIT switch under its jacks: room for it
-    // (a frame of several sections has its name once, across them all)
+    // room on the band for GRAPH, SPLIT and the name (a frame of several sections has them once,
+    // across them all)
     let n = sections(dev, gi).len().max(1) as f64;
-    let named = ((label_w(&name(dev, gi)) + graph_key_w(dev, gi) + 34.0) / n).ceil();
-    (jacks.max(if g.stereo && g.mix.is_none() { 100.0 } else { 0.0 }) + rec).max(named)
+    let keys = graph_key_w(dev, gi) + if splits(dev, gi) { split_key_w() + 4.0 } else { 0.0 };
+    let named = ((label_w(&name(dev, gi)) + keys + 34.0) / n).ceil();
+    (jacks + rec).max(named)
+}
+
+/// A frame's one SPLIT key, on its band right of GRAPH: as wide whether it says SPLIT or JOIN.
+fn split_key_w() -> f64 {
+    10.0 + SMALL.width("SPLIT").max(SMALL.width("JOIN"))
+}
+
+/// Whether a frame has a SPLIT key: one of its sections is a stereo pair.
+fn splits(dev: &Device, gi: usize) -> bool {
+    sections(dev, gi).iter().any(|s| dev.groups[*s].stereo)
 }
 
 /// At most this many frames (inputs, outputs, monitors…) side by side: the next starts a new
@@ -727,11 +745,11 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
     // (in the rack a face fills its units but for the gap to the next one)
     let units = rows_of.len().max(1) as f64;
     let h = if rack { RACK_U * units - RACK_GAP } else { DEV_H * units };
-    let mut geo = Geometry { w, h, jacks: vec![(0.0, 0.0); jd.len()], switches: Vec::new(), keyed: Vec::new(), hide, left: ear, groups: vec![(0.0, 0.0, 0.0, 0.0); dev.groups.len()], grille: None, profile, port, mix: Vec::new(), meters: Vec::new(), vents: Vec::new(), graph: Vec::new() };
+    let mut geo = Geometry { w, h, jacks: vec![(0.0, 0.0); jd.len()], switches: Vec::new(), hide, left: ear, groups: vec![(0.0, 0.0, 0.0, 0.0); dev.groups.len()], grille: None, profile, port, mix: Vec::new(), meters: Vec::new(), vents: Vec::new(), graph: Vec::new() };
     // a group at `x`, in the unit `oy` down
     let place = |gi: usize, x: f64, oy: f64, geo: &mut Geometry| -> f64 {
         let (gw, jw) = (group_w(dev, gi, jd, counts), jacks_w(dev, gi, jd, counts));
-        let cells: f64 = jd.iter().enumerate().filter(|(_, j)| j.group == gi).map(|(i, _)| cell_w(&dev.groups[gi], slots(counts[i]))).sum();
+        let cells: f64 = jd.iter().enumerate().filter(|(_, j)| j.group == gi).map(|(i, _)| cell_w(dev, gi, jd, i, slots(counts[i]))).sum();
         let rw = rec_w(dev, gi, jd, counts);
         // the left edge of the next jack's room
         let mut jx = x + (jw - rw - cells) / 2.0;
@@ -740,47 +758,40 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
         if let Some(m) = rec_of(dev, gi) {
             let r = if accents { ROWS_BAND } else { ROWS };
             let ry = oy + if rows { (r[0] + r[1]) / 2.0 } else { 62.0 };
-            let mut mx = x + jw - rw + 9.0 + JP / 2.0;
+            let mut mx = x + jw - rw + 9.0;
             let split = stacked(dev, m, jd);
             for (k, (i, _)) in jd.iter().enumerate().filter(|(_, j)| j.group == m).enumerate() {
                 if split {
                     // split with its input (one SPLIT a frame): L over R, as the input's rows
                     geo.jacks[i] = (x + jw - rw + mon_row_x(), oy + r[k.min(1)]);
                 } else {
-                    geo.jacks[i] = (mx, ry);
-                    mx += slots(counts[i]) as f64 * JP;
+                    // (its mult in the middle of its room, as the input's)
+                    let (k, cw) = (slots(counts[i]), cell_w(dev, m, jd, i, slots(counts[i])));
+                    geo.jacks[i] = (mx + (cw - k as f64 * JP) / 2.0 + JP / 2.0, ry);
+                    mx += cw;
                 }
             }
             geo.groups[m] = (x + jw - rw, rw, rw, oy);
         }
         for (r, (i, _)) in jd.iter().enumerate().filter(|(_, j)| j.group == gi).enumerate() {
             if rows {
-                geo.jacks[i] = (x + ROW_X, oy + if accents { ROWS_BAND } else { ROWS }[r]);
+                // (its rows in the middle of their room, as one row's jacks are)
+                let longest = jd.iter().enumerate().filter(|(_, j)| j.group == gi).map(|(i, _)| slots(counts[i])).max().unwrap_or(1);
+                let off = ((jw - rw - (ROW_X + (longest - 1) as f64 * JP + 36.0)) / 2.0).max(0.0);
+                geo.jacks[i] = (x + off + ROW_X, oy + if accents { ROWS_BAND } else { ROWS }[r]);
             } else {
                 // (its mult in the middle of its room)
-                let (k, cw) = (slots(counts[i]), cell_w(&dev.groups[gi], slots(counts[i])));
+                let (k, cw) = (slots(counts[i]), cell_w(dev, gi, jd, i, slots(counts[i])));
                 geo.jacks[i] = (jx + (cw - k as f64 * JP) / 2.0 + JP / 2.0, oy + 62.0);
                 jx += cw;
             }
         }
-        // a stereo group with controls: its SPLIT is a key beside its MUTE; else (a MONITOR) a
-        // little switch under the jacks
         let g = &dev.groups[gi];
-        let keyed = g.stereo && g.mix.is_some();
-        if g.stereo && !keyed {
-            geo.switches.push((gi, [x + jw - 42.0, oy + 95.0, 36.0, 14.0]));
-        }
         // a stream's controls, right of its jacks
         if g.mix.is_some() {
             let (ox, stereo) = (x + jw, g.stereo);
             let w = if stereo { 96.0 } else { 58.0 };
-            let mute = if keyed {
-                geo.switches.push((gi, [ox + 7.0, oy + 89.0, 38.0, 14.0]));
-                geo.keyed.push(gi);
-                [ox + 49.0, oy + 89.0, w - 56.0, 14.0]
-            } else {
-                [ox + 7.0, oy + 89.0, w - 14.0, 14.0]
-            };
+            let mute = [ox + 7.0, oy + 89.0, w - 14.0, 14.0];
             geo.mix.push((gi, MixGeo {
                 x: ox,
                 y: oy,
@@ -800,11 +811,15 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
             geo.meters.push((gi, mx, oy, if two { 2 } else { 1 }));
         }
         geo.groups[gi] = (x, gw, jw, oy);
-        // a frame's first section: its GRAPH key on the band
-        if sections(dev, gi).first() == Some(&gi)
-            && let Some(node) = node_of(dev, gi)
-        {
-            geo.graph.push((node, [x + 6.0, oy + 21.0, graph_key_w(dev, gi), 12.0]));
+        // a frame's first section: its GRAPH key on the band, and right of it the frame's one
+        // SPLIT (every stereo pair in the frame, a MONITOR inside it too)
+        if sections(dev, gi).first() == Some(&gi) {
+            if let Some(node) = node_of(dev, gi) {
+                geo.graph.push((node, [x + 6.0, oy + 21.0, graph_key_w(dev, gi), 12.0]));
+            }
+            if splits(dev, gi) {
+                geo.switches.push((gi, [x + 6.0 + graph_key_w(dev, gi) + 4.0, oy + 21.0, split_key_w(), 12.0]));
+            }
         }
         x + gw + gap_after(dev, gi)
     };
@@ -1239,8 +1254,17 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
     for (gi, g) in dev.groups.iter().enumerate() {
         let (x, gw, _, oy) = geo.groups[gi];
         // MONITOR, inside its host's frame: a dotted rule, and under its jacks their name
-        if host(dev, gi).is_some() {
-            let mut s = format!(r#"<path d="M{},{} V100" stroke="{}" stroke-opacity=".35" stroke-dasharray="2 3"/>"#, x + 2.0, if accents { 44.0 } else { 34.0 }, f.print);
+        if let Some(hg) = host(dev, gi) {
+            // the rule halfway between the input's jacks (their mult's outline) and MONITOR's
+            let mut ends = jd.iter().enumerate().filter(|(_, j)| j.group == hg).map(|(i, _)| geo.jacks[i].0 + (slots(counts[i]) - 1) as f64 * JP + 21.0);
+            let end = ends.next().map_or(x, |e| ends.fold(e, f64::max));
+            let start = if stacked(dev, gi, jd) {
+                x + 15.0
+            } else {
+                jd.iter().enumerate().filter(|(_, j)| j.group == gi).map(|(i, _)| geo.jacks[i].0 - 21.0).fold(f64::MAX, f64::min)
+            };
+            let rx = if start < f64::MAX && start > end { (end + start) / 2.0 } else { x + 2.0 };
+            let mut s = format!(r#"<path d="M{rx},{} V100" stroke="{}" stroke-opacity=".35" stroke-dasharray="2 3"/>"#, if accents { 44.0 } else { 34.0 }, f.print);
             for (i, _) in jd.iter().enumerate().filter(|(_, j)| j.group == gi) {
                 let k = slots(counts[i]);
                 let (jx, jy) = (geo.jacks[i].0, geo.jacks[i].1 - oy);
@@ -1255,13 +1279,9 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
                     s.push_str(&port_tag(jx - 21.0 - (SMALL.width(&t) + 10.0) / 2.0, jy, &t, &f));
                     continue;
                 }
-                // what it is, under it (ADR 0014); several (5.1): each its channel under the tag
-                let one = jd.iter().filter(|j| j.group == gi).count() == 1;
+                // what it is, under it (ADR 0014); several (5.1): each its channel in the tag
                 let cx = jx + (k - 1) as f64 * JP / 2.0;
-                s.push_str(&port_tag(cx, KEY_ROW, "MONITOR", &f));
-                if !one {
-                    s.push_str(&SMALL.text(cx, 109.0, f.print, "middle", &jd[i].label));
-                }
+                s.push_str(&port_tag(cx, KEY_ROW, &jack_tag(dev, gi, jd, i), &f));
             }
             if oy > 0.0 {
                 s = format!(r#"<g transform="translate(0,{oy})">{s}</g>"#);
@@ -1309,11 +1329,9 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
                 r##"<rect x="{kx}" y="{ky}" width="{kw}" height="12" rx="2" fill="#1b1c1e" stroke="rgba(0,0,0,.45)"/>{}"##,
                 SMALL.text(kx + kw / 2.0, ky + 9.0, "#e6e7e8", "middle", &format!("#{id}"))
             );
-            if secs.len() > 1 {
-                body.push_str(&SECTION.text(fx + (fw + kw + 6.0) / 2.0, 31.0, ink, "middle", &name(dev, gi)));
-            } else {
-                body.push_str(&SECTION.text(kx + kw + 7.0, 31.0, ink, "start", &name(dev, gi)));
-            }
+            // the name at the left, after GRAPH and SPLIT
+            let nx = kx + kw + 7.0 + if splits(dev, gi) { split_key_w() + 4.0 } else { 0.0 };
+            body.push_str(&SECTION.text(nx, 31.0, ink, "start", &name(dev, gi)));
         } else {
             let _ = write!(body, r#"<path d="M{x},40 V104" stroke="{}" stroke-opacity=".35" stroke-dasharray="2 3"/>"#, f.print);
         }
@@ -1321,7 +1339,6 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
         // rows IN L, IN R at their left; a MIDI client's name, or a channel, under the tag
         let word = if g.dir == Dir::In { "IN" } else { "OUT" };
         let rows = stacked(dev, gi, jd);
-        let mine = jd.iter().filter(|j| j.group == gi).count();
         for (i, j) in jd.iter().enumerate().filter(|(_, j)| j.group == gi) {
             let k = slots(counts[i]);
             let (jx, jy) = (geo.jacks[i].0, geo.jacks[i].1 - oy);
@@ -1338,11 +1355,8 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
             } else {
                 let cx = jx + (k - 1) as f64 * JP / 2.0;
                 // in one row with the keys, below a mult's outline (21 under the jacks' centre); a
-                // MIDI client's name in the tag (IN · HYDROGEN), a channel under it
-                body.push_str(&port_tag(cx, KEY_ROW, &tag_text(g), &f));
-                if g.client.is_none() && mine > 1 {
-                    body.push_str(&SMALL.text(cx, 109.0, f.print, "middle", &j.label));
-                }
+                // MIDI client's name, or a channel, in the tag (IN · HYDROGEN, OUT · OUT5)
+                body.push_str(&port_tag(cx, KEY_ROW, &jack_tag(dev, gi, jd, i), &f));
             }
         }
         if oy > 0.0 {
@@ -1350,23 +1364,13 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
             body.push_str("</g>");
         }
     }
+    // a frame's SPLIT: a key like GRAPH, on the band; JOIN while its pairs are split
     for (gi, [bx, by, bw, bh]) in &geo.switches {
-        let on = split.get(*gi).copied().unwrap_or(false);
-        // a numbered stream's: a key like its MUTE, beside it
-        if geo.keyed.contains(gi) {
-            let _ = write!(
-                body,
-                r##"<rect x="{bx}" y="{by}" width="{bw}" height="{bh}" rx="2.5" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/>{}"##,
-                SWITCH.text(bx + bw / 2.0, by + 9.6, "#e6e7e8", "middle", if on { "JOIN" } else { "SPLIT" })
-            );
-            continue;
-        }
-        // a little hardware switch: one stereo jack, or L and R apart
-        let by = by + 2.0;
+        let on = sections(dev, *gi).iter().find(|s| dev.groups[**s].stereo).and_then(|s| split.get(*s)).copied().unwrap_or(false);
         let _ = write!(
             body,
-            r##"<rect x="{bx}" y="{by}" width="34" height="10" rx="2" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/>{}"##,
-            SWITCH.text(bx + 17.0, by + 7.6, "#e6e7e8", "middle", if on { "JOIN" } else { "SPLIT" })
+            r##"<rect x="{bx}" y="{by}" width="{bw}" height="{bh}" rx="2" fill="#1b1c1e" stroke="rgba(0,0,0,.45)"/>{}"##,
+            SMALL.text(bx + bw / 2.0, by + 9.0, "#e6e7e8", "middle", if on { "JOIN" } else { "SPLIT" })
         );
     }
     for (_, m) in &geo.mix {

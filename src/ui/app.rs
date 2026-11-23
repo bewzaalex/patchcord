@@ -663,7 +663,7 @@ impl App {
                 self.fit(false);
             }
             Key::Save => self.open_menu(true),
-            Key::Load | Key::Lcd => self.open_menu(false),
+            Key::Lcd => self.open_menu(false),
             Key::Defaults => self.open_defaults(true),
             Key::Cue => self.set_cue_mode(!self.cue.mode),
             Key::CueLevel => {}
@@ -1430,7 +1430,7 @@ impl App {
                 None => {
                     // the keys that open it toggle it themselves
                     let key = self.panel.hit(self.cursor.0 / dpi, self.cursor.1 / dpi);
-                    if !matches!(key, Some(Key::Save | Key::Load | Key::Lcd | Key::Defaults | Key::Hidden)) {
+                    if !matches!(key, Some(Key::Save | Key::Lcd | Key::Defaults | Key::Hidden)) {
                         self.panel.menu = None;
                         // MORE closes with the list it holds open
                         if key == Some(Key::More) {
@@ -2004,7 +2004,7 @@ impl App {
                 }
             }
             KeyCode::KeyS if self.mods.control_key() => self.panel_key(Key::Save),
-            KeyCode::KeyO if self.mods.control_key() => self.panel_key(Key::Load),
+            KeyCode::KeyO if self.mods.control_key() => self.panel_key(Key::Lcd),
             _ if self.mods.control_key() || self.mods.alt_key() => {}
             KeyCode::KeyF | KeyCode::Digit0 => self.panel_key(Key::Fit),
             KeyCode::KeyA => self.panel_key(Key::Arrange),

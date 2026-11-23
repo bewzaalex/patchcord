@@ -19,7 +19,6 @@ pub enum Key {
     Undo,
     Redo,
     Save,
-    Load,
     Desk,
     Rack,
     /// the real PipeWire graph
@@ -58,7 +57,6 @@ impl Key {
             Key::Undo => "Undo (Ctrl+Z)",
             Key::Redo => "Redo (Ctrl+Shift+Z)",
             Key::Save => "Save as a new preset (Ctrl+S)",
-            Key::Load => "Load a preset (Ctrl+O)",
             Key::Desk => "Devices anywhere on a desk",
             Key::Rack => "Devices in a 19\" rack (R)",
             Key::Engine => "What PipeWire really has: every node, port and link, drivers, timings, issues (E)",
@@ -375,7 +373,6 @@ const ICONS: &[(Key, &str)] = &[
     (Key::Undo, r#"<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>"#),
     (Key::Redo, r#"<path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>"#),
     (Key::Save, r#"<path d="M5 3h11l3 3v15H5z"/><path d="M8 3v5h7V3"/><path d="M8 21v-7h8v7"/>"#),
-    (Key::Load, r#"<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h10"/>"#),
     (Key::Lock, r#"<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>"#),
     (Key::Align, r#"<path d="M4 3v18"/><rect x="7.5" y="5" width="12" height="5" rx="1"/><rect x="7.5" y="14" width="7.5" height="5" rx="1"/>"#),
     (Key::Arrange, r#"<rect x="3.5" y="4" width="7" height="5" rx="1"/><rect x="3.5" y="15" width="7" height="5" rx="1"/><rect x="13.5" y="9.5" width="7" height="5" rx="1"/><path d="M10.5 6.5h1.5v11h-1.5M12 12h1.5"/>"#),
@@ -652,7 +649,7 @@ impl Panel {
                 );
                 text::width(text::BLACK, "PATCHCORD", 26.0, 1.0) * 1.06
             }
-            Part::Edit => group(st, &mut o, &mut rects, x, &[(Key::Undo, None, None), (Key::Redo, None, None), (Key::Save, None, None), (Key::Load, None, None)], "EDIT"),
+            Part::Edit => group(st, &mut o, &mut rects, x, &[(Key::Undo, None, None), (Key::Redo, None, None), (Key::Save, None, None)], "EDIT"),
             Part::Layout => {
                 let mut keys = vec![(Key::Desk, Some("DESK"), Some(!st.rack && !st.engine)), (Key::Rack, Some("RACK"), Some(st.rack && !st.engine)), (Key::Engine, Some("ENGINE"), Some(st.engine))];
                 if attached {
@@ -1234,11 +1231,11 @@ mod tests {
         assert_eq!(parts, vec![Part::Edit, Part::Layout]);
         assert_eq!(more, vec![Part::LockAlign, Part::Cables, Part::View, Part::Cue, Part::LcdDefaults, Part::LcdPreset]);
         // ENGINE's grey keys go first; CUE · LEVEL works there and folds as on the desk
-        let (parts, more) = folded(false, true, 700.0);
+        let (parts, more) = folded(false, true, 653.0);
         assert!(parts.contains(&Part::View) && !parts.contains(&Part::Cables), "{parts:?}");
         assert_eq!(more, vec![Part::Cue, Part::LcdDefaults, Part::LcdPreset]);
         // in the rack ALIGN is off: grey, then gone
-        let (_, more) = folded(true, false, 540.0);
+        let (_, more) = folded(true, false, 500.0);
         assert_eq!(more[0], Part::LockAlign);
         let mut p = Panel::new(state(true, false));
         let _ = p.layer(540.0, 1.0);

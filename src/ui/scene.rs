@@ -2193,6 +2193,9 @@ impl Scene {
     /// The stereo jacks its cords lead to follow, and the ones theirs lead to, and so on: else a
     /// stereo jack would show two cords that each carry only L or R and look like they carry both.
     pub fn toggle_split(&mut self, di: usize, g: usize) {
+        // a frame's one SPLIT: its first stereo pair says which way they all go
+        let dev = &self.devs[di].dev;
+        let g = face::sections(dev, g).into_iter().find(|s| dev.groups[*s].stereo).unwrap_or(g);
         let Some(&was) = self.devs[di].split.get(g) else { return };
         let group_of = self.stereo_groups();
         // links to hidden streams (Patchcord's own meters on app outputs, say) don't count: their
@@ -2202,9 +2205,10 @@ impl Scene {
         let mut k = 0;
         while k < flip.len() {
             let here = flip[k];
-            // a frame's one SPLIT splits its input and the MONITOR inside it together
+            // a frame's one SPLIT splits every stereo pair in it, and the MONITOR inside it
             let dev = &self.devs[here.0].dev;
-            for o in (0..dev.groups.len()).filter(|o| face::host(dev, *o) == Some(here.1) || face::host(dev, here.1) == Some(*o)) {
+            let secs = face::sections(dev, here.1);
+            for o in (0..dev.groups.len()).filter(|o| face::host(dev, *o) == Some(here.1) || face::host(dev, here.1) == Some(*o) || (secs.contains(o) && dev.groups[*o].stereo)) {
                 if !flip.contains(&(here.0, o)) {
                     flip.push((here.0, o));
                 }

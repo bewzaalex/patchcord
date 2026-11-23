@@ -66,16 +66,20 @@ HARDWARE aluminium `#C3C6CA` (print `#1D1E20`), PROGRAM black `#232427` (print `
 of PipeWire's or WirePlumber's olive `#66683F` (print `#F1F1E6`).
 
 **The frame**, as the face draws it, with these changes:
-- The band: GRAPH, then the name; VOLUME · BAL (GAIN on a source or a recording stream) and SIG
+- The band: GRAPH, SPLIT, then the name, at the left on every frame; VOLUME · BAL (GAIN on a source or a recording stream) and SIG
   where there are. No IN or OUT tag on the band.
 - GRAPH: a small key with the node's number, `#180` (the id ENGINE's block shows). It opens
   ENGINE with that block chosen and in view. No animation.
 - Under each port's jacks, what it is: IN, OUT or MONITOR, all outlined in the paint's print (a
   filled tag passed for a key, as SPLIT and MUTE), in one row with the keys; IN L / IN R when
-  split; a bridge's client in its tag (IN · HYDROGEN). STEREO and MONO go: SPLIT says it.
-- SPLIT as now: a key beside MUTE for a stereo group with a volume, a little switch under its
-  jacks for one without; none for mono, MIDI and video. A frame's SPLIT splits its input and the
-  MONITOR inside it together (MONITOR L over MONITOR R, beside IN L over IN R).
+  split; a bridge's client, or a channel of several jacks side by side, in its tag
+  (IN · HYDROGEN, OUT · OUT5, MONITOR · FC): nothing hangs under the tags. STEREO and MONO go:
+  SPLIT says it.
+- SPLIT: one key a frame, on its band right of GRAPH, as wide whether it says SPLIT or JOIN
+  (2026-11-23; it was a key beside MUTE, or a little switch under the jacks that ran over the
+  frame's edge). It splits every stereo pair in the frame and the MONITOR inside it together
+  (MONITOR L over MONITOR R, beside IN L over IN R); none on a frame without a stereo pair
+  (mono, MIDI, video).
 
 **Still off the rack** (HIDDEN, marked SYSTEM; in ENGINE): Patchcord's own meters and cue, other
 programs' level-meter streams, and a Bluetooth headset's internal capture stream (in A2DP the real

@@ -140,9 +140,9 @@ what goes out, after its volume or gain).
 | Programs | everything one program makes in PipeWire is one device, APP on its screen, under the program's own name (`application.name`): its streams, its own sinks and sources, its effects (Easy Effects), a DAW's engine (Bitwig). A program is known by its name, binary and process, as PipeWire gives them; PipeWire's own processes and WirePlumber are not programs, their nodes stay devices of their own. Two programs of one name (two VLCs): the first keeps it, the next is numbered (VLC MEDIA PLAYER 2) |
 | On a program's face | all its nodes, nothing hidden: a program that wires its own nodes together (Easy Effects) shows them in the order its sound goes through them, each node's IN then its OUT, its own cords running between them on the face; any of them can be patched by hand. A program whose nodes aren't linked among themselves (an app's streams) has its inputs at the left and outputs at the right, as every face |
 | Frame names | an app's say which way the sound goes: INPUT, OUTPUT; a program with several nodes names each frame as it named the node (EASY EFFECTS SINK, SPECTRUM), two of a name kept so. A sound card's say what it is, from the port in use, and follow it: SPEAKERS, HEADPHONES, HDMI, BUILT-IN MIC, MIC (SOUND OUT / SOUND IN when the card doesn't tell). A Bluetooth headset has HEADPHONES and MIC. WirePlumber's MIDI bridge is one frame, a jack for each MIDI client on it, named in its tag (IN · MIDI THROUGH, OUT · HYDROGEN) |
-| GRAPH key | on a frame's band before its name, its node's number (#180): opens ENGINE with that block chosen and in view |
+| GRAPH key | on a frame's band, at its left, its node's number (#180); then SPLIT where the frame has a stereo pair, then the name: opens ENGINE with that block chosen and in view |
 | Screen | four lines: what the device is and its state (RUNNING); a card's profile (scrolling when long) or what it carries (STEREO, MONO, MIDI, or 2 CH for channels that don't say they're L and R); what it takes of PipeWire (2 NODES 6 PORTS); its cords (2 LINKS), or the volume while it changes |
-| IN / OUT / MONITOR tags | under the jacks, what each port is: into it (IN), out of it (OUT), a copy of what goes in (MONITOR), each outlined; a split pair's rows are IN L, IN R |
+| IN / OUT / MONITOR tags | under the jacks, what each port is: into it (IN), out of it (OUT), a copy of what goes in (MONITOR), each outlined; a split pair's rows are IN L, IN R; of several jacks side by side, each its channel in its tag (OUT · OUT5, IN · FC) |
 | MONITOR | beside the input it copies, after a dotted rule (a sound card's, a virtual sink's, an app's recording stream's): to record or listen to it (PipeWire's monitor) |
 | OUTPUT 1, OUTPUT 2… | an app with several streams of a kind (Teams in a call records on two and plays on six) is one device with a numbered frame for each, each with its own controls and meter |
 | Units | up to four frames side by side; more make the device two or three units high, the frames spread evenly (eight: two units of four), inputs first and outputs last, vents where a unit has nothing to show |
@@ -159,7 +159,7 @@ what goes out, after its volume or gain).
 | Drag a cord's end | move it to another jack, or drop it in empty space to unlink |
 | Double-click a cord or its end | pull it out (unlink) |
 | Drag a cord | grab it and swing it |
-| SPLIT / JOIN | one stereo jack, or separate L and R jacks, L above R (a frame's input and the MONITOR inside it together); the stereo jacks its cords lead to follow, and theirs in turn, and so does a new stream that starts playing into a split pair. On a frame with controls it sits beside MUTE |
+| SPLIT / JOIN | on a frame's band, right of its number: one stereo jack, or separate L and R jacks, L above R, for every stereo pair in the frame (an effect's IN and OUT, an input and the MONITOR inside it) together; the stereo jacks its cords lead to follow, and theirs in turn, and so does a new stream that starts playing into a split pair |
 | FLOW key (W) | which way each cord goes: a light runs inside every plugged-in cord from its output to its input, one at a time; on by default |
 | Hover a jack, cord or device | its cords stand out (even with CABLES on fade or hide) and the others fade; after a moment a tooltip gives the full names |
 | Ctrl+Z / Ctrl+Shift+Z | undo / redo |
@@ -203,7 +203,7 @@ what goes out, after its volume or gain).
 | L | lock devices in place |
 | C, or CABLES | cords shown, faded or hidden |
 | Drag empty space, or right/middle drag · wheel | pan · zoom |
-| Ctrl+S / Ctrl+O, or the LCD | save a new preset / pick one from the list |
+| Ctrl+S or SAVE / Ctrl+O or the LCD | save a new preset / pick one from the list (the LCD shows the one in use) |
 | Esc · Ctrl+Q | close a list, leave CUE mode · quit |
 
 ### ENGINE: what PipeWire really has
