@@ -62,7 +62,8 @@ blocks of their kind like any (their PATCHCORD tag says whose). The cue's blue s
 kept on. Dummy-Driver and Freewheel-Driver have no class: NO CLASS, like any (no grey of their own).
 
 **A device's paint is who owns it**, one paint a kind, lightness first so none passes for another:
-HARDWARE aluminium `#C3C6CA` (print `#1D1E20`), PROGRAM black `#232427` (print `#D5D7D9`), a NODE
+HARDWARE aluminium `#C3C6CA` (print `#1D1E20`; since 2026-11-23 the top panel's own painted metal
+`#8C8E91`, the same on the desk, in the rack and in MIXER), PROGRAM black `#232427` (print `#D5D7D9`), a NODE
 of PipeWire's or WirePlumber's olive `#66683F` (print `#F1F1E6`).
 
 **The frame**, as the face draws it, with these changes:

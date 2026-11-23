@@ -342,7 +342,8 @@ fn fin(f: Finish) -> Fin {
     match f {
         // ADR 0014 (docs/design/apps/paints.py, variant D): one paint a kind of device, light,
         // dark and in between, so none passes for another
-        Finish::Aluminium => Fin { base: "#c3c6ca", paint: true, noise: 0.0, print: "#1d1e20" },
+        // (hardware in the top panel's own painted metal, 2026-11-23)
+        Finish::Aluminium => Fin { base: "#8c8e91", paint: true, noise: 0.0, print: "#1d1e20" },
         Finish::Black => Fin { base: "#232427", paint: false, noise: 0.9, print: "#d5d7d9" },
         Finish::Olive => Fin { base: "#66683f", paint: false, noise: 0.7, print: "#f1f1e6" },
     }

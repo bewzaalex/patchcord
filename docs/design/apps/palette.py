@@ -14,7 +14,7 @@ KINDS = [("SINK", "#007c7d"), ("SOURCE", "#206ea6"), ("PLAYBACK STREAM", "#7e5a4
 GROUPS = [("PLAYBACK", "#007c7d"), ("CAPTURE", "#206ea6"), ("INPUT", "#427935"), ("OUTPUT", "#7e5a42"),
           ("MONITOR", "#695ca6"), ("MIDI", "#934c7e"), ("VIDEO", "#876200"), ("OTHER", "#cba553")]
 # a device's paint (face::fin): base, print
-PAINTS = [("ALUMINIUM", "hardware", "#c3c6ca", "#1d1e20"), ("BLACK", "a program", "#232427", "#d5d7d9"),
+PAINTS = [("ALUMINIUM", "hardware: the top panel's metal", "#8c8e91", "#1d1e20"), ("BLACK", "a program", "#232427", "#d5d7d9"),
           ("OLIVE", "PipeWire's or WirePlumber's own", "#66683f", "#f1f1e6")]
 # the cords: each device its own (graph::PALETTE)
 CORDS = ["#d4232a", "#ec7a1c", "#f0cc1c", "#14965a", "#12a5b8", "#1752c8", "#7b4fb8", "#d63c8c"]
