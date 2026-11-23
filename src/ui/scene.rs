@@ -293,6 +293,11 @@ impl DevView {
         }
     }
 
+    /// A group's own meter: its lit LEDs (0…10), L and R.
+    pub fn level(&self, gi: usize) -> [f32; 2] {
+        self.glevel.get(&gi).copied().unwrap_or_default()
+    }
+
     /// A group's BAL knob.
     pub fn bal(&self, gi: usize) -> BalKnob {
         self.bal.get(&gi).copied().unwrap_or_default()
@@ -1934,6 +1939,16 @@ impl Scene {
         self.set_mix(at, vol, (balance.clamp(-1.0, 1.0) * 100.0).round() / 100.0, mute);
     }
 
+    /// Sets a stereo pair's L and R (on the knob's scale, 1 is 100%) apart: the louder one is its
+    /// volume, the quieter one its balance.
+    pub fn set_channels(&mut self, at: (usize, usize), l: f64, r: f64) {
+        let Some((_, _, mute)) = self.devs.get(at.0).and_then(|d| d.mix(at.1)) else { return };
+        let (l, r) = (l.clamp(0.0, VOL_MAX), r.clamp(0.0, VOL_MAX));
+        let v = l.max(r);
+        let bal = if v <= 0.0 || l == r { 0.0 } else if l > r { r / l - 1.0 } else { 1.0 - l / r };
+        self.set_mix(at, (v * 100.0).round() / 100.0, (bal * 100.0).round() / 100.0, mute);
+    }
+
     pub fn toggle_mute(&mut self, at: (usize, usize)) {
         let Some((vol, bal, mute)) = self.devs.get(at.0).and_then(|d| d.mix(at.1)) else { return };
         self.set_mix(at, vol, bal, !mute);
@@ -2343,6 +2358,37 @@ impl Scene {
                 self.outbox.push(Cmd::Link { out_node: on, out_port: o, in_node: inn, in_port: i });
             }
         }
+    }
+
+    /// A group's ports, as its jacks have them (FL, FR).
+    fn group_ports(&self, (di, gi): (usize, usize)) -> Vec<u32> {
+        self.devs.get(di).and_then(|d| d.dev.groups.get(gi)).map(|g| g.ports.iter().map(|p| p.id).collect()).unwrap_or_default()
+    }
+
+    /// The PipeWire links from group `out`'s ports into group `inp`'s.
+    pub fn group_links(&self, out: (usize, usize), inp: (usize, usize)) -> Vec<(u32, u32)> {
+        let (a, b) = (self.group_ports(out), self.group_ports(inp));
+        self.graph.links().into_iter().filter(|l| a.contains(&l.out_port) && b.contains(&l.in_port)).map(|l| (l.out_port, l.in_port)).collect()
+    }
+
+    /// Links whole groups (`add`, out → in, as a cord between their jacks would: L to L and R to R,
+    /// mono to both) and takes away all links between others (`del`), as one step to undo: what
+    /// MIXER's PLAY ON and RECORD FROM keys do.
+    pub fn reroute(&mut self, add: &[Route], del: &[Route]) {
+        let mut a = Vec::new();
+        for &(o, i) in add {
+            let (x, y) = (self.group_ports(o), self.group_ports(i));
+            if x.len() == y.len() {
+                a.extend(x.iter().copied().zip(y.iter().copied()));
+            } else {
+                a.extend(x.iter().flat_map(|&p| y.iter().map(move |&q| (p, q))));
+            }
+        }
+        let links = self.graph.links();
+        a.retain(|(o, i)| !links.iter().any(|l| l.out_port == *o && l.in_port == *i));
+        let d: Vec<(u32, u32)> = del.iter().flat_map(|&(o, i)| self.group_links(o, i)).collect();
+        self.link(&a, &d);
+        self.record(a, d);
     }
 
     fn record(&mut self, add: Vec<(u32, u32)>, del: Vec<(u32, u32)>) {
@@ -3023,6 +3069,11 @@ pub const HOLE: f64 = 5.5;
 /// The ring round a jack heard (the cue's mark), in world units: in CUE mode all of it listens.
 pub const RING: f64 = 21.1;
 
+/// A group of a device: (device, group).
+pub type At = (usize, usize);
+/// Groups linked whole: from an output group into an input group.
+pub type Route = (At, At);
+
 /// The key a port heard from ENGINE goes by among the jacks heard, and back.
 pub fn port_key(port: u32) -> String {
     format!("port:{port}")
@@ -3479,5 +3530,67 @@ mod tests {
                 assert!(!edge, "rack {rack}, {}: drawn up to its picture's edge", d.dev.name);
             }
         }
+    }
+
+    /// The demo graph with volumes, as MIXER shows it.
+    fn mixer_scene() -> Scene {
+        let mut ev = demo_events();
+        for id in [10u32, 11, 12, 13, 14] {
+            ev.insert(ev.len() - 1, Event::Mix { id, volumes: vec![0.8, 0.8], mute: false, soft: None });
+        }
+        let mut s = Scene::new();
+        s.apply(ev);
+        s
+    }
+
+    /// MIXER: devices first, then apps; a module a device; an app's PLAY ON keys are its links.
+    #[test]
+    fn the_mixer_is_a_module_a_device_and_its_keys_are_the_links() {
+        let s = mixer_scene();
+        let mut m = super::super::mixer::Mixer::new(true);
+        let mods = m.modules(&s);
+        let names: Vec<&str> = mods.iter().map(|m| m.name.as_str()).collect();
+        let first_app = mods.iter().position(|m| m.app).expect("apps");
+        assert!(mods[..first_app].iter().all(|m| !m.app) && mods[first_app..].iter().all(|m| m.app), "{names:?}");
+        assert!(names.contains(&"SPEAKERS") && names.contains(&"MUSIC PLAYER") && names.contains(&"MEETING"), "{names:?}");
+        let strip = |dev: &str| mods.iter().find(|m| m.name == dev).and_then(|m| m.strips.first()).expect(dev);
+        // the music player plays into the speakers: its key to them is lit; the browser's isn't
+        let music = strip("MUSIC PLAYER");
+        assert_eq!(music.targets.iter().map(|t| (t.label.as_str(), t.lit)).collect::<Vec<_>>(), vec![("SPEAKERS", true)]);
+        assert!(strip("BROWSER").targets.iter().all(|t| !t.lit));
+        // a recorder's keys are the sources
+        assert_eq!(strip("RECORDER").targets.iter().map(|t| t.label.as_str()).collect::<Vec<_>>(), vec!["MICROPHONE"]);
+        // one app on several streams is one module, a strip each, what records at the left
+        let meeting = mods.iter().find(|m| m.name == "MEETING").expect("meeting");
+        assert_eq!(meeting.strips.len(), 4);
+        assert_eq!(meeting.strips[0].role, super::super::mixer::Role::Rec);
+    }
+
+    /// PLAY ON's links: L to L and R to R, and only there takes the old ones away, as one step.
+    #[test]
+    fn a_play_on_key_links_l_to_l_and_takes_the_old_links_away() {
+        let mut s = mixer_scene();
+        let at = |s: &Scene, name: &str| (s.devs.iter().position(|d| d.dev.name == name).expect(name), 0);
+        let (browser, music, speakers) = (at(&s, "Browser"), at(&s, "Music player"), at(&s, "Speakers"));
+        s.outbox.clear();
+        s.reroute(&[(browser, speakers)], &[(music, speakers)]);
+        let links: Vec<(u32, u32)> = s.outbox.iter().filter_map(|c| if let Cmd::Link { out_port, in_port, .. } = c { Some((*out_port, *in_port)) } else { None }).collect();
+        let unlinks: Vec<u32> = s.outbox.iter().filter_map(|c| if let Cmd::Unlink(id) = c { Some(*id) } else { None }).collect();
+        assert_eq!(links, vec![(1007, 1001), (1008, 1002)]);
+        assert_eq!(unlinks, vec![500, 501]);
+        assert!(s.undo());
+    }
+
+    /// MIXER without PipeWire: PATCHCORD_PIC=out.png [PATCHCORD_PIC_SIZE=WxH]. Run with --ignored.
+    #[test]
+    #[ignore]
+    fn mixer_picture() {
+        let Ok(out) = std::env::var("PATCHCORD_PIC") else { return };
+        let (w, h) = std::env::var("PATCHCORD_PIC_SIZE").ok().and_then(|v| v.split_once('x').and_then(|(a, b)| Some((a.parse::<u32>().ok()?, b.parse::<u32>().ok()?)))).unwrap_or((1700, 640));
+        let s = mixer_scene();
+        let mut m = super::super::mixer::Mixer::new(true);
+        let mut panel = super::super::panel::Panel::new(super::super::panel::State { rack: false, engine: false, mixer: true, locked: false, align: true, cables: 0, lcd: ["NO PRESET".into(), String::new()], defaults: ["Speakers".into(), "Microphone".into()], cue_led: false, cue_level: 70, hidden: 0, flow: true, pressed: None, more: false });
+        let pm = crate::shot::compose_mixer(&mut m, &s, (w, h), 2.0, &mut panel);
+        pm.save_png(out).expect("written");
     }
 }

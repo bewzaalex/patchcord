@@ -6,6 +6,7 @@ pub mod engine;
 mod face;
 mod gpu;
 mod mesh;
+pub mod mixer;
 mod paint;
 mod painter;
 mod prof;

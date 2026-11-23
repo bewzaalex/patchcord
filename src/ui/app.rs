@@ -13,6 +13,7 @@ use winit::window::{CursorIcon, Window, WindowId};
 
 use super::cord::Held;
 use super::engine::{Action, Engine};
+use super::mixer::{self, Mixer};
 use super::ease;
 use super::face::{BalKnob, LCD_CH};
 use super::gpu::{Gpu, Sprite};
@@ -58,6 +59,8 @@ enum Drag {
     Key,
     /// a press in ENGINE's graph (a click or a pan)
     Engine,
+    /// a press in MIXER: a fader, or the console panned
+    Mixer,
     /// the cue's LEVEL knob, turned by dragging up and down
     CueLevel { from: f64, v0: f64 },
     /// an app's VOLUME knob, turned by dragging up and down: the pointer's last height and the
@@ -136,6 +139,8 @@ struct ProfileList {
     hits: Vec<(ProfileHit, [f64; 4])>,
     /// its top left corner, in window pixels
     at: (f64, f64),
+    /// opened from MIXER: under the key there (window pixels), not the face's
+    anchor: Option<[f64; 4]>,
 }
 
 pub struct App {
@@ -192,6 +197,8 @@ pub struct App {
     current: Option<usize>,
     /// the ENGINE screen: PipeWire's real graph
     engine: Engine,
+    /// the MIXER screen: every device and app as a console
+    mixer: Mixer,
 }
 
 impl App {
@@ -209,6 +216,7 @@ impl App {
         scene.flow = settings.flow;
         scene.rack_order = settings.rack_order.clone();
         scene.hidden = settings.hidden.clone();
+        let mixer_on = settings.mixer;
         App {
             conn,
             scene,
@@ -235,7 +243,7 @@ impl App {
             prof: super::prof::Prof::new(),
             next_frame: now,
             last_press: (now, (0.0, 0.0)),
-            panel: Panel::new(panel::State { rack: false, engine: false, locked: settings.lock, align: settings.align, cables: settings.cables, lcd: [String::new(), String::new()], defaults: [String::new(), String::new()], cue_led: false, cue_level: settings.cue_level.min(100), hidden: 0, flow: true, pressed: None, more: false }),
+            panel: Panel::new(panel::State { rack: false, engine: false, mixer: false, locked: settings.lock, align: settings.align, cables: settings.cables, lcd: [String::new(), String::new()], defaults: [String::new(), String::new()], cue_led: false, cue_level: settings.cue_level.min(100), hidden: 0, flow: true, pressed: None, more: false }),
             hint: String::new(),
             status: None,
             notice: None,
@@ -253,6 +261,7 @@ impl App {
             presets,
             current,
             engine: Engine::new(),
+            mixer: Mixer::new(mixer_on),
         }
     }
 
@@ -265,6 +274,7 @@ impl App {
         s.accents = self.scene.accents;
         s.flow = self.scene.flow;
         s.rack = self.scene.rack;
+        s.mixer = self.mixer.on;
         s.rack_order = self.scene.rack_order.clone();
         s.hidden = self.scene.hidden.clone();
         s.preset = self.current.map(|i| self.presets[i].name.clone());
@@ -605,7 +615,7 @@ impl App {
 
     /// What a panel key does.
     fn panel_key(&mut self, key: Key) {
-        if (self.engine.on && key.desk_only()) || (!self.engine.on && self.scene.rack && key == Key::Align) {
+        if ((self.engine.on || self.mixer.on) && key.desk_only()) || (!self.engine.on && !self.mixer.on && self.scene.rack && key == Key::Align) {
             return;
         }
         match key {
@@ -654,8 +664,15 @@ impl App {
                 let on = !self.engine.on;
                 self.set_engine(on);
             }
+            Key::Mixer => {
+                // from ENGINE back to MIXER; else MIXER on or off
+                let on = self.engine.on || !self.mixer.on;
+                self.set_engine(false);
+                self.set_mixer(on);
+            }
             Key::Desk | Key::Rack => {
                 self.set_engine(false);
+                self.set_mixer(false);
                 self.scene.set_rack(key == Key::Rack);
                 self.save_settings();
                 // at once: a glide between screens only gets in the way
@@ -708,6 +725,92 @@ impl App {
         self.hint.clear();
         self.send_engine();
         self.redraw();
+    }
+
+    /// MIXER is what shows (not ENGINE over it).
+    fn mixer_shown(&self) -> bool {
+        self.mixer.on && !self.engine.on
+    }
+
+    /// Shows MIXER, or goes back to the desk or rack.
+    fn set_mixer(&mut self, on: bool) {
+        if self.mixer.on == on {
+            return;
+        }
+        if let Some(Drag::Plug { magnet, .. }) = &mut self.drag {
+            *magnet = None;
+        }
+        if matches!(self.drag, Some(Drag::Plug { .. } | Drag::Device { .. } | Drag::Cord { .. } | Drag::Engine | Drag::Mixer)) {
+            self.release();
+        }
+        self.drag = None;
+        self.panel.state.pressed = None;
+        self.mixer.on = on;
+        self.mixer.let_go();
+        self.cue.hover = None;
+        self.cue.in_hole = false;
+        if on {
+            self.cue.probing = false;
+        }
+        self.profiles = None;
+        self.panel.menu = None;
+        self.set_hover(Hover::None);
+        self.tip = None;
+        self.hint.clear();
+        self.save_settings();
+        self.redraw();
+    }
+
+    /// What a key of MIXER asks for.
+    fn mixer_act(&mut self, a: Option<mixer::Action>) {
+        match a {
+            Some(mixer::Action::Graph(node)) => {
+                self.set_engine(true);
+                self.engine.show_node(node);
+                self.send_engine();
+            }
+            Some(mixer::Action::Profile(di, r)) => self.open_list(di, ListOf::Profiles, r),
+            Some(mixer::Action::Port(di, r)) => self.open_list(di, ListOf::Ports, r),
+            Some(mixer::Action::Cue(keys)) => self.cue_group(keys),
+            Some(mixer::Action::Changed) => self.after_patch(),
+            None => {}
+        }
+    }
+
+    /// A card's PROFILE or PORT list, opened from MIXER under the key at `at` (window pixels).
+    fn open_list(&mut self, di: usize, what: ListOf, at: [f64; 4]) {
+        let Some(key) = self.scene.devs.get(di).map(|d| d.dev.key.clone()) else { return };
+        // its own key again closes it
+        if self.profiles.as_ref().is_some_and(|p| p.key == key && p.what == what) {
+            self.profiles = None;
+            return;
+        }
+        self.profiles = Some(ProfileList { key, what, sig: 0, layer: None, hits: Vec::new(), at: (0.0, 0.0), anchor: Some(at) });
+    }
+
+    /// MIXER's CUE key: a group's jacks heard (in CUE mode), or no longer.
+    fn cue_group(&mut self, keys: Vec<String>) {
+        if keys.is_empty() {
+            return;
+        }
+        if keys.iter().all(|k| self.cue.pins.contains(k)) {
+            self.cue.pins.retain(|p| !keys.contains(p));
+            if self.cue.pins.is_empty() && self.cue.mode {
+                self.set_cue_mode(false);
+            }
+            return;
+        }
+        if keys.iter().any(|k| self.scene.cue_blocked(k)) {
+            return self.say("That is the output you listen on: it would feed back");
+        }
+        if !self.cue.mode {
+            self.set_cue_mode(true);
+        }
+        for k in keys {
+            if !self.cue.pins.contains(&k) {
+                self.cue.pins.push(k);
+            }
+        }
     }
 
     /// ENGINE's report for a bug ticket, into the home folder.
@@ -988,6 +1091,7 @@ impl App {
         self.panel.state.align = self.scene.align;
         self.panel.state.rack = self.scene.rack;
         self.panel.state.engine = self.engine.on;
+        self.panel.state.mixer = self.mixer.on;
         self.panel.state.lcd = self.lcd();
         self.panel.state.defaults = [true, false].map(|output| self.scene.default_shown(output));
         // the CUE LED: lit in CUE mode
@@ -1067,16 +1171,17 @@ impl App {
         self.prof.mark("profiles");
         let pulse = 0.5 + 0.5 * ((now - self.start).as_secs_f32() * 6.0).sin();
         // the jacks heard: pictures made once, a disc under a jack kept on and a ring over it
-        let cue = if self.engine.on { Vec::new() } else { self.cue_marks() };
+        let mixer_on = self.mixer_shown();
+        let cue = if self.engine.on || mixer_on { Vec::new() } else { self.cue_marks() };
         // the cords are triangles for the GPU
-        let mesh = (!self.engine.on).then(|| super::mesh::cords(&self.scene.cords, |c| self.scene.cord_alpha(c), self.view));
+        let mesh = (!self.engine.on && !mixer_on).then(|| super::mesh::cords(&self.scene.cords, |c| self.scene.cord_alpha(c), self.view));
         self.prof.mark("cords");
 
         // the badge beside the pointer while listening, over the field
         let (ftop, fbottom) = self.field();
         // (in ENGINE over the graph itself)
         // (not over a menu or a list, nor outside the window)
-        let over = self.cue.inside && self.on_field() && if self.engine.on { self.engine.over_graph(self.cursor, self.size, self.dpi()) } else { !self.cue.in_hole };
+        let over = self.cue.inside && self.on_field() && !mixer_on && if self.engine.on { self.engine.over_graph(self.cursor, self.size, self.dpi()) } else { !self.cue.in_hole };
         let show_badge = (self.cue.probing || self.cue.mode) && over && self.cursor.1 >= ftop && self.cursor.1 <= fbottom && self.drag.is_none();
         if show_badge {
             let raster = (self.dpi() * 1e6).round() as u64;
@@ -1086,7 +1191,10 @@ impl App {
         }
         let version = self.scene.version.clone().unwrap_or_else(|| "?".into());
         let field = self.field();
-        let bars = self.rack_bars();
+        let bars = if mixer_on { Vec::new() } else { self.rack_bars() };
+        let pins = self.cue.pins.clone();
+        // (the GPU keeps MIXER's modules while another screen shows)
+        let mixer_ids: Vec<u64> = self.mixer.ids().collect();
         let Some(sf) = &mut self.win else { return };
         let v = self.view;
         let mut sprites: Vec<Sprite> = Vec::new();
@@ -1095,7 +1203,16 @@ impl App {
             sprites.push(Sprite { id: *id, pm: Some(pm), x: 0.0, y: 0.0, w: self.size.0 as f64, h: self.size.1 as f64, alpha: 1.0, clip: None });
         }
         let engine_on = self.engine.on;
-        if engine_on {
+        let graph_on = engine_on;
+        if mixer_on {
+            for (l, x, y, w, h, clip, alpha) in self.mixer.sprites(&self.scene, &pins, self.size, dpi) {
+                sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x, y, w, h, alpha, clip });
+            }
+            self.prof.mark("mixer.pictures");
+        }
+        // (MIXER hides the desk or the rack as ENGINE does)
+        let engine_on = engine_on || mixer_on;
+        if self.engine.on {
             self.prof.mark("badge");
             for (l, x, y, w, h, clip, alpha) in self.engine.sprites(self.size, dpi, &version) {
                 sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: x.round(), y: y.round(), w, h, alpha, clip });
@@ -1182,7 +1299,7 @@ impl App {
             sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (l.x * dpi).round(), y: (l.y * dpi).round(), w: l.w * dpi, h: l.h * dpi, alpha: 1.0, clip: None });
         }
         if let Some(pl) = &self.profiles
-            && !engine_on
+            && !graph_on
             && let Some(l) = &pl.layer
         {
             sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: pl.at.0, y: pl.at.1, w: l.w * dpi, h: l.h * dpi, alpha: 1.0, clip: None });
@@ -1202,14 +1319,14 @@ impl App {
         self.prof.mark("sprites");
         // while ENGINE shows, the GPU keeps the desk's pictures: back on the desk they are there;
         // the devices' faces for the other screen (desk or rack) and the jacks' pictures always
-        let keep: std::collections::HashSet<u64> = if engine_on { self.scene.layer_ids().collect() } else { self.scene.pic_ids().collect() };
+        let keep: std::collections::HashSet<u64> = if engine_on { self.scene.layer_ids().chain(mixer_ids).collect() } else { self.scene.pic_ids().chain(mixer_ids).collect() };
         let [wait, upload, draw] = sf.gpu.draw(&sprites, mesh.as_ref().map(|m| (cords_at, m)), &keep);
         self.prof.mark("gpu");
         self.prof.add("gpu.wait", wait);
         self.prof.add("gpu.upload", upload);
         self.prof.add("gpu.draw", draw);
         drop(sprites);
-        if engine_on {
+        if self.engine.on {
             for (what, d) in &self.engine.spent {
                 self.prof.add(what, *d);
             }
@@ -1223,7 +1340,7 @@ impl App {
         // the GPU has the pixels now (the jack pictures are kept: they are small, and the GPU lets
         // a texture go in a frame that doesn't draw it)
         // (big pictures let go: their memory back to the system, see `mem`)
-        let mut freed = self.engine.uploaded(|id| sf.gpu.has(id));
+        let mut freed = self.engine.uploaded(|id| sf.gpu.has(id)) + self.mixer.uploaded(|id| sf.gpu.has(id));
         for d in &mut self.scene.devs {
             for l in d.layers_mut() {
                 if sf.gpu.has(l.id) {
@@ -1238,11 +1355,11 @@ impl App {
         self.send_engine();
         // (a new size the rack is still to take)
         let room_waits = self.scene.rack && !same_room(self.room_at.0, self.scene.rack_room());
-        self.animating = room_waits || (self.engine.on && self.engine.settling()) || moving || self.view_to.is_some() || self.drag.is_some() || self.rescale_at.is_some() || self.notice.is_some() || faces_waiting || self.panel.busy() || self.bg_job.is_some() || self.scene.noting() || (self.scene.hover != Hover::None && self.tip.is_none() && now - self.hover_since < 2 * TIP_DELAY);
+        self.animating = room_waits || (self.engine.on && self.engine.settling()) || (mixer_on && (self.mixer.settling() || self.mixer.dragging())) || moving || self.view_to.is_some() || self.drag.is_some() || self.rescale_at.is_some() || self.notice.is_some() || faces_waiting || self.panel.busy() || self.bg_job.is_some() || self.scene.noting() || (self.scene.hover != Hover::None && self.tip.is_none() && now - self.hover_since < 2 * TIP_DELAY);
         self.prof.mark("rest");
         let (engine, rack, s, cords, devs) = (self.engine.on, self.scene.rack, self.view.s, self.scene.cords.len(), self.scene.devs.len());
         let (drag, zoom) = (self.drag.is_some(), self.rescale_at.is_some() || faces_waiting);
-        self.prof.end(self.animating, || format!("{} scale {s:.2} · {devs} devices · {cords} cords{}{}", if engine { "ENGINE" } else if rack { "RACK" } else { "DESK" }, if drag { " · dragging" } else { "" }, if zoom { " · faces at a new scale" } else { "" }));
+        self.prof.end(self.animating, || format!("{} scale {s:.2} · {devs} devices · {cords} cords{}{}", if engine { "ENGINE" } else if mixer_on { "MIXER" } else if rack { "RACK" } else { "DESK" }, if drag { " · dragging" } else { "" }, if zoom { " · faces at a new scale" } else { "" }));
     }
 
     /// What the pointer is over in the open profile list.
@@ -1269,9 +1386,11 @@ impl App {
             self.profiles = None;
             return;
         };
-        let key = match pl.what {
-            ListOf::Profiles => d.geo.profile,
-            ListOf::Ports => d.geo.port,
+        let key = match (pl.anchor, pl.what) {
+            // from MIXER: the key's rectangle in window pixels, made face units of a view at 1
+            (Some([ax, ay, aw, ah]), _) => Some([ax, ay, aw, ah]),
+            (None, ListOf::Profiles) => d.geo.profile,
+            (None, ListOf::Ports) => d.geo.port,
         };
         let (Some(card), Some([kx, ky, _, kh])) = (&d.dev.card, key) else {
             self.profiles = None;
@@ -1290,13 +1409,13 @@ impl App {
         }
         // under the key, its left edge at the key's, kept inside the field: over the key when
         // there is no room under it, else as low as fits
-        let v = self.view;
-        let x = (d.x + kx) * v.s + v.x;
-        let y = (d.y + ky + kh) * v.s + v.y + 4.0 * dpi;
+        let (v, (ox, oy)) = if pl.anchor.is_some() { (View { x: 0.0, y: 0.0, s: 1.0 }, (0.0, 0.0)) } else { (self.view, (d.x, d.y)) };
+        let x = (ox + kx) * v.s + v.x;
+        let y = (oy + ky + kh) * v.s + v.y + 4.0 * dpi;
         let w = panel::PROFILE_W * dpi;
         let h = pl.layer.as_ref().and_then(|l| l.pm.as_ref()).map_or(0.0, |pm| pm.height() as f64);
         let (top, bottom) = (field.0 + 6.0 * dpi, field.1 - 6.0 * dpi);
-        let above = (d.y + ky) * v.s + v.y - 4.0 * dpi - h;
+        let above = (oy + ky) * v.s + v.y - 4.0 * dpi - h;
         let y = if y + h <= bottom { y } else if above >= top { above } else { (bottom - h).max(top) };
         pl.at = (x.min(self.size.0 as f64 - w - 6.0 * dpi).max(6.0 * dpi).round(), y.round());
     }
@@ -1370,9 +1489,13 @@ impl App {
                 }
                 Some(ProfileHit::Inside) => return,
                 None => {
-                    let key_at = match pl.what {
-                        ListOf::Ports => self.scene.port_key_at(w.0, w.1),
-                        ListOf::Profiles => self.scene.profile_key_at(w.0, w.1),
+                    let key_at = if self.mixer_shown() {
+                        self.mixer.list_key_at(self.cursor, pl.what == ListOf::Ports, self.dpi())
+                    } else {
+                        match pl.what {
+                            ListOf::Ports => self.scene.port_key_at(w.0, w.1),
+                            ListOf::Profiles => self.scene.profile_key_at(w.0, w.1),
+                        }
                     };
                     let own = key_at.is_some_and(|i| self.scene.devs[i].dev.key == pl.key);
                     self.profiles = None;
@@ -1467,6 +1590,18 @@ impl App {
         if self.cursor.1 > bottom {
             return;
         }
+        // MIXER takes the clicks on the field
+        if self.mixer_shown() {
+            if button == MouseButton::Left {
+                let dpi = self.dpi();
+                let a = self.mixer.press(&mut self.scene, self.cursor, dpi);
+                self.mixer_act(a);
+                if self.mixer.dragging() {
+                    self.drag = Some(Drag::Mixer);
+                }
+            }
+            return self.redraw();
+        }
         if button != MouseButton::Left {
             self.drag = Some(Drag::Pan { from: self.cursor, view: self.view });
             return;
@@ -1539,7 +1674,7 @@ impl App {
             .map(|di| (di, ListOf::Ports))
             .or(self.scene.profile_key_at(w.0, w.1).map(|di| (di, ListOf::Profiles)))
         {
-            self.profiles = Some(ProfileList { key: self.scene.devs[di].dev.key.clone(), what, sig: 0, layer: None, hits: Vec::new(), at: (0.0, 0.0) });
+            self.profiles = Some(ProfileList { key: self.scene.devs[di].dev.key.clone(), what, sig: 0, layer: None, hits: Vec::new(), at: (0.0, 0.0), anchor: None });
             self.redraw();
             return;
         }
@@ -1581,6 +1716,12 @@ impl App {
             Some(Drag::Engine) => {
                 self.engine.release();
                 self.send_engine();
+            }
+            Some(Drag::Mixer) => {
+                let dpi = self.dpi();
+                let a = self.mixer.release(&mut self.scene, self.cursor, dpi);
+                self.mixer_act(a);
+                self.redraw();
             }
             Some(Drag::Cord { seq }) => {
                 for c in self.scene.cords.iter_mut().filter(|c| c.seq == seq) {
@@ -1659,6 +1800,13 @@ impl App {
                     self.redraw();
                 }
             }
+            Some(Drag::Mixer) => {
+                let (size, dpi) = (self.size, self.dpi());
+                if self.mixer.drag(&mut self.scene, self.cursor, size, dpi) {
+                    self.after_patch();
+                    self.redraw();
+                }
+            }
             Some(Drag::Key) => {}
             Some(Drag::CueLevel { from, v0 }) => {
                 let v = (v0 + (from - self.cursor.1) / (120.0 * self.dpi())).clamp(0.0, 1.0);
@@ -1722,6 +1870,25 @@ impl App {
                 let (top, bottom) = self.field();
                 let dpi = self.dpi();
                 let in_more = self.panel.in_more(self.cursor.0 / dpi, self.cursor.1 / dpi);
+                // MIXER: what is under the pointer, in the status bar
+                if self.mixer_shown() && self.cursor.1 >= top && !in_more {
+                    let hint = if let Some(h) = self.mixer.hover(&self.scene, self.cursor, dpi) {
+                        h
+                    } else if self.cursor.1 <= bottom {
+                        "drag: scroll · wheel over a fader: volume · M: back · E: ENGINE".to_owned()
+                    } else {
+                        String::new()
+                    };
+                    if hint != self.hint {
+                        self.hint = hint;
+                        self.redraw();
+                    }
+                    let over = self.mixer.over_key(self.cursor, dpi);
+                    if let Some(sf) = &self.win {
+                        sf.window.set_cursor(if over { CursorIcon::Pointer } else { CursorIcon::Default });
+                    }
+                    return;
+                }
                 // ENGINE: no hovering over the desk behind it
                 if self.engine.on && self.cursor.1 >= top && !in_more {
                     // CUE mode: a click on a port keeps it on (nothing is heard by hovering: each
@@ -1973,6 +2140,7 @@ impl App {
         if self.engine.on && !self.mods.control_key() && !self.mods.alt_key() {
             match code {
                 KeyCode::KeyE => self.panel_key(Key::Engine),
+                KeyCode::KeyM => self.panel_key(Key::Mixer),
                 KeyCode::KeyF | KeyCode::Digit0 => self.panel_key(Key::Fit),
                 KeyCode::KeyR => self.panel_key(Key::Rack),
                 // ? (and / without Shift): the legend
@@ -1984,6 +2152,25 @@ impl App {
                     self.panel.menu = None;
                     self.panel.state.more = false;
                     self.engine.deselect();
+                    if self.cue.mode {
+                        self.set_cue_mode(false);
+                    }
+                    self.redraw();
+                }
+                _ => {}
+            }
+            return;
+        }
+        // MIXER too: the desk's keys don't reach the desk behind it
+        if self.mixer_shown() && !self.mods.control_key() && !self.mods.alt_key() {
+            match code {
+                KeyCode::KeyM => self.panel_key(Key::Mixer),
+                KeyCode::KeyE => self.panel_key(Key::Engine),
+                KeyCode::KeyR => self.panel_key(Key::Rack),
+                KeyCode::Escape => {
+                    self.panel.menu = None;
+                    self.panel.state.more = false;
+                    self.profiles = None;
                     if self.cue.mode {
                         self.set_cue_mode(false);
                     }
@@ -2029,6 +2216,7 @@ impl App {
             }
             KeyCode::KeyC => self.panel_key(Key::Cables),
             KeyCode::KeyE => self.panel_key(Key::Engine),
+            KeyCode::KeyM => self.panel_key(Key::Mixer),
             KeyCode::KeyR => self.panel_key(if self.scene.rack { Key::Desk } else { Key::Rack }),
             KeyCode::Escape => {
                 self.panel.menu = None;
@@ -2153,6 +2341,16 @@ impl App {
                 } else if self.cursor.1 <= bottom && self.engine.on {
                     self.engine.wheel(self.cursor, f, self.size, dpi);
                     self.redraw();
+                } else if self.cursor.1 <= bottom && self.mixer_shown() {
+                    let d = match delta {
+                        MouseScrollDelta::LineDelta(x, y) => (x as f64 * 60.0, y as f64 * 60.0),
+                        MouseScrollDelta::PixelDelta(p) => (p.x / dpi, p.y / dpi),
+                    };
+                    let (size, fine) = (self.size, self.mods.shift_key());
+                    if self.mixer.wheel(&mut self.scene, self.cursor, mixer::Wheel { clicks, d, fine }, size, dpi) {
+                        self.after_patch();
+                        self.redraw();
+                    }
                 } else if self.cursor.1 <= bottom {
                     // over an app's VOLUME knob, or its BAL knob when out, the wheel turns it
                     let w = self.world(self.cursor);

@@ -349,6 +349,13 @@ fn fin(f: Finish) -> Fin {
     }
 }
 
+/// A device's paint as MIXER's module wears it: what goes under its drawing (`raster`), and the
+/// colour printed on it.
+pub fn paint(f: Finish, w: f64, h: f64, r: f64) -> (Skin, &'static str) {
+    let f = fin(f);
+    (Skin { w, h, r, base: hex(f.base), paint: f.paint, noise: f.noise as f32 }, f.print)
+}
+
 /// How many jacks a mult shows for `count` cords: one each, and a free one.
 pub fn slots(count: usize) -> usize {
     count + 1

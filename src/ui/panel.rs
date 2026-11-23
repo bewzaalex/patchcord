@@ -20,6 +20,8 @@ pub enum Key {
     Redo,
     Save,
     Desk,
+    /// every device and app as a mixing console
+    Mixer,
     Rack,
     /// the real PipeWire graph
     Engine,
@@ -58,6 +60,7 @@ impl Key {
             Key::Redo => "Redo (Ctrl+Shift+Z)",
             Key::Save => "Save as a new preset (Ctrl+S)",
             Key::Desk => "Devices anywhere on a desk",
+            Key::Mixer => "Every device and app as a mixing console: volumes, where each app plays, the defaults (M)",
             Key::Rack => "Devices in a 19\" rack (R)",
             Key::Engine => "What PipeWire really has: every node, port and link, drivers, timings, issues (E)",
             Key::Lock => "Lock devices in place (L)",
@@ -85,6 +88,8 @@ pub struct State {
     pub rack: bool,
     /// ENGINE is shown: the desk's keys are off
     pub engine: bool,
+    /// MIXER is shown: the desk's keys are off too
+    pub mixer: bool,
     pub locked: bool,
     /// devices dragged on the desk stick to each other's edges and centres
     pub align: bool,
@@ -109,7 +114,7 @@ pub struct State {
 impl State {
     /// A key this screen can't use, greyed: the desk's keys in ENGINE, ALIGN in the rack.
     pub fn off(&self, k: Key) -> bool {
-        (self.engine && k.desk_only()) || (self.rack && !self.engine && k == Key::Align)
+        ((self.engine || self.mixer) && k.desk_only()) || (self.rack && !self.engine && !self.mixer && k == Key::Align)
     }
 }
 
@@ -119,7 +124,7 @@ impl State {
 pub enum Part {
     Logo,
     Edit,
-    /// DESK · RACK · ENGINE, and LOCK · ALIGN while they are in its group
+    /// DESK · MIXER · RACK · ENGINE, and LOCK · ALIGN while they are in its group
     Layout,
     LockAlign,
     Cables,
@@ -651,7 +656,13 @@ impl Panel {
             }
             Part::Edit => group(st, &mut o, &mut rects, x, &[(Key::Undo, None, None), (Key::Redo, None, None), (Key::Save, None, None)], "EDIT"),
             Part::Layout => {
-                let mut keys = vec![(Key::Desk, Some("DESK"), Some(!st.rack && !st.engine)), (Key::Rack, Some("RACK"), Some(st.rack && !st.engine)), (Key::Engine, Some("ENGINE"), Some(st.engine))];
+                let desk = !st.engine && !st.mixer;
+                let mut keys = vec![
+                    (Key::Desk, Some("DESK"), Some(desk && !st.rack)),
+                    (Key::Mixer, Some("MIXER"), Some(st.mixer && !st.engine)),
+                    (Key::Rack, Some("RACK"), Some(desk && st.rack)),
+                    (Key::Engine, Some("ENGINE"), Some(st.engine)),
+                ];
                 if attached {
                     keys.extend(lock_align.into_iter().filter(keep));
                 }
@@ -918,15 +929,12 @@ fn defs() -> String {
 <pattern id="pt" width="80" height="80" patternUnits="userSpaceOnUse"><image href="{paint}" width="80" height="80"/></pattern>
 <linearGradient id="gStrip" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".10"/><stop offset="1" stop-color="#000" stop-opacity=".18"/></linearGradient>
 <linearGradient id="gDrop" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#000" stop-opacity=".55"/><stop offset="1" stop-color="#000" stop-opacity="0"/></linearGradient>
-<linearGradient id="hole" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#050506"/><stop offset="1" stop-color="#232427"/></linearGradient>
-<linearGradient id="edgeHole" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2a2c2e"/><stop offset="0.5" stop-color="#55585b"/><stop offset="1" stop-color="#a7aaad"/></linearGradient>
-<linearGradient id="btnGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#303134"/><stop offset="0.6" stop-color="#1d1e20"/><stop offset="1" stop-color="#131314"/></linearGradient>
-<linearGradient id="capEdge" x1="0" y1="0" x2="0.3" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.28"/><stop offset="0.45" stop-color="#fff" stop-opacity="0.04"/><stop offset="1" stop-color="#000" stop-opacity="0.5"/></linearGradient>
-<linearGradient id="capTop" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.13"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+{keys}
 <radialGradient id="gKnob" cx=".38" cy=".3" r=".8"><stop offset="0" stop-color="#5a5b5f"/><stop offset="1" stop-color="#151618"/></radialGradient>
 <linearGradient id="gPanelLcd" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f7bb62"/><stop offset="1" stop-color="#e58f2c"/></linearGradient>
 </defs>"##,
-        paint = paint_uri()
+        paint = paint_uri(),
+        keys = KEY_DEFS
     )
 }
 
@@ -1081,11 +1089,16 @@ fn menu_svg(menu: &Menu) -> (String, f64, Vec<(MenuHit, [f64; 4])>) {
 /// the bottom right; the cap casts a soft shadow into it and has a fine lit edge and a sheen.
 /// Pressed, the cap sinks a little into the hole and darkens.
 fn key_svg(x: f64, w: f64, pressed: bool) -> String {
-    let (y, h) = (KEY_Y, KEY_H);
+    cap_svg([x, KEY_Y, w, KEY_H], pressed, false)
+}
+
+/// A key's cap in its hole at `[x, y, w, h]`, as the panel's (MIXER's keys are these too).
+/// `deep`: held down, it sinks a little further and darkens more.
+pub fn cap_svg([x, y, w, h]: [f64; 4], pressed: bool, deep: bool) -> String {
     let (cx, cy) = (x + w / 2.0, y + h / 2.0);
     let mut o = format!(r#"<rect x="{}" y="{}" width="{}" height="{}" rx="6" fill="url(#hole)" stroke="url(#edgeHole)" stroke-width="1.2"/>"#, x - 3.0, y - 3.0, w + 6.0, h + 6.0);
     let (tr, shadow, sheen) = if pressed {
-        let s = 0.955;
+        let s = if deep { 0.94 } else { 0.955 };
         (format!(r#" transform="translate({},{}) scale({s})""#, cx * (1.0 - s), cy * (1.0 - s)), 0.15 * 0.75, 0.35)
     } else {
         (String::new(), 0.75, 1.0)
@@ -1108,11 +1121,18 @@ fn key_svg(x: f64, w: f64, pressed: bool) -> String {
         h * 0.4
     );
     if pressed {
-        let _ = write!(o, r##"<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="4" fill="#000" opacity="0.2"/>"##);
+        let _ = write!(o, r##"<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="4" fill="#000" opacity="{}"/>"##, if deep { 0.3 } else { 0.2 });
     }
     o += "</g>";
     o
 }
+
+/// The gradients a key's cap and hole are drawn with (`cap_svg`), for a `<defs>`.
+pub const KEY_DEFS: &str = r##"<linearGradient id="hole" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#050506"/><stop offset="1" stop-color="#232427"/></linearGradient>
+<linearGradient id="edgeHole" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2a2c2e"/><stop offset="0.5" stop-color="#55585b"/><stop offset="1" stop-color="#a7aaad"/></linearGradient>
+<linearGradient id="btnGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#303134"/><stop offset="0.6" stop-color="#1d1e20"/><stop offset="1" stop-color="#131314"/></linearGradient>
+<linearGradient id="capEdge" x1="0" y1="0" x2="0.3" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.28"/><stop offset="0.45" stop-color="#fff" stop-opacity="0.04"/><stop offset="1" stop-color="#000" stop-opacity="0.5"/></linearGradient>
+<linearGradient id="capTop" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.13"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>"##;
 
 fn led_svg(cx: f64, cy: f64, on: bool, color: &str) -> String {
     if on {
@@ -1208,7 +1228,7 @@ mod tests {
     use super::*;
 
     fn state(rack: bool, engine: bool) -> State {
-        State { rack, engine, locked: false, align: true, cables: 0, lcd: ["NO PRESET".into(), "48 kHz · 1024 · 21.3 ms".into()], defaults: ["JLab GO Work 2".into(), "Ryzen HD Audio Controller".into()], cue_led: false, cue_level: 70, hidden: 2, flow: true, pressed: None, more: false }
+        State { rack, engine, mixer: false, locked: false, align: true, cables: 0, lcd: ["NO PRESET".into(), "48 kHz · 1024 · 21.3 ms".into()], defaults: ["JLab GO Work 2".into(), "Ryzen HD Audio Controller".into()], cue_led: false, cue_level: 70, hidden: 2, flow: true, pressed: None, more: false }
     }
 
     /// what folds, at a width, on each screen
@@ -1227,21 +1247,40 @@ mod tests {
         let (parts, more) = folded(false, false, 1350.0);
         assert!(!parts.contains(&Part::Logo) && parts.contains(&Part::Lcd) && more.is_empty(), "{parts:?} {more:?}");
         // a rack's width: DESK · RACK · ENGINE stay, EDIT too; the rest in MORE in the panel's order
-        let (parts, more) = folded(false, false, 540.0);
+        let (parts, more) = folded(false, false, 615.0);
         assert_eq!(parts, vec![Part::Edit, Part::Layout]);
         assert_eq!(more, vec![Part::LockAlign, Part::Cables, Part::View, Part::Cue, Part::LcdDefaults, Part::LcdPreset]);
         // ENGINE's grey keys go first; CUE · LEVEL works there and folds as on the desk
-        let (parts, more) = folded(false, true, 653.0);
+        let (parts, more) = folded(false, true, 728.0);
         assert!(parts.contains(&Part::View) && !parts.contains(&Part::Cables), "{parts:?}");
         assert_eq!(more, vec![Part::Cue, Part::LcdDefaults, Part::LcdPreset]);
         // in the rack ALIGN is off: grey, then gone
-        let (_, more) = folded(true, false, 500.0);
+        let (_, more) = folded(true, false, 575.0);
         assert_eq!(more[0], Part::LockAlign);
         let mut p = Panel::new(state(true, false));
         let _ = p.layer(540.0, 1.0);
         p.state.more = true;
         let _ = p.layer(540.0, 1.0);
         assert!(p.rect(Key::Lock).is_some() && p.rect(Key::Align).is_none());
+    }
+
+    /// PATCHCORD_MIXER_PANEL=out.png [PATCHCORD_MIXER_PANEL_W=1440]: the panel as MIXER shows
+    /// it, at twice the scale, for the mockup (docs/design/mixer). Run with --ignored.
+    #[test]
+    #[ignore]
+    fn mixer_panel() {
+        let Ok(out) = std::env::var("PATCHCORD_MIXER_PANEL") else { return };
+        let w: f64 = std::env::var("PATCHCORD_MIXER_PANEL_W").ok().and_then(|v| v.parse().ok()).unwrap_or(1440.0);
+        let mut st = state(false, false);
+        st.mixer = true;
+        st.lcd = ["PRESET 01 · DEFAULT *".into(), "48 kHz · 1024 · 21.3 ms".into()];
+        st.defaults = ["easyeffects".into(), "JLab GO Work 2".into()];
+        st.cue_led = true;
+        st.hidden = 0;
+        let mut p = Panel::new(st);
+        let _ = p.layer(w, 2.0);
+        let (svg, ..) = p.svg(w);
+        rasterize(&text::svg_options(), &svg, 2.0).unwrap().save_png(out).unwrap();
     }
 
     /// PATCHCORD_PANELS=dir draws the panel at several widths, MORE open, to look at.

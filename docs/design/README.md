@@ -15,4 +15,4 @@ scripts that write an SVG; turn it into a PNG with `rsvg-convert -z .5 x.svg -o 
 | `rack/` | the rack as a real one: rails, 100%, wrapping | [0004](../decisions/0004-rack.md) |
 | `ident/` | a device's name and screen | [0005](../decisions/0005-device-screen.md) |
 | `apps/` | a program under one roof (`flat.py`: the rules on a live graph); a frame is a block (`nodes.py`, `progframes.py`, `hwframes.py`, `kinds.py`, `paints.py`, `linkgroup.py`; the whole palette and OUTPUT's brown: `palette.py`, `outcolour.py`) | [0006](../decisions/0006-one-roof.md), [0007](../decisions/0007-midi-bridge-clients.md), [0014](../decisions/0014-a-frame-is-a-block.md) |
-| `mixer/` | MIXER: PipeWire as a mixing console, interactive (open `index.html`); being discussed | |
+| `mixer/` | MIXER exactly as `ui/mixer.rs` draws it, interactive (open `index.html`): the code's measures, type and paints, the app's own top panel (`panel.png`, from `cargo test mixer_panel -- --ignored`); the look is tuned here first (ADR 0015) | |

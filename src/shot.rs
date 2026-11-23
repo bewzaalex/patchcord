@@ -175,7 +175,7 @@ fn compose(scene: &Scene, view: View, size: (u32, u32), dpi: f64, held: Option<(
 }
 
 fn new_panel(scene: &Scene) -> Panel {
-    Panel::new(panel::State { rack: scene.rack, engine: false, locked: false, align: scene.align, cables: 0, defaults: [scene.default_shown(true), scene.default_shown(false)], cue_led: false, cue_level: 70, lcd: ["NO PRESET".into(), "48 kHz · 1024 · 21.3 ms".into()], hidden: scene.hidden_devs.len(), flow: scene.flow, pressed: None, more: false })
+    Panel::new(panel::State { rack: scene.rack, engine: false, mixer: false, locked: false, align: scene.align, cables: 0, defaults: [scene.default_shown(true), scene.default_shown(false)], cue_led: false, cue_level: 70, lcd: ["NO PRESET".into(), "48 kHz · 1024 · 21.3 ms".into()], hidden: scene.hidden_devs.len(), flow: scene.flow, pressed: None, more: false })
 }
 
 fn status(scene: &Scene, width: f64, dpi: f64) -> Layer {
@@ -197,6 +197,9 @@ pub fn render(path: &str, opts: &[String]) -> Result<(), String> {
     }
     if opts.iter().any(|o| o == "engine") {
         return render_engine(path, opts);
+    }
+    if opts.iter().any(|o| o == "mixer") {
+        return render_mixer(path, opts);
     }
     let menu = opts.iter().map(String::as_str).find(|o| matches!(*o, "save" | "presets" | "defaults" | "hidden"));
     let opt = |name: &str| opts.iter().find_map(|o| o.strip_prefix(name)?.strip_prefix('='));
@@ -736,6 +739,51 @@ fn render_engine(path: &str, opts: &[String]) -> Result<(), String> {
     if let Some(r) = opt("report") {
         std::fs::write(r, eng.report(&version)).map_err(|e| e.to_string())?;
     }
+    out.save_png(path).map_err(|e| e.to_string())
+}
+
+/// MIXER in a window `size` pixels at `dpi`: the console, the top panel and the status bar.
+pub fn compose_mixer(mixer: &mut ui::mixer::Mixer, scene: &Scene, (w, h): (u32, u32), dpi: f64, panel: &mut Panel) -> Pixmap {
+    let mut out = ui::app::background(w, h);
+    mixer.finish(scene, (w, h), dpi);
+    for (l, x, y, lw, lh, clip, alpha) in mixer.sprites(scene, &[], (w, h), dpi) {
+        let Some(pm) = &l.pm else { continue };
+        let (sx, sy) = (lw as f32 / pm.width() as f32, lh as f32 / pm.height() as f32);
+        let paint = PixmapPaint { quality: FilterQuality::Bilinear, opacity: alpha, ..Default::default() };
+        let mask = clip.and_then(|[cx, cy, cw, ch]| {
+            let mut m = resvg::tiny_skia::Mask::new(w, h)?;
+            let r = resvg::tiny_skia::Rect::from_xywh(cx as f32, cy as f32, cw as f32, ch as f32)?;
+            m.fill_path(&resvg::tiny_skia::PathBuilder::from_rect(r), resvg::tiny_skia::FillRule::Winding, false, Transform::identity());
+            Some(m)
+        });
+        out.draw_pixmap(0, 0, pm.as_ref(), &paint, Transform::from_row(sx, 0.0, 0.0, sy, x.round() as f32, y.round() as f32), mask.as_ref());
+    }
+    panel.state.mixer = true;
+    panel.layer(w as f64 / dpi, dpi);
+    for l in panel.layers() {
+        if let Some(pm) = &l.pm {
+            out.draw_pixmap((l.x * dpi).round() as i32, (l.y * dpi).round() as i32, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+        }
+    }
+    let st = panel::status(w as f64 / dpi, &format!("PipeWire {} · {} devices", scene.version.as_deref().unwrap_or("?"), scene.devs.len()), "drag: scroll · wheel over a fader: volume · M: back · E: ENGINE", dpi);
+    if let Some(pm) = &st.pm {
+        out.draw_pixmap(0, (h as f64 - panel::STATUS_H * dpi).round() as i32, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+    }
+    out
+}
+
+/// `patchcord --render out.png mixer [size=WxH]`: the MIXER screen of the live graph, its meters
+/// measuring for a second (they are Patchcord's own streams; nothing else in PipeWire changes).
+fn render_mixer(path: &str, opts: &[String]) -> Result<(), String> {
+    let opt = |name: &str| opts.iter().find_map(|o| o.strip_prefix(name)?.strip_prefix('='));
+    let (mut scene, conn, _) = live_scene()?;
+    start_meters(&mut scene, &conn);
+    settle(&mut scene, &conn, 1.0, None);
+    let s: f64 = std::env::var("PATCHCORD_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
+    let (w, h) = opt("size").and_then(|v| v.split_once('x')).and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?))).unwrap_or((1700, 640));
+    let mut mixer = ui::mixer::Mixer::new(true);
+    let mut panel = new_panel(&scene);
+    let out = compose_mixer(&mut mixer, &scene, (w, h), s, &mut panel);
     out.save_png(path).map_err(|e| e.to_string())
 }
 

@@ -5,670 +5,538 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Patchcord Mixer</title>
 <!--
-  MIXER: the first of three screens (MIXER, RACK, ENGINE). Everything KDE's Audio Volume and
-  Sound settings do, laid out as a mixing console, on the same graph the rack shows:
-  - DEVICES at the left, APPS at the right. Each is one module, as in the rack: its name and its
-    PROFILE once on top (no screens: the strips say it),
-    then a strip for each thing it does: what takes sound in at the left (headphones, speakers,
-    an app's INPUT), what gives it out at the right (a microphone, an app's OUTPUT). Headphones
-    with a microphone are one device, a sound card one, speakers only an output, ocenaudio one
-    app that plays and records. A card whose profile is Off is its module with no strips;
-  - an app's PLAY ON keys (a recording app's RECORD FROM) say where it goes: a click moves it
-    there (KDE's "Play audio using"), Ctrl+click adds or takes away one more (the rack can link
-    one app to several outputs; the mixer shows it, lit twice);
-  - a device's input or output: MAIN (the default; KDE's radio), PLAY ALL HERE / RECORD ALL HERE
-    (move every app there and make it MAIN), PORT, TEST (outputs: a sound in the left, then the
-    right); PROFILE is the device's, on its module;
-  - every strip: its fader (its volume), MUTE, CUE (hear it in MAIN: KDE's microphone Test),
-    CHANNELS (a fader for each channel, KDE's Show Channels), a meter, #id (opens ENGINE);
-  - the top panel: OUT ▸ / IN ▸ (defaults), MUTE ALL OUT, MUTE ALL IN, VIRTUAL (show virtual
-    devices), MAX 150% (KDE's Raise maximum volume), presets, undo.
-  Colours are the rack's: a band in its block's kind, a strip's paint by who owns it (hardware
-  aluminium, a program black), a PLAY ON key lit in the cord colour of the device it goes to.
-  The data is the maintainer's live graph of 2026-11-23 (Patchcord's meters and the Bluetooth
-  internal stream are left out, as the rack leaves them out: SYSTEM).
+  MIXER as the code draws it (src/ui/mixer.rs, ADR 0015), to fine-tune its look here first.
+  Everything on the console is drawn the way `module_svg`, `push_key`, `key`, `led_key`,
+  `cap_svg` and `leds_svg` draw it, with the same measures (LEFT, TOP, HEAD, PROF, STRIP_W,
+  ROUTE_Y, KEYS_Y, CHAN_Y, FBOX_Y, SLOT_Y, TRAVEL, READ_Y, STRIP_H), the same type
+  (SECTION 9 px / 1.2, SMALL 7.5 px / 0.8, Noto Sans Bold from assets/fonts) and the same paints
+  (`face::fin`, the textures and the sheen of `face::raster`). One CSS pixel is one of the app's
+  logical pixels. The top panel is the app's own, drawn by it at 1440 wide
+  (PATCHCORD_MIXER_PANEL=docs/design/mixer/panel.png cargo test mixer_panel -- --ignored).
+  The graph is the maintainer's of 2026-11-24. Keep this in step with mixer.rs: a change to the
+  look is tried here, then made there.
 -->
 <style>
-  :root { --bg: #141517; --fg: #c9cbcd; --muted: #7d8085; --ink: #3a2408; --cue: #5fd4ff; }
-  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--fg);
-    font: 13px/1.45 "Noto Sans", system-ui, sans-serif; }
-  body { display: flex; flex-direction: column; min-height: 100vh; }
-  * { box-sizing: border-box; }
-  button { font-family: inherit; cursor: pointer; }
-
-  /* ---------- the top panel: the app's painted metal ---------- */
-  #bar { display: flex; align-items: center; gap: 16px; padding: 10px 18px 8px; flex-wrap: wrap;
-    background: url(../mockup/paint.png) 0 0 / 80px 80px, #8c8e91; user-select: none;
-    box-shadow: inset 0 1px 0 rgba(255,255,255,.35), inset 0 -1px 0 rgba(0,0,0,.5), 0 6px 18px rgba(0,0,0,.55); }
-  .logo { font: 900 24px "Noto Sans", "Arial Black", sans-serif; color: #2a2b2e; letter-spacing: 1px; }
-  .keyset { display: flex; gap: 7px; align-items: center; }
-  .vkey { height: 28px; padding: 0 11px; border: 0; border-radius: 5px; font: bold 10px "Noto Sans", sans-serif;
-    color: #e6e7e8; letter-spacing: .6px; background: linear-gradient(#45464a, #232427 55%, #1b1c1e); white-space: nowrap;
-    box-shadow: 0 0 0 2px #19191b, 0 0 0 3px rgba(255,255,255,.18), 0 3px 4px rgba(0,0,0,.45); }
-  .vkey .led { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #3a3b3e; margin-right: 6px; vertical-align: 1px; }
-  .vkey.on .led { background: #ffb02e; }
-  .vkey.red.on .led { background: #ff4a32; }
-  .vkey:disabled { opacity: .4; cursor: default; }
-  .lcd { background: #111214; padding: 3px; border-radius: 4px; }
-  .lcd > div { background: linear-gradient(#f7bb62, #e58f2c); color: var(--ink); font: bold 11px "Noto Sans Mono", monospace;
-    padding: 4px 10px; border-radius: 2px; white-space: nowrap; }
-  .lcd button { all: unset; cursor: pointer; }
-  .lcd button:hover { text-decoration: underline; }
-  .silk { font: bold 9px "Noto Sans", sans-serif; letter-spacing: 1.6px; color: #2a2b2e; }
-  #cuelevel { width: 80px; accent-color: #2a2b2e; }
-
-  /* ---------- the console ---------- */
-  #wrap { flex: 1; overflow-x: auto; padding: 26px 16px 16px; }
-  #console { display: inline-flex; align-items: stretch; padding: 22px 10px 14px; border-radius: 8px;
-    background: url(../mockup/paint.png) 0 0 / 80px 80px, #2a2b2e; background-blend-mode: multiply;
-    box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 10px 30px rgba(0,0,0,.6); }
-  .section { display: flex; gap: 8px; padding: 0 8px; position: relative; align-items: stretch; }
-  .section + .section { border-left: 2px solid #111; box-shadow: -2px 0 0 rgba(255,255,255,.06); }
-  .section.gap { margin-left: 14px; border-left: 4px double #111; }
-  .shead { position: absolute; top: -17px; left: 10px; font: bold 9px "Noto Sans", sans-serif; letter-spacing: 2px; color: #8a8d91; white-space: nowrap; }
-
-  /* a strip, painted by who owns it */
-  .strip { width: 112px; display: flex; flex-direction: column; align-items: stretch; gap: 7px; padding: 0 6px 8px;
-    border-radius: 7px; position: relative; color: var(--print);
-    box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 0 0 1px #000, 0 3px 6px rgba(0,0,0,.5); }
-  .strip.alu   { --print: #1d1e20; --dim: rgba(29,30,32,.55); background: url(../mockup/paint.png) 0 0 / 80px 80px, #c3c6ca; }
-  .strip.black { --print: #d5d7d9; --dim: rgba(213,215,217,.5); background: #232427; }
-  .strip.wide2 { width: 146px; }
-  .strip.master { width: 132px; }
-  .strip.master.wide2 { width: 160px; }
-  .strip.main { box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 0 0 1px #000, 0 0 0 3px #ffb02e, 0 3px 6px rgba(0,0,0,.5); }
-  /* a device: one module, painted by who owns it, its strips inside */
-  .module { display: flex; flex-direction: column; border-radius: 9px; padding: 0 0 6px; color: var(--print);
-    box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 0 0 1px #000, 0 3px 6px rgba(0,0,0,.5); }
-  /* a device: the top panel's painted metal */
-  .module.alu   { --print: #1d1e20; --dim: rgba(29,30,32,.6); background: url(../mockup/paint.png) 0 0 / 80px 80px, #8c8e91; }
-  .module.black { --print: #d5d7d9; --dim: rgba(213,215,217,.5); background: #232427; }
-  .mprof { height: 21px; margin: 0 8px 8px; display: flex; }
-  .mprof .wkey { flex: 1; min-width: 0; }
-  /* the name never makes a module wider than its strips: a long one is cut, whole on hover */
-  .mhead { width: 0; min-width: 100%; height: 34px; padding: 0 10px; font: 900 11px/34px "Noto Sans", sans-serif;
-    letter-spacing: 1.2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; }
-  .mbody { display: flex; gap: 0; padding: 0 4px; }
-  .module .strip { background: none; box-shadow: none; border-radius: 0; }
-  .module .strip + .strip { border-left: 1px dashed var(--dim); }
-  .module .strip .band { border-radius: 5px 5px 0 0; margin: 0 -2px; }
-  .module .strip.main { box-shadow: 0 0 0 3px #ffb02e; border-radius: 5px; }
-
-  /* the band: its block's kind, as the rack's frame and ENGINE's block */
-  .band { margin: 0 -6px; height: 24px; border-radius: 7px 7px 0 0; background: var(--k); color: var(--ki);
-    display: flex; align-items: center; gap: 5px; padding: 0 6px; font: bold 8.5px "Noto Sans", sans-serif; letter-spacing: .9px; overflow: hidden; }
-  .band span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .gkey { flex: none; height: 15px; padding: 0 4px; border: 1.2px solid currentColor; border-radius: 3px; background: transparent;
-    color: inherit; font: bold 8px "Noto Sans Mono", monospace; }
-
-  .scribble { background: #111214; padding: 2px; border-radius: 3px; }
-  .scribble > div { background: linear-gradient(#f7bb62, #e58f2c); color: var(--ink); font: bold 9.5px "Noto Sans Mono", monospace;
-    height: 62px; padding: 3px 4px; border-radius: 2px; overflow: hidden; line-height: 1.22; }
-  .scribble small { display: block; font-weight: normal; font-size: 8.5px; opacity: .85; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .scribble i { display: block; font-style: normal; font-size: 8.5px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .scribble .st { display: block; font-size: 8px; font-weight: normal; }
-  .scribble .st.paused { color: #8a1a0c; font-weight: bold; }
-
-  /* where it goes, or the device's keys */
-  .route { height: 150px; display: flex; flex-direction: column; gap: 4px; }
-  .silkp { font: bold 7.5px "Noto Sans", sans-serif; letter-spacing: 1.3px; color: var(--dim); text-align: center; }
-  .skey { height: 19px; border: 0; border-radius: 3px; display: flex; align-items: center; gap: 5px; padding: 0 5px;
-    font: bold 8px "Noto Sans", sans-serif; letter-spacing: .5px; color: #9a9da1; background: #2c2d31; text-align: left;
-    box-shadow: inset 0 -2px 0 rgba(0,0,0,.4), 0 0 0 1px #111; white-space: nowrap; overflow: hidden; }
-  .skey i { flex: none; width: 6px; height: 6px; border-radius: 50%; background: #45464a; }
-  .skey.on { background: var(--c); color: var(--ci); }
-  .skey.on i { background: var(--ci); }
-  .wkey { height: 21px; border: 0; border-radius: 3px; font: bold 8.5px "Noto Sans", sans-serif; letter-spacing: .6px;
-    color: #e6e7e8; background: linear-gradient(#45464a, #232427 60%, #1b1c1e); box-shadow: 0 0 0 1px #111;
-    display: flex; align-items: center; justify-content: space-between; padding: 0 6px; white-space: nowrap; overflow: hidden; }
-  .wkey b { font-weight: normal; color: #9a9da1; overflow: hidden; text-overflow: ellipsis; margin-left: 5px; }
-  .wkey .led { width: 6px; height: 6px; border-radius: 50%; background: #3a3b3e; flex: none; }
-  .wkey.on { color: #ffd28a; }
-  .wkey.on .led { background: #ffb02e; }
-  .wkey.test.on .led { background: #5cff7a; }
-
-  /* cue, mute, channels */
-  .keys { display: flex; gap: 5px; }
-  .k2 { flex: 1; height: 24px; border: 0; border-radius: 4px; font: bold 8.5px "Noto Sans", sans-serif; letter-spacing: .7px;
-    color: #e6e7e8; background: linear-gradient(#45464a, #232427 55%, #1b1c1e); box-shadow: 0 0 0 1.5px #111;
-    display: flex; align-items: center; justify-content: center; gap: 5px; padding: 0 3px; }
-  .k2 i { width: 6px; height: 6px; border-radius: 50%; background: #3a3b3e; flex: none; }
-  .k2.mute.on i, .k2.mute.forced i { background: #ff4a32; }
-  .k2.mute.forced { color: #ff8a72; }
-  .k2.cue.on { color: var(--cue); }
-  .k2.cue.on i { background: var(--cue); }
-  .k2.chan.on i { background: #ffb02e; }
-  .k2:disabled { opacity: .35; cursor: default; }
-
-  /* faders and the meter */
-  .fbox { display: flex; justify-content: center; gap: 5px; height: 186px; }
-  .scale { position: relative; width: 20px; font: 7.5px "Noto Sans Mono", monospace; color: var(--dim); }
-  .scale span { position: absolute; right: 0; transform: translateY(-50%); }
-  .fader { display: flex; flex-direction: column; align-items: center; }
-  .slot { position: relative; width: 26px; height: 172px; touch-action: none; cursor: ns-resize; }
-  .slot::before { content: ""; position: absolute; left: 11px; top: 6px; bottom: 6px; width: 4px; border-radius: 2px; background: #0b0b0c;
-    box-shadow: 0 1px 0 rgba(255,255,255,.15); }
-  .slot .unity { position: absolute; left: 2px; right: 2px; height: 1px; background: var(--dim); }
-  .cap { position: absolute; left: 0; width: 26px; height: 32px; margin-top: -16px; border-radius: 3px;
-    background: linear-gradient(#5a5b5f, #2b2c2f 45%, #1b1c1e 55%, #3c3d41); box-shadow: 0 0 0 1px #0b0b0c, 0 3px 4px rgba(0,0,0,.6); }
-  .cap::after { content: ""; position: absolute; left: 3px; right: 3px; top: 15px; height: 2px; background: #e6e7e8; }
-  .flab { font: bold 7.5px "Noto Sans", sans-serif; letter-spacing: 1px; color: var(--dim); height: 12px; }
-  .novol { width: 56px; display: flex; align-items: center; justify-content: center; text-align: center;
-    font: bold 7.5px "Noto Sans", sans-serif; letter-spacing: 1px; color: var(--dim); writing-mode: vertical-rl; transform: rotate(180deg); }
-  .meter { display: flex; gap: 2px; padding: 3px; background: #0b0b0c; border-radius: 3px; align-self: stretch; margin-top: 12px; }
-  .meter .col { display: flex; flex-direction: column-reverse; gap: 2px; }
-  .meter .col b { width: 6px; flex: 1; border-radius: 1px; background: #1c2a1f; }
-  .meter .col b.y { background: #2f2810; }
-  .meter .col b.r { background: #351612; }
-  .meter .col b.on { background: #5cff7a; }
-  .meter .col b.y.on { background: #ffb02e; }
-  .meter .col b.r.on { background: #ff4a32; }
-  .readout { text-align: center; font: bold 10px "Noto Sans Mono", monospace; color: var(--print); height: 14px; white-space: nowrap; }
-  .readout .hot { color: #ff4a32; }
-
-  /* drop-downs */
-  .menu { position: fixed; z-index: 10; min-width: 220px; background: #1b1c1e; border: 1px solid #000; border-radius: 4px;
-    box-shadow: 0 8px 20px rgba(0,0,0,.7); padding: 4px 0; font-size: 12px; }
-  .menu div { padding: 4px 12px; cursor: pointer; white-space: nowrap; color: #c9cbcd; }
-  .menu div:hover { background: #2c2d31; }
-  .menu div.cur { color: #ffd28a; }
-  .menu div.cur::before { content: "● "; }
-  .menu div.na { color: #6d7075; }
-  .menu div.na::after { content: "  · nothing plugged"; font-size: 10.5px; }
-  .menu .sep { height: 1px; padding: 0; margin: 4px 0; background: #2c2d31; cursor: default; }
-  .menu .hd { font: bold 9px "Noto Sans", sans-serif; letter-spacing: 1.5px; color: #8a8d91; cursor: default; }
+  @font-face { font-family: "Noto Sans"; font-weight: 700; src: url(../../../assets/fonts/NotoSans-Bold.ttf); }
+  @font-face { font-family: "Noto Sans"; font-weight: 900; src: url(../../../assets/fonts/NotoSans-Black.ttf); }
+  @font-face { font-family: "Noto Sans Mono"; font-weight: 400; src: url(../../../assets/fonts/NotoSansMono-Regular.ttf); }
+  @font-face { font-family: "Noto Sans Mono"; font-weight: 700; src: url(../../../assets/fonts/NotoSansMono-Bold.ttf); }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #151618; }
+  body { display: flex; flex-direction: column; user-select: none; font-family: "Noto Sans", sans-serif; }
+  /* the top panel: the app's own picture; past it, its bare paint */
+  #panel { height: 74px; flex: none; position: relative; background: url(../../../assets/paint.png) 0 0 / 80px 80px, #8c8e91; overflow: hidden;
+    box-shadow: inset 0 -1px 0 rgba(0,0,0,.5); }
+  #panel img { position: absolute; left: 0; top: 0; width: 1440px; height: 74px; }
+  /* the field: `app::background`, a glow from the top and the dot grid */
+  #field { flex: 1; position: relative; overflow: hidden; cursor: default;
+    background: radial-gradient(circle 1px at 5.5px 5.5px, rgba(255,255,255,.021) 1px, transparent 1.2px) 0 0 / 11px 11px,
+                radial-gradient(ellipse 120% 90% at 50% 30%, #2a2c2f, #151618 70%); }
+  #console { position: absolute; left: 0; top: 0; }
+  /* the status bar: `panel::status` */
+  #status { height: 22px; flex: none; background: #0e0f10; border-top: 1px solid #000; display: flex; justify-content: space-between;
+    font: 11.5px "Noto Sans Mono", monospace; line-height: 22px; padding: 0 14px; white-space: nowrap; overflow: hidden; }
+  #status .l { color: #7d8085; }
+  #status .r { color: #a8abae; }
+  /* a card's PROFILE or PORT list: amber, as the panel's lists */
+  .menu { position: fixed; z-index: 10; width: 360px; padding: 6px 0; border-radius: 6px; background: linear-gradient(#f7bb62, #e58f2c);
+    box-shadow: 0 0 0 3px #111214, 0 10px 24px rgba(0,0,0,.6); font: bold 12px "Noto Sans", sans-serif; color: #3a2408; }
+  .menu div { padding: 4px 14px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .menu div:hover { background: rgba(58,36,8,.12); }
+  .menu div.cur::before { content: "▸ "; }
+  .menu .hd { font-size: 9px; letter-spacing: 1.5px; opacity: .7; cursor: default; }
   .menu .hd:hover { background: none; }
-
-  #help { margin: 0 16px 12px; padding: 10px 14px; background: #1a1b1d; border: 1px solid #26272a; border-radius: 6px; color: #9a9da1; font-size: 12px; }
-  #help b { color: #c9cbcd; }
-  #status { position: sticky; bottom: 0; padding: 7px 18px; background: #0f1011; color: #c9cbcd; font: 12px "Noto Sans", sans-serif;
-    border-top: 1px solid #26272a; min-height: 32px; }
-  #status code { font: 11.5px "Noto Sans Mono", monospace; color: #e6c48a; }
 </style>
 </head>
 <body>
-<div id="bar">
-  <div class="logo">PATCHCORD</div>
-  <div class="keyset">
-    <button class="vkey on" data-view="MIXER"><span class="led"></span>MIXER</button>
-    <button class="vkey" data-view="RACK"><span class="led"></span>RACK</button>
-    <button class="vkey" data-view="ENGINE"><span class="led"></span>ENGINE</button>
-  </div>
-  <div class="lcd"><div><button id="outkey"></button> &nbsp; <button id="inkey"></button></div></div>
-  <div class="keyset">
-    <button class="vkey red" id="muteout"><span class="led"></span>MUTE ALL OUT</button>
-    <button class="vkey red" id="mutein"><span class="led"></span>MUTE ALL IN</button>
-    <button class="vkey" id="virtual"><span class="led"></span>VIRTUAL</button>
-    <button class="vkey" id="max"><span class="led"></span>MAX 150%</button>
-  </div>
-  <div class="lcd"><div><button id="presetkey"></button></div></div>
-  <div class="keyset"><button class="vkey" id="undo">UNDO</button><button class="vkey" id="redo">REDO</button></div>
-  <div class="keyset"><span class="silk">CUE LEVEL</span><input id="cuelevel" type="range" min="0" max="100" value="70"></div>
-</div>
-<div id="wrap"><div id="console"></div></div>
-<div id="help">
-  <b>PLAY ON / RECORD FROM</b>: click: move the app there; Ctrl+click: add or take away one more.
-  <b>MAIN</b>: where new apps play / record from. <b>PLAY ALL HERE / RECORD ALL HERE</b>: every app there, and it becomes MAIN.
-  <b>Fader</b>: drag or wheel; double-click: 100%. <b>CHANNELS</b>: a fader for each channel.
-  <b>CUE</b>: hear it in the MAIN output, nothing else changes. <b>TEST</b>: a sound in the left, then the right.
-  <b>#id</b>: opens ENGINE with that node. <b>Ctrl+Z / Ctrl+Shift+Z</b>; presets on the LCD.
-</div>
-<div id="status">Hover anything to see what it is in PipeWire.</div>
+<div id="panel"><img src="panel.png" alt=""></div>
+<div id="field"><svg id="console" xmlns="http://www.w3.org/2000/svg"></svg></div>
+<div id="status"><span class="l" id="sl">PipeWire 1.6.9 · 12 devices · 73 links · 18 cords</span><span class="r" id="sr">drag: scroll · wheel over a fader: volume · M: back · E: ENGINE</span></div>
 
 <script>
 "use strict";
-// ---------- the colours: the rack's ----------
-const KIND = { "SINK": "#007c7d", "SOURCE": "#206ea6", "PLAYBACK STREAM": "#7e5a42", "RECORDING STREAM": "#427935",
-  "MIDI": "#934c7e", "VIDEO": "#876200", "DUPLEX": "#73348d", "NO CLASS": "#cba553" };
-const kindInk = (k) => (k === "NO CLASS" ? "#1d1e20" : "#f3efe6");
-const cordInk = (c) => (["#f0cc1c", "#12a5b8", "#ec7a1c"].includes(c) ? "#111" : "#f3efe6");
+// ---------- the code's measures (src/ui/mixer.rs) ----------
+const LEFT = 14, TOP = 26, GAP = 6, HEAD = 34, PROF = 0, STRIP_W = 112, BAND = 24;
+const ROUTE_Y = 31, KEYS_Y = 188, CHAN_Y = 219, FBOX_Y = 250, SLOT_Y = FBOX_Y + 12, TRAVEL = 160, READ_Y = 440, STRIP_H = 462;
+// a card's heading: its name in the left half, its PROFILE key (the profile's name) in the right
+const profileKey = (m) => [m.w / 2 + 2, (HEAD - 21) / 2 + 2, m.w / 2 - 10, 21];
+const MOD_H = HEAD + PROF + STRIP_H, RADIUS = 8, CAP = [26, 32], LEDS_H = 172, VOL_MAX = 1.53;
+// the lettering (src/ui/print.rs)
+const SECTION = { size: 9, spacing: 1.2 }, SMALL = { size: 7.5, spacing: 0.8 };
+// the colours (face::kind_colour, band_ink, fin)
+const KIND = { "SINK": "#007c7d", "SOURCE": "#206ea6", "PLAYBACK STREAM": "#7e5a42", "RECORDING STREAM": "#427935", "MIDI": "#934c7e", "VIDEO": "#876200", "DUPLEX": "#73348d" };
+const kindColour = (k) => KIND[k] || "#cba553";
+const bandInk = (k) => (kindColour(k) === "#cba553" ? "#1d1e20" : "#f3efe6");
+const FIN = {
+  alu: { base: "#8c8e91", paint: true, noise: 0, print: "#1d1e20" },
+  black: { base: "#232427", paint: false, noise: 0.9, print: "#d5d7d9" },
+  olive: { base: "#66683f", paint: false, noise: 0.7, print: "#f1f1e6" },
+};
 
-// ---------- the cards: a profile says which of the card's nodes exist ----------
+// ---------- the graph (the maintainer's, 2026-11-24) ----------
 const CARDS = {
-  ryzen: { name: "RYZEN HD AUDIO", full: "Ryzen HD Audio Controller", profile: 1, profiles: [
-    { d: "Off" }, { d: "Analog Stereo Duplex", o: 1, i: 1 }, { d: "Analog Stereo Output", o: 1 },
-    { d: "Analog Surround 4.0 Output + Analog Stereo Input", o: 1, i: 1 }, { d: "Analog Surround 4.0 Output", o: 1 },
-    { d: "Analog Stereo Input", i: 1 }, { d: "Pro Audio", o: 1, i: 1 } ] },
-  jlab: { name: "JLAB GO WORK 2", full: "JLab GO Work 2", profile: 3, profiles: [
-    { d: "Off" }, { d: "High Fidelity Playback (A2DP Sink, codec SBC)", o: 1, i: 1 },
-    { d: "High Fidelity Playback (A2DP Sink, codec SBC-XQ)", o: 1, i: 1 }, { d: "High Fidelity Playback (A2DP Sink, codec AAC)", o: 1, i: 1 },
-    { d: "Headset Head Unit (HSP/HFP, codec CVSD)", o: 1, i: 1 }, { d: "Headset Head Unit (HSP/HFP, codec mSBC)", o: 1, i: 1 } ] },
-  radeon: { name: "RADEON HDMI", full: "Radeon High Definition Audio Controller", profile: 0, profiles: [
-    { d: "Off" }, { d: "Digital Stereo (HDMI) Output", o: 1, na: 1 }, { d: "Digital Stereo (HDMI 2) Output", o: 1, na: 1 },
-    { d: "Digital Surround 5.1 (HDMI) Output", o: 1, na: 1 }, { d: "Digital Surround 7.1 (HDMI) Output", o: 1, na: 1 },
-    { d: "Digital Surround 5.1 (HDMI 2) Output", o: 1, na: 1 }, { d: "Digital Surround 7.1 (HDMI 2) Output", o: 1, na: 1 },
-    { d: "Pro Audio", o: 1 } ] },
+  jlab: { profile: 3, profiles: ["Off", "High Fidelity Playback (A2DP Sink, codec SBC)", "High Fidelity Playback (A2DP Sink, codec SBC-XQ)", "High Fidelity Playback (A2DP Sink, codec AAC)", "Headset Head Unit (HSP/HFP, codec CVSD)", "Headset Head Unit (HSP/HFP, codec mSBC)"] },
+  radeon: { profile: 0, profiles: ["Off", "Digital Stereo (HDMI) Output", "Digital Stereo (HDMI 2) Output", "Digital Surround 5.1 (HDMI) Output", "Digital Surround 7.1 (HDMI) Output", "Pro Audio"] },
+  ryzen: { profile: 1, profiles: ["Off", "Analog Stereo Duplex", "Analog Stereo Output", "Analog Surround 4.0 Output + Analog Stereo Input", "Analog Surround 4.0 Output", "Analog Stereo Input", "Pro Audio"] },
 };
-
-// ---------- the strips, as PipeWire has them (vol: the rack's %, the cube root of PipeWire's) ----------
-// role: play (an app that plays), rec (an app that records), in (a source), out (a sink)
-const STRIPS = [
-  // MICROPHONES
-  { id: "ryzenmic", node: 51, role: "in", dev: "ryzen", name: "RYZEN · BUILT-IN MIC", fn: "BUILT-IN MIC", sub: "analog", kind: "SOURCE", paint: "alu", ch: 2,
-    vol: [5, 5], mute: true, sig: 0.25, state: "SUSPENDED", card: "ryzen", side: "i", cord: "#ec7a1c", short: "RYZEN",
-    ports: ["Internal Microphone", "Microphone|na"], pw: "alsa_input.pci-…analog-stereo · Ryzen HD Audio Controller Analog Stereo · Audio/Source" },
-  { id: "jlabmic", node: 197, role: "in", dev: "jlab", name: "JLAB · MIC", fn: "MIC", sub: "Bluetooth · handsfree", kind: "SOURCE", paint: "alu", ch: 1,
-    vol: [100], sig: 0.3, state: "RUNNING", card: "jlab", side: "i", cord: "#12a5b8", short: "JLAB",
-    ports: ["Handsfree"], pw: "bluez_input.… · JLab GO Work 2 · Audio/Source · capture_MONO" },
-  { id: "eesource", node: 336, role: "in", dev: "ee", name: "EASY EFFECTS SOURCE", fn: "EASY EFFECTS SOURCE", sub: "virtual · effects on a mic", kind: "SOURCE", paint: "black", ch: 2,
-    vol: [100, 100], virtual: true, fedBy: "jlabmic", state: "RUNNING", cord: "#7b4fb8", short: "EASY EFFECTS",
-    pw: "easyeffects_source · Easy Effects Source · Audio/Source/Virtual (Easy Effects feeds it: JLab mic → spectrum → level)" },
-  // RECORDING
-  { id: "ocenrec", node: 189, role: "rec", dev: "ocenaudio", fn: "INPUT", media: "ocenaudio", kind: "RECORDING STREAM", paint: "black", ch: 1,
-    vol: [100], to: ["eesource"], state: "PAUSED", pw: "ocenaudio · Stream/Input/Audio · input_FL, input_FR (corked: not recording now)" },
-  // PLAYING
-  { id: "hydrogen", node: 127, role: "play", dev: "hydrogen", fn: "OUTPUT", media: "Hydrogen", kind: "PLAYBACK STREAM", paint: "black", ch: 2,
-    vol: [100, 100], to: ["eesink"], sig: 0.72, state: "RUNNING", pw: "Hydrogen · Stream/Output/Audio · output_FL, output_FR" },
-  { id: "kadence", node: 300, role: "play", dev: "kadence", fn: "OUTPUT", media: "ALSA Playback", kind: "PLAYBACK STREAM", paint: "black", ch: 2,
-    vol: [100, 100], to: ["eesink"], sig: 0.5, state: "RUNNING", pw: "ALSA plug-in [kadence] · ALSA Playback · Stream/Output/Audio" },
-  { id: "soundcraft", node: 311, role: "play", dev: "soundcraft", fn: "OUTPUT", media: "ALSA Playback", kind: "PLAYBACK STREAM", paint: "black", ch: 2,
-    vol: [100, 100], to: ["eesink"], sig: 0.45, state: "RUNNING", pw: "ALSA plug-in [soundcraft] · ALSA Playback · Stream/Output/Audio" },
-  { id: "ocenplay", node: 141, role: "play", dev: "ocenaudio", fn: "OUTPUT", media: "ocenaudio", kind: "PLAYBACK STREAM", paint: "black", ch: 2,
-    vol: [100, 100], to: ["eesink"], sig: 0.55, state: "RUNNING", pw: "ocenaudio · Stream/Output/Audio · output_FL, output_FR" },
-  { id: "bitwig", node: 299, role: "play", dev: "bitwig", fn: "OUTPUT", media: "audio engine (JACK)", kind: "DUPLEX", paint: "black", ch: 2,
-    vol: null, to: ["jlab"], sig: 0.6, state: "RUNNING", pw: "Bitwig Studio's audio engine · Audio/Duplex · out4, out5 (no volume in PipeWire)" },
-  { id: "eefilter", node: 264, role: "play", dev: "ee", fn: "EASY EFFECTS FILTER", media: "test signals", kind: "NO CLASS", paint: "black", ch: 2,
-    vol: null, to: [], sig: 0, state: "RUNNING", pw: "ee_test_signals · Easy Effects Filter · no media.class · output_FL, output_FR" },
-  // OUTPUTS: the masters
-  { id: "ryzen", node: 50, role: "out", dev: "ryzen", name: "RYZEN · SPEAKERS", fn: "SPEAKERS", sub: "analog", kind: "SINK", paint: "alu", ch: 2,
-    vol: [0, 0], state: "SUSPENDED", card: "ryzen", side: "o", cord: "#ec7a1c", short: "RYZEN",
-    ports: ["Speakers", "Headphones|na"], pw: "alsa_output.pci-…analog-stereo · Ryzen HD Audio Controller Analog Stereo · Audio/Sink" },
-  { id: "eesink", node: 128, role: "out", dev: "ee", name: "EASY EFFECTS SINK", fn: "EASY EFFECTS SINK", sub: "virtual · effects, then out", kind: "SINK", paint: "black", ch: 2,
-    vol: [100, 100], virtual: true, feeds: "jlab", state: "RUNNING", cord: "#7b4fb8", short: "EASY EFFECTS",
-    pw: "easyeffects_sink · Easy Effects Sink · Audio/Sink (then bass loudness → equalizer → spectrum → level → JLab GO Work 2)" },
-  { id: "jlab", node: 95, role: "out", dev: "jlab", name: "JLAB · HEADPHONES", fn: "HEADPHONES", sub: "Bluetooth · A2DP", kind: "SINK", paint: "alu", ch: 2,
-    vol: [60, 60], state: "RUNNING", card: "jlab", side: "o", cord: "#12a5b8", short: "JLAB",
-    ports: ["Headphones", "Handsfree"], pw: "bluez_output.….1 · JLab GO Work 2 · Audio/Sink · playback_FL, playback_FR" },
-  { id: "hdmi", node: 0, role: "out", dev: "radeon", name: "RADEON · HDMI", fn: "HDMI", sub: "HDMI / DisplayPort", kind: "SINK", paint: "alu", ch: 2,
-    vol: [100, 100], state: "IDLE", card: "radeon", side: "o", cord: "#1752c8", short: "HDMI",
-    ports: ["HDMI / DisplayPort|na", "HDMI / DisplayPort 2|na"], pw: "alsa_output.…hdmi-stereo · Radeon High Definition Audio Controller · Audio/Sink" },
+// devices and apps, as `Scene::devs` has them; a strip a group (`mixer::role_of`)
+const DEVS = [
+  { key: "jlab", name: "JLab GO Work 2", finish: "alu", card: "jlab", color: "#ec7a1c", strips: [
+    { id: "phones", node: 95, role: "Sink", name: "HEADPHONES", kind: "SINK", vol: 0.5, mute: false, stereo: true, nodeName: "bluez_output", ports: null, sig: 0 },
+    { id: "jmic", node: 197, role: "Source", name: "MIC", kind: "SOURCE", vol: 1, mute: false, stereo: false, nodeName: "bluez_input", ports: null, sig: 0.35 } ] },
+  { key: "radeon", name: "Radeon High Definition Audio Controller", finish: "alu", card: "radeon", color: "#1752c8", strips: [] },
+  { key: "ryzen", name: "Ryzen HD Audio Controller", finish: "alu", card: "ryzen", color: "#14965a", strips: [
+    { id: "speakers", node: 50, role: "Sink", name: "SPEAKERS", kind: "SINK", vol: 0, mute: true, stereo: true, nodeName: "alsa_output", ports: ["Speakers", "Headphones"], port: 0, sig: 0 },
+    { id: "rmic", node: 51, role: "Source", name: "BUILT-IN MIC", kind: "SOURCE", vol: 0.05, mute: true, stereo: true, nodeName: "alsa_input", ports: ["Internal Microphone", "Microphone"], port: 0, sig: 0.3 } ] },
+  { key: "bitwig", name: "Bitwig Studio", finish: "black", app: true, strips: [
+    { id: "bitwig", node: 491, role: "Play", name: "OUTPUT", kind: "DUPLEX", vol: null, stereo: false, cols: 2, to: ["eesink"], sig: 0.5, cue: true } ] },
+  { key: "ee", name: "easyeffects", finish: "black", app: true, color: "#d4232a", strips: [
+    { id: "eesink", node: 128, role: "Sink", name: "EASY EFFECTS SINK", kind: "SINK", vol: 1, mute: true, stereo: true, chans: true, nodeName: "easyeffects_sink", ports: null, sig: 0, feeds: "phones" },
+    { id: "eefilter", node: 264, role: "Play", name: "EASY EFFECTS FILTER", kind: "NO CLASS", vol: null, stereo: false, cols: 2, to: [], sig: 0.8 } ] },
+  { key: "fooyin", name: "fooyin", finish: "black", app: true, strips: [
+    { id: "fooyin", node: 154, role: "Play", name: "OUTPUT", kind: "PLAYBACK STREAM", vol: 1, mute: false, stereo: true, to: ["phones"], sig: 0.9 } ] },
+  { key: "hydrogen", name: "Hydrogen", finish: "black", app: true, strips: [
+    { id: "hydrogen", node: 127, role: "Play", name: "OUTPUT", kind: "PLAYBACK STREAM", vol: 1, mute: false, stereo: true, to: ["eesink"], sig: 0 } ] },
+  { key: "kadence", name: "kadence", finish: "black", app: true, strips: [
+    { id: "kadence", node: 300, role: "Play", name: "OUTPUT", kind: "PLAYBACK STREAM", vol: 1, mute: false, stereo: true, to: ["eesink"], sig: 0 } ] },
+  { key: "ocenaudio", name: "ocenaudio", finish: "black", app: true, strips: [
+    { id: "ocenrec", node: 189, role: "Rec", name: "INPUT", kind: "RECORDING STREAM", vol: 1, mute: false, stereo: true, to: [], sig: 0 },
+    { id: "ocenplay", node: 141, role: "Play", name: "OUTPUT", kind: "PLAYBACK STREAM", vol: 1, mute: false, stereo: true, to: ["eesink"], sig: 0 } ] },
+  { key: "soundcraft", name: "soundcraft", finish: "black", app: true, strips: [
+    { id: "soundcraft", node: 311, role: "Play", name: "OUTPUT", kind: "PLAYBACK STREAM", vol: 1, mute: false, stereo: true, to: ["eesink"], sig: 0 } ] },
 ];
-const S = (id) => STRIPS.find((s) => s.id === id);
-// the devices, as the rack has them: a card, or a program's own nodes (Easy Effects)
-const DEVICES = {
-  hydrogen: { name: "HYDROGEN", kind: "APP", paint: "black", app: true },
-  kadence: { name: "ALSA PLUG-IN [KADENCE]", kind: "APP", paint: "black", app: true },
-  soundcraft: { name: "ALSA PLUG-IN [SOUNDCRAFT]", kind: "APP", paint: "black", app: true },
-  ocenaudio: { name: "OCENAUDIO", kind: "APP", paint: "black", app: true },
-  bitwig: { name: "BITWIG STUDIO", kind: "APP · JACK", paint: "black", app: true },
-  ryzen: { name: "RYZEN HD AUDIO", kind: "SOUND CARD", paint: "alu", card: "ryzen" },
-  jlab: { name: "JLAB GO WORK 2", kind: "HEADSET", paint: "alu", card: "jlab" },
-  ee: { name: "EASY EFFECTS", kind: "APP · EFFECTS", paint: "black", virtual: true, app: true },
-  radeon: { name: "RADEON HDMI", kind: "SOUND CARD", paint: "alu", card: "radeon" },
-};
+let mainOut = "eesink", mainIn = "jmic";
+const ALL = () => DEVS.flatMap((d) => d.strips.map((s) => Object.assign(s, { dev: d })));
+const S = (id) => ALL().find((s) => s.id === id);
+const takes = (s) => s.role === "Sink" || s.role === "Rec";
 
-// ---------- what can change, kept apart for undo and presets ----------
-let st = {
-  to: Object.fromEntries(STRIPS.filter((s) => s.to).map((s) => [s.id, [...s.to]])),
-  vol: Object.fromEntries(STRIPS.map((s) => [s.id, s.vol && [...s.vol]])),
-  mute: Object.fromEntries(STRIPS.map((s) => [s.id, !!s.mute])),
-  chan: {}, port: {},
-  profile: Object.fromEntries(Object.entries(CARDS).map(([k, c]) => [k, c.profile])),
-  mainOut: "jlab", mainIn: "jlabmic",
-  muteOut: false, muteIn: false, virtual: true, max: 153,
-};
-let cue = new Set(), test = null, testAt = 0;
-let undo = [], redo = [], presets = [], preset = null;
-const snap = () => JSON.parse(JSON.stringify(st));
-function change(f) { undo.push(snap()); redo = []; preset = null; f(); settle(); render(); }
-
-// a strip exists while its card's profile has its side
-function alive(s) {
-  if (!s.card) return true;
-  return !!CARDS[s.card].profiles[st.profile[s.card]][s.side];
+// ---------- text, as `print::Style` writes it ----------
+const ctx = document.createElement("canvas").getContext("2d");
+function width(st, t) {
+  ctx.font = `bold ${st.size}px "Noto Sans"`;
+  return ctx.measureText(t).width + st.spacing * [...t].length;
 }
-const outs = () => STRIPS.filter((s) => s.role === "out" && alive(s));
-const ins = () => STRIPS.filter((s) => s.role === "in" && alive(s));
-// what WirePlumber does when a device goes: the default moves on, and apps on it follow the default
-function settle() {
-  if (!st.mainOut || !alive(S(st.mainOut))) st.mainOut = (outs()[0] || {}).id || null;
-  if (!st.mainIn || !alive(S(st.mainIn))) st.mainIn = (ins()[0] || {}).id || null;
-  for (const id in st.to) {
-    const kept = st.to[id].filter((t) => alive(S(t)));
-    if (kept.length < st.to[id].length && !kept.length) {
-      const d = S(id).role === "play" ? st.mainOut : st.mainIn;
-      if (d) kept.push(d);
+const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+function T(st, x, y, fill, anchor, t) {
+  const shift = anchor === "middle" ? st.spacing / 2 : anchor === "end" ? st.spacing : 0;
+  return `<text x="${x + shift}" y="${y}" font-size="${st.size}" letter-spacing="${st.spacing}" fill="${fill}" text-anchor="${anchor}">${esc(t)}</text>`;
+}
+function fit(t, st, w) {
+  if (width(st, t) <= w) return t;
+  let s = t;
+  while (s && width(st, s + "…") > w) s = s.slice(0, -1);
+  return s.trimEnd() + "…";
+}
+function inkOn(hex) {
+  const lin = (c) => { c /= 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b) > 0.3 ? "#111" : "#f3efe6";
+}
+
+// ---------- the faders (mixer.rs: cap_y, vol_at, channels, fader_x) ----------
+const capY = (v) => 6 + (1 - Math.min(Math.max(v / VOL_MAX, 0), 1)) * TRAVEL;
+function volAt(y) {
+  const v = Math.min(Math.max((1 - (y - 6) / TRAVEL) * VOL_MAX, 0), VOL_MAX);
+  return Math.abs(v - 1) < 0.03 ? 1 : v;
+}
+function channels(s) {
+  const b = s.bal || 0, v = s.vol;
+  return [b > 0 ? v * (1 - b) : v, b < 0 ? v * (1 + b) : v];
+}
+function setChannels(s, l, r) {
+  const v = Math.max(l, r);
+  s.vol = Math.round(v * 100) / 100;
+  s.bal = v <= 0 || l === r ? 0 : l > r ? r / l - 1 : 1 - l / r;
+}
+const cols = (s) => s.cols || (s.stereo ? 2 : 1);
+const chans = (s) => s.stereo && s.vol !== null && !!s.chans;
+// (two faders fit a strip as it is: the gaps a little closer)
+function faderX(s) {
+  const n = chans(s) ? 2 : 1, meter = cols(s) * 8 + 4, gap = n === 2 ? 4 : 5;
+  const content = 20 + gap + n * 26 + (n - 1) * gap + gap + meter;
+  const x0 = Math.max((s.w - content) / 2, 4);
+  return [x0, Array.from({ length: n }, (_, i) => x0 + 20 + gap + i * (26 + gap)), x0 + content - meter];
+}
+
+// ---------- the modules (mixer.rs: layout) ----------
+let modules = [], hits = [], size = [0, 0];
+function layout() {
+  const mods = DEVS.map((d) => ({ d, name: d.name.toUpperCase(), app: !!d.app }))
+    .sort((a, b) => (a.app - b.app) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  // an app's keys: every sink (source) shown, in the modules' order
+  const ends = mods.flatMap((m) => m.d.strips.filter((s) => (s.role === "Sink" || s.role === "Source") && s.vol !== null).map((s) => {
+    const several = m.d.strips.filter((o) => o.role === s.role).length > 1;
+    return { s, label: (several ? `${m.d.name} · ${s.name}` : m.d.name).toUpperCase(), color: m.d.color };
+  }));
+  hits = [];
+  // one gap between every two modules, devices and apps alike
+  let x = LEFT;
+  for (const m of mods) {
+    m.fin = FIN[m.d.finish];
+    m.d.strips.forEach((s) => { s.dev = m.d; });
+    m.strips = [...m.d.strips.filter(takes), ...m.d.strips.filter((s) => !takes(s))];
+    let sx = 6;
+    for (const s of m.strips) {
+      s.x = sx; s.w = STRIP_W; sx += s.w;
+      s.targets = s.role === "Play" ? ends.filter((e) => e.s.role === "Sink") : s.role === "Rec" ? ends.filter((e) => e.s.role === "Source") : [];
+      s.main = s.id === mainOut || s.id === mainIn;
     }
-    st.to[id] = kept;
+    // a fixed width: one strip's, two strips', three…; a card that is off, one strip's
+    m.w = Math.max(m.strips.length, 1) * STRIP_W + 12;
+    m.x = x; x += m.w + GAP;
+    const sy = TOP + HEAD + PROF;
+    // a card's PROFILE: in its heading, the right half
+    if (m.d.card) hits.push({ h: "profile", m, r: [m.x + profileKey(m)[0], TOP + profileKey(m)[1], profileKey(m)[2], profileKey(m)[3]] });
+    for (const s of m.strips) {
+      const x0 = m.x + s.x, gw = 10 + width(SMALL, `#${s.node}`), kx = x0 + 6, kw = s.w - 12;
+      hits.push({ h: "graph", s, r: [x0 + 8, sy + 5, gw, 14] });
+      if (s.role === "Play" || s.role === "Rec") {
+        s.targets.slice(0, 6).forEach((t, i) => hits.push({ h: "to", s, t: t.s, r: [kx, sy + ROUTE_Y + 17 + i * 23, kw, 17] }));
+      } else {
+        if (s.vol !== null && s.nodeName) {
+          hits.push({ h: "main", s, r: [kx, sy + ROUTE_Y + 3, kw, 19] });
+          hits.push({ h: "all", s, r: [kx, sy + ROUTE_Y + 28, kw, 19] });
+        }
+        if (s.ports) hits.push({ h: "port", s, m, r: [kx, sy + ROUTE_Y + 53, kw, 19] });
+      }
+      const half = (s.w - 12 - 7) / 2;
+      hits.push({ h: "cue", s, r: [kx, sy + KEYS_Y, half, 24] });
+      if (s.vol !== null) {
+        hits.push({ h: "mute", s, r: [kx + half + 7, sy + KEYS_Y, half, 24] });
+        if (s.stereo) hits.push({ h: "chan", s, r: [kx, sy + CHAN_Y, kw, 24] });
+        faderX(s)[1].forEach((slot, i) => hits.push({ h: "fader", s, ch: chans(s) ? i : null, top: sy + SLOT_Y, r: [x0 + slot, sy + SLOT_Y, 26, TRAVEL + 12] }));
+      }
+    }
   }
-  cue.forEach((c) => { if (!alive(S(c))) cue.delete(c); });
-  if (test && !alive(S(test))) test = null;
+  size = [x - GAP + LEFT, TOP + MOD_H + 16];
+  modules = mods;
 }
-const fmax = () => st.max;
-const pctToY = (p) => 6 + (1 - Math.min(p, fmax()) / fmax()) * 160;
-const yToPct = (y) => Math.round(Math.max(0, Math.min(fmax(), (1 - (y - 6) / 160) * fmax())));
-// Easy Effects follows the default device when the one it used goes
-const feeds = (s) => s.feeds && (alive(S(s.feeds)) ? s.feeds : st.mainOut !== s.id && st.mainOut);
-const fedBy = (s) => s.fedBy && (alive(S(s.fedBy)) ? s.fedBy : st.mainIn !== s.id && st.mainIn);
-const muted = (s) => st.mute[s.id] || (s.role === "out" && st.muteOut) || (s.role === "in" && st.muteIn);
 
-// ---------- drawing ----------
-const con = document.getElementById("console");
-const statusEl = document.getElementById("status");
-const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;");
-const title = (s) => `${DEVICES[s.dev].name} · ${s.fn}`;
-const pctSpan = (x) => `<span class="${x > 100 ? "hot" : ""}">${x}%</span>`;
-
-function stripHtml(s) {
-  const k = KIND[s.kind];
-  const v = st.vol[s.id];
-  const chan = s.ch === 2 && v && st.chan[s.id];
-  const isMain = s.id === st.mainOut || s.id === st.mainIn;
-  const cls = [s.role === "out" ? "master" : "", chan ? "wide2" : "", s.role === "out" && isMain ? "main" : ""].join(" ");
-  let route = "";
-  if (s.role === "play" || s.role === "rec") {
-    const list = s.role === "play" ? outs() : ins();
-    route = `<div class="silkp">${s.role === "play" ? "PLAY ON" : "RECORD FROM"}</div>` + list.map((d) => {
-      const lit = st.to[s.id].includes(d.id);
-      return `<button class="skey ${lit ? "on" : ""}" style="--c:${d.cord};--ci:${cordInk(d.cord)}" data-act="to" data-id="${s.id}" data-to="${d.id}"><i></i>${esc(d.short)}</button>`;
-    }).join("");
+// ---------- drawing (mixer.rs: module_svg, key, push_key, led_key, cap_svg, leds_svg) ----------
+// ---------- the keys: the top panel's (panel::key_svg, led_svg) ----------
+// a dark cap in a hole in the panel: the hole's rim catches the light at the bottom right, the cap
+// casts a soft shadow into it and has a fine lit edge and a sheen. Pressed, it sinks a little into
+// the hole and darkens (`deep`: held down, a little more)
+function capKey(o, [x, y, w, h], pressed, deep) {
+  const [cx, cy] = [x + w / 2, y + h / 2];
+  o.push(`<rect x="${x - 3}" y="${y - 3}" width="${w + 6}" height="${h + 6}" rx="6" fill="url(#hole)" stroke="url(#edgeHole)" stroke-width="1.2"/>`);
+  const sc = deep ? 0.94 : 0.955;
+  const [tr, shadow, sheen] = pressed ? [` transform="translate(${cx * (1 - sc)},${cy * (1 - sc)}) scale(${sc})"`, 0.15 * 0.75, 0.35] : ["", 0.75, 1];
+  o.push(`<g${tr}><rect x="${x + 0.2}" y="${y + 1.4}" width="${w + 2}" height="${h + 2}" rx="5" fill="#000" opacity="${shadow * 0.45}"/><rect x="${x + 1.2}" y="${y + 2.4}" width="${w}" height="${h}" rx="4" fill="#000" opacity="${shadow * 0.6}"/><rect x="${x}" y="${y}" width="${w}" height="${h}" rx="4" fill="url(#btnGrad)" stroke="#070708" stroke-width="1"/><g opacity="${sheen}"><rect x="${x + 0.8}" y="${y + 0.8}" width="${w - 1.6}" height="${h - 1.6}" rx="3.4" fill="none" stroke="url(#capEdge)" stroke-width="1.4"/><rect x="${x + 3}" y="${y + 1.6}" width="${w - 6}" height="${h * 0.4}" rx="2.5" fill="url(#capTop)"/></g>`);
+  if (pressed) o.push(`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="4" fill="#000" opacity="${deep ? 0.3 : 0.2}"/>`);
+  o.push("</g>");
+}
+// a key's LED, at its left: lit, a glow round it; off, dark in its colour
+function led(o, cx, cy, on, color) {
+  o.push(on ? `<circle cx="${cx}" cy="${cy}" r="5" fill="${color}" opacity=".35"/><circle cx="${cx}" cy="${cy}" r="2.6" fill="${color}"/>`
+            : `<circle cx="${cx}" cy="${cy}" r="2.6" fill="#0a0a0b"/><circle cx="${cx}" cy="${cy}" r="2.6" fill="${color}" opacity=".2"/>`);
+}
+// a key with its name at the left (and its LED before it), a value at the right (PORT, PROFILE)
+function key(o, [x, y, w, h], label, ledColor, on, value, isHeld) {
+  // (a key with a LED: in while it is on, as PLAY ON's)
+  capKey(o, [x, y, w, h], !!ledColor && (on || isHeld), isHeld);
+  const ty = y + h / 2 + 3.2, lx = ledColor ? x + 15 : x + 8;
+  if (ledColor) led(o, x + 8, y + h / 2, on, ledColor);
+  o.push(T(SMALL, lx, ty, "#e6e7e8", "start", label));
+  if (value != null) o.push(T(SMALL, x + w - 8, ty, "#9a9da1", "end", fit(value, SMALL, w - 16 - (lx - x) - width(SMALL, label) - 6)));
+}
+// MAIN OUT / MAIN IN: its amber LED lit while it is the default
+const mainKey = (o, r, label, on, isHeld) => key(o, r, label, "#ffb02e", on, null, isHeld);
+// a push-push key (PLAY ON, RECORD FROM): in, pressed into its hole, its red LED lit, as the
+// panel's keys have it; out, up; held down, deeper
+function pushKey(o, [x, y, w, h], label, isOn, held) {
+  capKey(o, [x, y, w, h], isOn || held, held);
+  led(o, x + 8, y + h / 2, isOn, "#ff4a32");
+  o.push(T(SMALL, x + 15, y + h / 2 + 3.1, isOn ? "#f3efe6" : "#c9cbcd", "start", fit(label, SMALL, w - 22)));
+}
+// a key with its LED and its name in the middle (CUE, MUTE, SPLIT); greyed when it does nothing
+function ledKey(o, [x, y, w, h], label, color, on, off, isHeld) {
+  o.push(`<g${off ? ' opacity=".35"' : ""}>`);
+  capKey(o, [x, y, w, h], on || isHeld, isHeld);
+  const tw = width(SMALL, label) + 11, lx = x + (w - tw) / 2;
+  led(o, lx + 3, y + h / 2, on, color);
+  o.push(T(SMALL, lx + 11, y + h / 2 + 3.2, "#e6e7e8", "start", label));
+  o.push("</g>");
+}
+// a module's plate: its paint, the paint's texture or noise, the sheen (face::raster)
+function plate(o, m) {
+  const f = m.fin, r = `rx="${RADIUS}"`;
+  o.push(`<rect width="${m.w}" height="${MOD_H}" ${r} fill="${f.base}"/>`);
+  if (f.paint) o.push(`<rect width="${m.w}" height="${MOD_H}" ${r} fill="url(#paint)"/>`);
+  if (f.noise > 0) o.push(`<rect width="${m.w}" height="${MOD_H}" ${r} fill="url(#noise)" opacity="${f.noise}"/>`);
+  o.push(`<rect width="${m.w}" height="${MOD_H}" ${r} fill="url(#sheen)"/>`);
+}
+const cap = (x, y) => `<g transform="translate(${x},${y})"><rect x=".5" y=".5" width="${CAP[0] - 1}" height="${CAP[1] - 1}" rx="3" fill="url(#cap)" stroke="#0b0b0c"/><rect x="3" y="${CAP[1] / 2 - 1}" width="${CAP[0] - 6}" height="2" fill="#e6e7e8"/></g>`;
+function moduleSvg(m) {
+  const o = [], w = m.w, h = MOD_H, print = m.fin.print;
+  plate(o, m);
+  o.push(`<rect x=".5" y=".5" width="${w - 1}" height="${h - 1}" rx="${RADIUS}" fill="none" stroke="#000" stroke-opacity=".7"/>`);
+  if (m.d.card) {
+    o.push(T(SECTION, w / 4 + 2, 22, print, "middle", fit(m.name, SECTION, w / 2 - 14)));
+    const c = CARDS[m.d.card], [px, py, pw, ph] = profileKey(m);
+    key(o, [px, py, pw, ph], fit(c.profiles[c.profile], SMALL, pw - 16));
   } else {
-    const out = s.role === "out";
-    route = `<button class="wkey ${isMain ? "on" : ""}" data-act="main" data-id="${s.id}">${out ? "MAIN OUT" : "MAIN IN"}<span class="led"></span></button>`;
-    route += `<button class="wkey" data-act="all" data-id="${s.id}">${out ? "PLAY ALL HERE" : "RECORD ALL HERE"}</button>`;
-    if (s.ports) route += `<button class="wkey" data-act="port" data-id="${s.id}">PORT<b>${esc((s.ports[st.port[s.id] || 0]).split("|")[0])}</b></button>`;
-    if (out) route += `<button class="wkey test ${test === s.id ? "on" : ""}" data-act="test" data-id="${s.id}">TEST<span class="led"></span></button>`;
+    o.push(T(SECTION, w / 2, 22, print, "middle", fit(m.name, SECTION, w - 20)));
   }
-  // the faders: one, or one a channel
-  let faders;
-  if (!v) faders = `<div class="novol">NO VOLUME IN PIPEWIRE</div>`;
-  else {
-    const marks = (fmax() > 100 ? [150, 100, 75, 50, 25, 0] : [100, 75, 50, 25, 0]).map((m) => `<span style="top:${pctToY(m) + 12}px">${m}</span>`).join("");
-    const one = (i, lab) => `<div class="fader"><div class="flab">${lab}</div><div class="slot" data-id="${s.id}" data-ch="${i}">
-      ${fmax() > 100 ? `<div class="unity" style="top:${pctToY(100)}px"></div>` : ""}<div class="cap" style="top:${pctToY(i < 0 ? Math.max(...v) : v[i])}px"></div></div></div>`;
-    faders = `<div class="scale">${marks}</div>` + (chan ? one(0, "L") + one(1, "R") : one(-1, ""));
-  }
-  const cols = Array.from({ length: s.ch }, () => `<div class="col">${Array.from({ length: 16 }, (_, i) =>
-    `<b class="${i >= 14 ? "r" : i >= 11 ? "y" : ""}"></b>`).join("")}</div>`).join("");
-  const forced = (s.role === "out" && st.muteOut) || (s.role === "in" && st.muteIn);
-  const read = !v ? "" : chan ? v.map(pctSpan).join(" ") : pctSpan(Math.max(...v));
-  return `<div class="strip ${cls}" data-strip="${s.id}">
-    <div class="band" style="--k:${k};--ki:${kindInk(s.kind)}"><button class="gkey" data-act="graph" data-id="${s.id}">#${s.node || "?"}</button><span>${esc(s.fn)}</span></div>
-    <div class="route">${route}</div>
-    <div class="keys">
-      <button class="k2 cue ${cue.has(s.id) ? "on" : ""}" data-act="cue" data-id="${s.id}"><i></i>CUE</button>
-      <button class="k2 mute ${st.mute[s.id] ? "on" : ""} ${forced ? "forced" : ""}" data-act="mute" data-id="${s.id}" ${v ? "" : "disabled"}><i></i>MUTE</button>
-    </div>
-    <div class="keys"><button class="k2 chan ${chan ? "on" : ""}" data-act="chan" data-id="${s.id}" ${s.ch === 2 && v ? "" : "disabled"}><i></i>CHANNELS</button></div>
-    <div class="fbox">${faders}<div class="meter" data-meter="${s.id}">${cols}</div></div>
-    <div class="readout" data-read="${s.id}">${read}</div>
-  </div>`;
-}
-// a device (a program too, as in the rack): its name and its PROFILE once, then a
-// strip for each thing it does: what takes sound in at the left (headphones, speakers, an app's
-// INPUT), what gives it out at the right (a mic, an app's OUTPUT), as the rack's frames go
-const takes = (s) => s.role === "out" || s.role === "rec";
-function moduleHtml(key) {
-  const d = DEVICES[key], c = d.card && CARDS[d.card];
-  const all = STRIPS.filter((s) => s.dev === key && alive(s));
-  const mine = [...all.filter(takes), ...all.filter((s) => !takes(s))];
-  const body = mine.map(stripHtml).join("");
-  const prof = c ? `<button class="wkey" data-act="profile" data-card="${d.card}">PROFILE<b>${esc(c.profiles[st.profile[d.card]].d)}</b></button>` : "";
-  return `<div class="module ${d.paint}" data-dev="${key}"><div class="mhead" title="${esc(d.name)}">${esc(d.name)}</div><div class="mprof">${prof}</div><div class="mbody">${body}</div></div>`;
-}
-function render() {
-  const sec = (name, list, extra = "") => list.length ? `<div class="section ${extra}"><div class="shead">${name}</div>${list.join("")}</div>` : "";
-  // among the devices the one with MAIN OUT last, cards that are off after it
-  const rank = (k) => (DEVICES[k].card && st.profile[DEVICES[k].card] === 0 ? 2 : S(st.mainOut || "")?.dev === k ? 1 : 0);
-  const devs = Object.keys(DEVICES).filter((k) => st.virtual || !DEVICES[k].virtual).sort((a, b) => rank(a) - rank(b));
-  con.innerHTML =
-    sec("DEVICES", devs.filter((k) => !DEVICES[k].app).map(moduleHtml)) +
-    sec("APPS", devs.filter((k) => DEVICES[k].app).map(moduleHtml), "gap");
-  const mo = st.mainOut && S(st.mainOut), mi = st.mainIn && S(st.mainIn);
-  $("outkey").textContent = `OUT ▸ ${mo ? mo.name : "NONE"}`;
-  $("inkey").textContent = `IN ▸ ${mi ? mi.name : "NONE"}`;
-  $("presetkey").textContent = cue.size ? `CUE ▸ ${[...cue].map((c) => title(S(c))).join(" + ")}` : `PRESET ▸ ${preset || "UNSAVED"}`;
-  $("muteout").classList.toggle("on", st.muteOut);
-  $("mutein").classList.toggle("on", st.muteIn);
-  $("virtual").classList.toggle("on", st.virtual);
-  $("max").classList.toggle("on", st.max > 100);
-  $("undo").disabled = !undo.length;
-  $("redo").disabled = !redo.length;
-  meterEls = {};
-  document.querySelectorAll("[data-meter]").forEach((m) => { meterEls[m.dataset.meter] = [...m.children].map((c) => [...c.children]); });
+  const sy = HEAD + PROF;
+  m.strips.forEach((s, i) => {
+    const x0 = s.x;
+    if (i > 0) o.push(`<path d="M${x0},${sy} V${h - 8}" stroke="${print}" stroke-opacity=".35" stroke-dasharray="2 3"/>`);
+    const kc = kindColour(s.kind), ink = bandInk(s.kind);
+    o.push(`<path d="M${x0 + 2},${sy + BAND} V${sy + 5} a5,5 0 0 1 5,-5 H${x0 + s.w - 7} a5,5 0 0 1 5,5 V${sy + BAND} Z" fill="${kc}"/>`);
+    const id = `#${s.node}`, gw = 10 + width(SMALL, id);
+    o.push(`<rect x="${x0 + 8}" y="${sy + 5}" width="${gw}" height="14" rx="2.5" fill="none" stroke="${ink}" stroke-width="1.1"/>`);
+    o.push(T(SMALL, x0 + 8 + gw / 2, sy + 15, ink, "middle", id));
+    o.push(T(SECTION, x0 + 8 + gw + 6, sy + 16, ink, "start", fit(s.name, SECTION, s.w - gw - 26)));
+    const kx = x0 + 6, kw = s.w - 12, ry = sy + ROUTE_Y;
+    if (s.role === "Play" || s.role === "Rec") {
+      o.push(T(SMALL, x0 + s.w / 2, ry + 8, print, "middle", s.role === "Play" ? "PLAY ON" : "RECORD FROM"));
+      s.targets.slice(0, 6).forEach((t, i) => pushKey(o, [kx, ry + 17 + i * 23, kw, 17], t.label, s.to.includes(t.s.id), held && held.s === s && held.t === t.s));
+      if (!s.targets.length) o.push(T(SMALL, x0 + s.w / 2, ry + 30, print, "middle", "NOWHERE"));
+    } else {
+      if (s.vol !== null && s.nodeName) {
+        const out = s.role === "Sink";
+        mainKey(o, [kx, ry + 3, kw, 19], out ? "MAIN OUT" : "MAIN IN", s.main, holds("main", s));
+        key(o, [kx, ry + 28, kw, 19], out ? "PLAY ALL HERE" : "RECORD ALL HERE");
+      }
+      if (s.ports) key(o, [kx, ry + 53, kw, 19], "PORT", null, false, s.ports[s.port]);
+    }
+    const half = (s.w - 12 - 7) / 2;
+    ledKey(o, [kx, sy + KEYS_Y, half, 24], "CUE", "#5fd4ff", !!s.cue, false, holds("cue", s));
+    ledKey(o, [kx + half + 7, sy + KEYS_Y, half, 24], "MUTE", "#ff4a32", s.vol !== null && s.mute, s.vol === null, holds("mute", s));
+    ledKey(o, [kx, sy + CHAN_Y, kw, 24], "SPLIT", "#ffb02e", chans(s), !s.stereo || s.vol === null, holds("chan", s));
+    const [fx, slots, mx] = faderX(s), top = sy + SLOT_Y;
+    if (s.vol !== null) {
+      for (const v of [150, 100, 75, 50, 25, 0]) o.push(T(SMALL, x0 + fx + 18, top + capY(v / 100) + 2.6, print, "end", String(v)));
+      slots.forEach((slot, i) => {
+        const cx = x0 + slot + 13;
+        if (chans(s)) o.push(T(SMALL, cx, top - 3, print, "middle", i === 0 ? "L" : "R"));
+        // its scale's lines across the slot, at every number; 100% a little stronger
+        // its zones, behind the lines: up to 100% the print's grey (light on a dark module, dark on a
+        // light one), past it a dull red
+        // (from the 0 line to the fader's top, 153%; narrower than the fader's cap)
+        const [y0, y100, y150] = [capY(0), capY(1), capY(VOL_MAX)].map((y) => Math.round(top + y) + 0.5);
+        o.push(`<rect x="${cx - 8}" y="${y100}" width="16" height="${y0 - y100}" fill="${print}" fill-opacity=".26"/>`);
+        o.push(`<rect x="${cx - 8}" y="${y150}" width="16" height="${y100 - y150}" fill="#b4483c" fill-opacity=".7"/>`);
+        // (and smaller ones between them: every 12.5%)
+        for (let v = 0; v <= 150; v += 12.5) {
+          const major = [0, 25, 50, 75, 100, 150].includes(v), mid = v === 125;
+          const half = major ? 8 : mid ? 5.5 : 4;
+          // (on the pixel grid, so each line is one sharp pixel)
+          const ly = Math.round(top + capY(v / 100)) + 0.5;
+          o.push(`<path d="M${cx - half},${ly} h${half * 2}" stroke="${print}" stroke-opacity="${v === 100 ? 0.95 : major ? 0.75 : mid ? 0.6 : 0.5}"/>`);
+        }
+        o.push(`<rect x="${cx - 2}" y="${top + 6}" width="4" height="${TRAVEL}" rx="2" fill="#0b0b0c"/>`);
+      });
+    } else {
+      o.push(`<text transform="translate(${x0 + fx + 40},${top + TRAVEL / 2 + 6}) rotate(-90)" font-size="7.5" letter-spacing="1" fill="${print}" fill-opacity=".6" text-anchor="middle">NO VOLUME IN PIPEWIRE</text>`);
+    }
+    const mw = cols(s) * 8 + 4, my = sy + FBOX_Y + 12, step = (LEDS_H - 6) / 10;
+    o.push(`<rect x="${x0 + mx}" y="${my}" width="${mw}" height="${LEDS_H}" rx="3" fill="#0b0b0c"/>`);
+    for (let c = 0; c < cols(s); c++) for (let i = 0; i < 10; i++) {
+      const y = my + LEDS_H - 3 - (i + 1) * step + 1;
+      const dark = i >= 9 ? "#351612" : i >= 7 ? "#2f2810" : "#1c2a1f";
+      o.push(`<rect class="led" data-s="${s.id}" data-c="${c}" data-i="${i}" data-dark="${dark}" x="${x0 + mx + 3 + c * 8}" y="${y}" width="6" height="${step - 2}" rx="1" fill="${dark}"/>`);
+    }
+    // the caps and the number under the faders: small pictures of their own over the module in the app
+    if (s.vol !== null) {
+      const lr = channels(s);
+      slots.forEach((slot, i) => o.push(cap(x0 + slot, top + capY(chans(s) ? lr[i] : s.vol) - CAP[1] / 2)));
+      const vals = chans(s) ? lr : [s.vol];
+      const t = vals.map((v) => `${Math.round(v * 100)}%`).join(" ");
+      const red = vals.some((v) => Math.round(v * 100) > 100);
+      const lw = width(SECTION, t) + 8;
+      o.push(T(SECTION, x0 + (s.w - lw) / 2 + 4, sy + READ_Y + 11, red ? "#ff4a32" : "#d5d7d9", "start", t));
+    }
+  });
+  return `<g transform="translate(${m.x},${TOP})">${o.join("")}</g>`;
 }
 
-// ---------- the meters: what each strip passes on, after its fader ----------
-let meterEls = {};
-function level(id, t, depth = 0) {
-  const s = S(id);
-  if (!alive(s) || muted(s) || depth > 4) return [0, 0];
+const DEFS = `<defs>
+  <pattern id="paint" width="80" height="80" patternUnits="userSpaceOnUse"><image href="../../../assets/paint.png" width="80" height="80"/></pattern>
+  <pattern id="noise" width="128" height="128" patternUnits="userSpaceOnUse"><image href="../../../assets/noise.png" width="128" height="128"/></pattern>
+  <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".16"/><stop offset=".35" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".24"/></linearGradient>
+  <linearGradient id="hole" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#050506"/><stop offset="1" stop-color="#232427"/></linearGradient>
+  <linearGradient id="edgeHole" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2a2c2e"/><stop offset="0.5" stop-color="#55585b"/><stop offset="1" stop-color="#a7aaad"/></linearGradient>
+  <linearGradient id="btnGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#303134"/><stop offset="0.6" stop-color="#1d1e20"/><stop offset="1" stop-color="#131314"/></linearGradient>
+  <linearGradient id="capEdge" x1="0" y1="0" x2="0.3" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.28"/><stop offset="0.45" stop-color="#fff" stop-opacity="0.04"/><stop offset="1" stop-color="#000" stop-opacity="0.5"/></linearGradient>
+  <linearGradient id="capTop" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.13"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+  <linearGradient id="kUp" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#46474b"/><stop offset="1" stop-color="#26272a"/></linearGradient>
+  <linearGradient id="cap" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5a5b5f"/><stop offset=".45" stop-color="#2b2c2f"/><stop offset=".55" stop-color="#1b1c1e"/><stop offset="1" stop-color="#3c3d41"/></linearGradient>
+</defs>`;
+
+const svg = document.getElementById("console");
+const field = document.getElementById("field");
+let sx = 0, sy = 0, leds = [];
+function render() {
+  layout();
+  const o = [DEFS];
+  const first = (app) => modules.find((m) => m.app === app);
+  for (const [name, m] of [["DEVICES", first(false)], ["APPS", first(true)]]) {
+    if (m) o.push(T(SECTION, m.x + 6, 17, "#8a8d91", "start", name));
+  }
+  for (const m of modules) o.push(moduleSvg(m));
+  svg.setAttribute("width", size[0]);
+  svg.setAttribute("height", size[1]);
+  svg.setAttribute("font-family", "Noto Sans");
+  svg.setAttribute("font-weight", "bold");
+  svg.innerHTML = o.join("");
+  leds = [...svg.querySelectorAll(".led")];
+  clamp();
+}
+function clamp() {
+  sx = Math.min(Math.max(sx, 0), Math.max(size[0] - field.clientWidth, 0));
+  sy = Math.min(Math.max(sy, 0), Math.max(size[1] - field.clientHeight, 0));
+  svg.style.transform = `translate(${-sx}px,${-sy}px)`;
+}
+
+// ---------- the meters: something playing (lit LEDs on the app's dB scale, -54…0 dB) ----------
+function level(s, t, depth = 0) {
+  if (depth > 4 || (s.vol !== null && s.mute)) return [0, 0];
   let l = 0, r = 0;
-  const add = (a, b, k = 1) => { l = Math.hypot(l, a * k); r = Math.hypot(r, b * k); };
-  if (s.sig) {
-    const n = 0.75 + 0.25 * Math.sin(t * 7.3 + s.node) * Math.sin(t * 2.1 + s.node * 3);
-    add(s.sig * n, s.sig * n);
-  }
-  // what comes in: apps that play here, a virtual device's feed, the sources a recorder takes
-  if (s.role === "out") STRIPS.filter((x) => (x.role === "play" && st.to[x.id].includes(id)) || feeds(x) === id).forEach((x) => add(...level(x.id, t, depth + 1)));
-  if (fedBy(s)) add(...level(fedBy(s), t, depth + 1));
-  if (s.role === "rec") {
-    if (s.state === "PAUSED") return [0, 0];
-    st.to[id].forEach((x) => add(...level(x, t, depth + 1)));
-  }
-  // CUE plays in the MAIN output, at its own level; TEST: a sound in the left, then the right
-  if (id === st.mainOut) {
-    const cl = $("cuelevel").value / 100;
-    cue.forEach((c) => { if (c !== id) { const [a, b] = level(c, t, depth + 1); add(a, b, cl); } });
-  }
-  if (test === id) {
-    const left = ((t - testAt) % 2) < 1;
-    add(left ? 0.8 : 0, left ? 0 : 0.8);
-  }
-  const v = st.vol[id];
-  if (!v) return [l, r];
-  return [l * v[0] / 100, r * (v[1] ?? v[0]) / 100];
+  const add = ([a, b]) => { l = Math.hypot(l, a); r = Math.hypot(r, b); };
+  if (s.sig) { const n = 0.75 + 0.25 * Math.sin(t * 7.3 + s.node) * Math.sin(t * 2.1 + s.node * 3); add([s.sig * n, s.sig * n * 0.92]); }
+  if (s.role === "Sink") for (const a of ALL()) if ((a.to || []).includes(s.id) || a.feeds === s.id) add(level(a, t, depth + 1));
+  if (s.role === "Rec") for (const id of s.to) add(level(S(id), t, depth + 1));
+  const lr = s.vol === null ? [1, 1] : channels(s);
+  return [l * lr[0], r * lr[1]];
 }
 function tick(ms) {
-  const t = ms / 1000;
-  for (const id in meterEls) {
-    const v = level(id, t);
-    meterEls[id].forEach((leds, c) => {
-      const db = 20 * Math.log10(Math.max(v[c] ?? v[0], 1e-6));
-      const n = Math.round(((db + 48) / 54) * 16);
-      leds.forEach((e, i) => e.classList.toggle("on", i < n));
-    });
+  const t = ms / 1000, lv = {};
+  for (const s of ALL()) {
+    const v = level(s, t).map((x) => (x <= 0 ? 0 : Math.max(0, Math.min(10, ((20 * Math.log10(x) + 54) / 54) * 10))));
+    if (cols(s) === 1) v[1] = v[0];
+    lv[s.id] = v;
+  }
+  for (const e of leds) {
+    const n = Math.round(lv[e.dataset.s][+e.dataset.c] || 0), i = +e.dataset.i;
+    const on = i < n ? (i >= 9 ? "#ff3b2f" : i >= 7 ? "#ffb02e" : "#4cff6a") : e.dataset.dark;
+    if (e.getAttribute("fill") !== on) e.setAttribute("fill", on);
   }
   requestAnimationFrame(tick);
 }
 
-// ---------- menus ----------
-let menuEl = null;
-function closeMenu() { if (menuEl) { menuEl.remove(); menuEl = null; } }
-function openMenu(anchor, items) {
+// ---------- what the pointer does (mixer.rs: press, drag, wheel, hover) ----------
+const at = (e) => { const b = field.getBoundingClientRect(); return [e.clientX - b.left + sx, e.clientY - b.top + sy]; };
+const hitAt = ([x, y]) => hits.find(({ r }) => x >= r[0] && x <= r[0] + r[2] && y >= r[1] && y <= r[1] + r[3]);
+const fname = (s) => `${s.dev.name} · ${s.name}`;
+const sr = document.getElementById("sr");
+function hover(h) {
+  if (!h) return "drag: scroll · wheel over a fader: volume · M: back · E: ENGINE";
+  switch (h.h) {
+    case "graph": return `#${h.s.node}: its block in ENGINE`;
+    case "profile": return "The card's profile: which of its outputs and inputs it has";
+    case "port": return "The card's port: where it plays or records from";
+    case "to": { const l = h.s.to.includes(h.t.id); return `${fname(h.s)} ${l ? "goes to" : "doesn't go to"} ${fname(h.t)}. Click: ${l ? "not there any more" : "there too"}`; }
+    case "main": return `Make ${fname(h.s)} the default: new apps go there`;
+    case "all": return `Every app to ${fname(h.s)}, and it becomes the default`;
+    case "cue": return `Listen to ${fname(h.s)} in the default output; nothing else changes`;
+    case "mute": return `Mute ${fname(h.s)}`;
+    case "chan": return "SPLIT: a fader for L and one for R (JOIN: one for both)";
+    case "fader": return `${fname(h.s)}: drag or wheel; double-click 100%`;
+  }
+  return "";
+}
+// a fader to `v` (1 is 100%): the volume (the loudest channel; the other keeps its share), or one channel
+function setFader(h, v) {
+  if (h.ch === null) {
+    const lr = channels(h.s), m = Math.max(...lr);
+    if (!h.s.bal) h.s.vol = Math.round(v * 100) / 100;
+    else setChannels(h.s, ...lr.map((x) => (m > 0 ? (x * v) / m : v)));
+  } else {
+    const lr = channels(h.s);
+    lr[h.ch] = v;
+    setChannels(h.s, lr[0], lr[1]);
+  }
+}
+let drag = null, last = null, held = null;
+// the key held down now, of a strip
+const holds = (what, s) => !!held && held.h === what && held.s === s;
+field.addEventListener("pointerdown", (e) => {
   closeMenu();
-  menuEl = document.createElement("div");
-  menuEl.className = "menu";
-  for (const it of items) {
-    const d = document.createElement("div");
-    if (it.sep) d.className = "sep";
-    else {
-      d.textContent = it.t;
-      if (it.hd) d.className = "hd";
-      if (it.cur) d.classList.add("cur");
-      if (it.na) d.classList.add("na");
-      if (it.f) d.onclick = (e) => { e.stopPropagation(); closeMenu(); it.f(); };
-      if (it.tip) d.onmouseenter = () => say(it.tip);
-    }
-    menuEl.appendChild(d);
-  }
-  document.body.appendChild(menuEl);
-  const r = anchor.getBoundingClientRect();
-  menuEl.style.left = Math.max(8, Math.min(r.left, innerWidth - menuEl.offsetWidth - 8)) + "px";
-  menuEl.style.top = Math.min(r.bottom + 3, innerHeight - menuEl.offsetHeight - 8) + "px";
-}
-function profileMenu(b, key) {
-  const c = CARDS[key];
-  openMenu(b, [{ t: c.name + " · PROFILE", hd: 1 }, ...c.profiles.map((p, i) => ({
-    t: p.d, cur: i === st.profile[key], na: p.na,
-    tip: `Profile ${i}: ${p.o ? "an output" : "no output"}, ${p.i ? "an input" : "no input"}${p.na ? "; nothing is plugged in for it" : ""}.`,
-    f: () => { change(() => { st.profile[key] = i; }); say(`The card's profile set to ${esc(p.d)}: its nodes come and go with it; apps on a node that went follow the default.`); },
-  }))]);
-}
-
-// ---------- what a click does, and what it is in PipeWire ----------
-function say(h) { statusEl.innerHTML = h; }
-function linkText(a, b) {
-  return `${a.ch === 1 ? "MONO to both" : "FL to FL, FR to FR"} (#${a.node} ${a.role === "rec" ? "←" : "→"} #${b.node}).`;
-}
-function act(b, e) {
-  const s = b.dataset.id && S(b.dataset.id);
-  switch (b.dataset.act) {
-    case "to": {
-      const d = S(b.dataset.to), lit = st.to[s.id].includes(d.id);
-      if (e.ctrlKey || e.metaKey) {
-        change(() => { st.to[s.id] = lit ? st.to[s.id].filter((x) => x !== d.id) : [...st.to[s.id], d.id]; });
-        say(`${lit ? "Unlinked from" : "Linked also to"} ${esc(d.name)}: ${linkText(s, d)}`);
-      } else {
-        change(() => { st.to[s.id] = [d.id]; });
-        say(`${esc(title(s))} ${s.role === "play" ? "plays on" : "records from"} ${esc(d.name)} only now: its links to the others are taken away; ${linkText(s, d)}`);
-      }
-      break;
-    }
-    case "mute": change(() => { st.mute[s.id] = !st.mute[s.id]; });
-      say(`<code>mute</code> of node #${s.node} set to ${st.mute[s.id]}.`); break;
-    case "chan":
-      change(() => { st.chan[s.id] = !st.chan[s.id]; });
-      say(st.chan[s.id] ? "A fader for each channel: <code>channelVolumes</code> one by one." : "One fader for all its channels."); break;
-    case "cue":
-      if (cue.has(s.id)) cue.delete(s.id); else cue.add(s.id);
-      render();
-      say(cue.has(s.id) ? `CUE: Patchcord's own stream plays ${esc(title(s))} in ${esc(S(st.mainOut).name)} (MAIN), at CUE LEVEL. No link of yours changes.` : "CUE off for it.");
-      break;
-    case "main":
-      change(() => { if (s.role === "out") st.mainOut = s.id; else st.mainIn = s.id; });
-      say(`<code>default.configured.audio.${s.role === "out" ? "sink" : "source"}</code> set to ${esc(s.name)}: new apps ${s.role === "out" ? "play in" : "record from"} it.`);
-      break;
+  const p = at(e), h = hitAt(p);
+  field.setPointerCapture(e.pointerId);
+  if (!h) { drag = { pan: [e.clientX, e.clientY, sx, sy] }; return; }
+  const dbl = last && performance.now() - last.t < 350 && last.h.h === h.h && last.h.s === h.s && last.h.ch === h.ch;
+  last = { t: performance.now(), h };
+  switch (h.h) {
+    case "graph": sr.textContent = `Opens ENGINE with #${h.s.node} chosen and in view`; return;
+    case "profile": return openMenu(h, CARDS[h.m.d.card].profiles, CARDS[h.m.d.card].profile, (i) => { CARDS[h.m.d.card].profile = i; });
+    case "port": return openMenu(h, h.s.ports, h.s.port, (i) => { h.s.port = i; });
+    // a key with a LED goes down while held; let go over it, it stays in (or pops out)
+    case "to": case "main": case "cue": case "mute": case "chan": held = h; break;
     case "all": {
-      const role = s.role === "out" ? "play" : "rec";
-      change(() => {
-        STRIPS.filter((x) => x.role === role && st.to[x.id].length).forEach((x) => { st.to[x.id] = [s.id]; });
-        if (s.role === "out") st.mainOut = s.id; else st.mainIn = s.id;
-      });
-      say(`Every app that ${role === "play" ? "plays" : "records"} moved to ${esc(s.name)}, and it is MAIN.`);
+      const want = h.s.role === "Sink" ? "Play" : "Rec";
+      for (const a of ALL().filter((a) => a.role === want && a.to.length)) a.to = [h.s.id];
+      if (h.s.role === "Sink") mainOut = h.s.id; else mainIn = h.s.id;
       break;
     }
-    case "port":
-      openMenu(b, [{ t: "PORT", hd: 1 }, ...s.ports.map((p, i) => ({
-        t: p.split("|")[0], cur: i === (st.port[s.id] || 0), na: p.endsWith("|na"),
-        f: () => change(() => { st.port[s.id] = i; }),
-      }))]);
-      break;
-    case "profile": profileMenu(b, b.dataset.card); break;
-    case "test":
-      test = test === s.id ? null : s.id;
-      testAt = performance.now() / 1000;
-      render();
-      say(test ? `TEST: a sound plays in ${esc(s.name)}'s left, then its right, while the key is lit (a stream of Patchcord's own).` : "TEST stopped.");
-      break;
-    case "graph":
-      say(`Opens ENGINE with node <code>#${s.node}</code> chosen and in view: <code>${esc(s.pw)}</code>`);
+    case "fader":
+      if (dbl) setFader(h, 1); else { drag = { h }; setFader(h, volAt(p[1] - h.top)); }
       break;
   }
-}
-
-con.addEventListener("click", (e) => {
-  const b = e.target.closest("[data-act]");
-  if (b && !b.disabled) { e.stopPropagation(); act(b, e); }
-});
-con.addEventListener("dblclick", (e) => {
-  const sl = e.target.closest(".slot");
-  if (sl) change(() => setVol(sl.dataset.id, +sl.dataset.ch, 100));
-});
-con.addEventListener("mouseover", (e) => {
-  const b = e.target.closest("[data-act]"), sl = e.target.closest(".slot"), str = e.target.closest("[data-strip]");
-  if (b && b.dataset.act === "to") {
-    const a = S(b.dataset.id), t = S(b.dataset.to), on = st.to[a.id].includes(t.id);
-    say(`${on ? "On" : "Not on"} ${esc(t.name)}. Click: only there. Ctrl+click: ${on ? "take it away" : "there too"}.`);
-  } else if (sl) say(`Fader: <code>channelVolumes</code> of node #${S(sl.dataset.id).node} (the cube root of PipeWire's value, as KDE and pavucontrol show it).`);
-  else if (b && b.dataset.act === "all") say(b.textContent === "PLAY ALL HERE" ? "Every app that plays moves here, and it becomes MAIN: new ones follow." : "Every app that records takes from here, and it becomes MAIN: new ones follow.");
-  else if (str) { const s = S(str.dataset.strip); say(`<b>${esc(title(s))}</b> · ${s.kind} · <code>${esc(s.pw)}</code>`); }
-});
-
-// faders: drag, the wheel
-function setVol(id, ch, p) {
-  const v = st.vol[id];
-  if (ch >= 0) v[ch] = p;
-  else {
-    // one fader for all: the loudest channel goes to `p`, the others keep their share
-    const m = Math.max(...v);
-    for (let i = 0; i < v.length; i++) v[i] = m > 0 ? Math.round(v[i] * p / m) : p;
-  }
-}
-let drag = null;
-function move(e) {
-  setVol(drag.id, drag.ch, yToPct(e.clientY - drag.el.getBoundingClientRect().top));
-  const v = st.vol[drag.id], chan = st.chan[drag.id];
-  con.querySelectorAll(`.slot[data-id="${drag.id}"]`).forEach((sl) => {
-    const i = +sl.dataset.ch;
-    sl.querySelector(".cap").style.top = pctToY(i < 0 ? Math.max(...v) : v[i]) + "px";
-  });
-  con.querySelector(`[data-read="${drag.id}"]`).innerHTML = chan ? v.map(pctSpan).join(" ") : pctSpan(Math.max(...v));
-  say(`${esc(title(S(drag.id)))}: ${v.map((x) => x + "%").join(" / ")}`);
-}
-con.addEventListener("pointerdown", (e) => {
-  const sl = e.target.closest(".slot");
-  if (!sl) return;
-  e.preventDefault();
-  sl.setPointerCapture(e.pointerId);
-  drag = { el: sl, id: sl.dataset.id, ch: +sl.dataset.ch, before: snap() };
-  move(e);
-});
-con.addEventListener("pointermove", (e) => { if (drag) move(e); });
-con.addEventListener("pointerup", () => {
-  if (!drag) return;
-  if (JSON.stringify(drag.before) !== JSON.stringify(st)) { undo.push(drag.before); redo = []; preset = null; }
-  drag = null;
   render();
 });
-con.addEventListener("wheel", (e) => {
-  const sl = e.target.closest(".slot");
-  if (!sl) return;
+field.addEventListener("pointermove", (e) => {
+  if (drag && drag.pan) { sx = drag.pan[2] - (e.clientX - drag.pan[0]); sy = drag.pan[3] - (e.clientY - drag.pan[1]); clamp(); return; }
+  if (drag && drag.h) { setFader(drag.h, volAt(at(e)[1] - drag.h.top)); render(); sr.textContent = `${fname(drag.h.s)}: ${Math.round(drag.h.s.vol * 100)}%`; return; }
+  const h = hitAt(at(e));
+  sr.textContent = hover(h);
+  field.style.cursor = h ? "pointer" : "default";
+});
+field.addEventListener("pointerup", (e) => {
+  drag = null;
+  if (held) {
+    const h = hitAt(at(e));
+    if (h && h.h === held.h && h.s === held.s && h.t === held.t) {
+      const s = held.s;
+      switch (h.h) {
+        case "to": { const i = s.to.indexOf(h.t.id); if (i >= 0) s.to.splice(i, 1); else s.to.push(h.t.id); break; }
+        case "main": if (s.role === "Sink") mainOut = s.id; else mainIn = s.id; break;
+        case "cue": s.cue = !s.cue; break;
+        case "mute": s.mute = !s.mute; break;
+        case "chan": s.chans = !s.chans; break;
+      }
+    }
+    held = null;
+    render();
+  }
+});
+field.addEventListener("wheel", (e) => {
   e.preventDefault();
-  const v = st.vol[sl.dataset.id], ch = +sl.dataset.ch;
-  const now = ch < 0 ? Math.max(...v) : v[ch];
-  change(() => setVol(sl.dataset.id, ch, Math.max(0, Math.min(fmax(), now + (e.deltaY < 0 ? 2 : -2)))));
+  const h = hitAt(at(e));
+  if (h && h.h === "fader") {
+    const now = h.ch === null ? h.s.vol : channels(h.s)[h.ch];
+    setFader(h, Math.min(Math.max(now + (e.deltaY < 0 ? 1 : -1) * (e.shiftKey ? 0.01 : 0.05), 0), VOL_MAX));
+    render();
+    return;
+  }
+  const wide = size[0] > field.clientWidth;
+  if (wide && !e.deltaX && size[1] <= field.clientHeight) sx += e.deltaY; else { sx += e.deltaX; sy += e.deltaY; }
+  clamp();
 }, { passive: false });
 
-// ---------- the top panel ----------
-function $(id) { return document.getElementById(id); }
-$("outkey").onclick = (e) => { e.stopPropagation(); mainMenu(e.target, "out"); };
-$("inkey").onclick = (e) => { e.stopPropagation(); mainMenu(e.target, "in"); };
-function mainMenu(b, side) {
-  openMenu(b, [{ t: side === "out" ? "DEFAULT OUTPUT" : "DEFAULT INPUT", hd: 1 }, ...(side === "out" ? outs() : ins()).map((s) => ({
-    t: s.name, cur: (side === "out" ? st.mainOut : st.mainIn) === s.id,
-    f: () => change(() => { if (side === "out") st.mainOut = s.id; else st.mainIn = s.id; }),
-  }))]);
+// a card's list, under its key, as the app's (panel::profile_menu, port_menu)
+let menu = null;
+function closeMenu() { if (menu) { menu.remove(); menu = null; } }
+function openMenu(h, items, cur, pick) {
+  closeMenu();
+  menu = document.createElement("div");
+  menu.className = "menu";
+  menu.innerHTML = `<div class="hd">${h.h === "profile" ? "PROFILE" : "PORT"}</div>` + items.map((t, i) => `<div class="${i === cur ? "cur" : ""}" data-i="${i}">${esc(t)}</div>`).join("");
+  menu.onpointerdown = (e) => {
+    e.stopPropagation();
+    const d = e.target.closest("[data-i]");
+    if (d) { pick(+d.dataset.i); render(); closeMenu(); }
+  };
+  document.body.appendChild(menu);
+  const b = field.getBoundingClientRect();
+  menu.style.left = Math.min(b.left + h.r[0] - sx, innerWidth - 366) + "px";
+  menu.style.top = b.top + h.r[1] - sy + h.r[3] + 4 + "px";
 }
-$("muteout").onclick = () => { change(() => { st.muteOut = !st.muteOut; }); say(st.muteOut ? "Every output muted, whatever its own MUTE says (KDE's Force mute all playback devices)." : "Outputs back to their own MUTE."); };
-$("mutein").onclick = () => { change(() => { st.muteIn = !st.muteIn; }); say(st.muteIn ? "Every microphone muted, whatever its own MUTE says." : "Microphones back to their own MUTE."); };
-$("virtual").onclick = () => { change(() => { st.virtual = !st.virtual; }); say(st.virtual ? "Virtual devices shown." : "Virtual devices (Easy Effects') left out of the strips; the PLAY ON keys still show them, and the rack and ENGINE have them."); };
-$("max").onclick = () => { change(() => { st.max = st.max > 100 ? 100 : 153; }); say(st.max > 100 ? "Faders go to 150% (KDE's Raise maximum volume)." : "Faders stop at 100%."); };
-$("presetkey").onclick = (e) => {
-  e.stopPropagation();
-  if (cue.size) { cue.clear(); render(); say("CUE stopped."); return; }
-  openMenu(e.target, [{ t: "SAVE A NEW PRESET", f: () => {
-      const name = `PRESET ${presets.length + 1}`;
-      presets.push({ name, st: snap() }); preset = name; render(); say(`Saved as ${name}.`);
-    } }, { sep: 1 }, ...(presets.length ? presets.map((p) => ({ t: p.name, cur: p.name === preset,
-      f: () => { undo.push(snap()); redo = []; st = JSON.parse(JSON.stringify(p.st)); preset = p.name; render(); } }))
-    : [{ t: "no presets yet", hd: 1 }])]);
-};
-$("undo").onclick = () => doUndo();
-$("redo").onclick = () => doRedo();
-function doUndo() { if (!undo.length) return; redo.push(snap()); st = undo.pop(); preset = null; render(); say("Undone."); }
-function doRedo() { if (!redo.length) return; undo.push(snap()); st = redo.pop(); preset = null; render(); say("Redone."); }
-document.querySelectorAll("[data-view]").forEach((b) => b.onclick = () => {
-  if (b.dataset.view !== "MIXER") say(`${b.dataset.view}: the same graph, not in this mockup.`);
-});
-document.addEventListener("click", () => closeMenu());
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { if (menuEl) closeMenu(); else if (cue.size || test) { cue.clear(); test = null; render(); say("CUE and TEST stopped."); } }
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? doRedo() : doUndo(); }
-});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenu(); });
+addEventListener("resize", clamp);
 
-render();
-requestAnimationFrame(tick);
+document.fonts.load('bold 9px "Noto Sans"').then(() => { render(); requestAnimationFrame(tick); });
 </script>
 </body>
 </html>

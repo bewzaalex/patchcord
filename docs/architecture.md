@@ -31,9 +31,13 @@ PipeWire ──(pw.rs thread)── Event ──► Graph (graph.rs) ──devic
   It computes the face's `Geometry` (where jacks, keys, knobs and each frame's GRAPH key are)
   for hit-testing.
 - **`ui/app.rs`** is the window: input, the top panel, drop-down lists (PROFILE, PORT),
-  and switching between DESK, RACK and ENGINE.
+  and switching between DESK, MIXER, RACK and ENGINE.
 - **`ui/engine.rs`** is ENGINE: the real graph (nodes, ports, links by driver), the inspector,
   and the diagnostics tables.
+- **`ui/mixer.rs`** is MIXER: a module for each device of the scene (`mixer::role_of` says
+  which groups are strips), drawn as one picture each on the painter's threads, the faders' caps,
+  lit LEDs and numbers as small pictures over it. Its keys go through `Scene` (`reroute` for
+  PLAY ON, `set_default`, `set_volume`, `set_channels`, `toggle_mute`).
 - **`ui/panel.rs`** holds the top panel, the status bar and the amber lists.
 - **`ui/cord.rs`** is the cords' physics (Verlet). **`ui/mesh.rs`** draws cords as GPU
   triangles, and **`ui/paint.rs`** draws them on the CPU for pictures only.

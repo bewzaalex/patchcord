@@ -194,7 +194,7 @@ what goes out, after its volume or gain).
 | | |
 | --- | --- |
 | Drag a device | on the desk it stops at other devices and slides along them, and sticks lightly to their edges and centres, with a guide line (G: place freely; ALIGN is off in the rack). In the rack it takes another slot (into the other rack too), the rest making room; near the window's top or bottom the rack scrolls under it |
-| R, or DESK / RACK | devices on a desk, or screwed into a 19" rack (each keeps its desk place) |
+| R, or DESK / RACK | devices on a desk, or screwed into a 19" rack (each keeps its desk place); M: MIXER |
 | The rack | the window is the rack, always at 100%: its rails at the window's sides, units numbered from the top. Every face is as wide as the rack: vents take what its frames don't need (all of it on a card that is off), and frames that don't fit go on to another unit (2U, 3U…): the lower units fill first, the whole width (under the name and screen too), the unit beside the name takes only what is left over; in each unit the frames go from the left (inputs, then outputs), vents after them. A face is at least as wide as its name and screen, or its widest frame (on a unit of its own): only a narrower window scrolls sideways (Shift+wheel, or drag). When the devices don't fit the window's height in one rack, racks stand side by side, as many as it takes (each still as wide as its widest device needs), the devices going down the first and on into the next, split so the racks come out evenest. ARRANGE puts the devices in the order of the signal flow (sources at the top). It goes no higher than its first device; below, as far as its last device or the lowest cord (further while the window is taller) |
 | Wheel in the rack | scrolls it up and down (the rack doesn't zoom); bars at the window's edges show there is more. While it scrolls, a knob passing under the pointer isn't turned. Carrying a plug near the top or bottom edge scrolls the rack that way, to reach a device out of sight, down to one empty unit past the last device |
 | MORE ▾ | in a narrow window the top panel makes room: the logo goes first, then the keys the screen can't use, then groups fold into MORE from the right. MORE drops them below the panel as they are |
@@ -205,6 +205,23 @@ what goes out, after its volume or gain).
 | Drag empty space, or right/middle drag · wheel | pan · zoom |
 | Ctrl+S or SAVE / Ctrl+O or the LCD | save a new preset / pick one from the list (the LCD shows the one in use) |
 | Esc · Ctrl+Q | close a list, leave CUE mode · quit |
+
+### MIXER: a console
+
+MIXER (M) shows every device and app the rack shows as a module of a mixing console, for setting
+volumes and choosing where things play without cords. Devices come first, then the apps, each
+by name.
+
+| | |
+| --- | --- |
+| Module | a device, or an app with everything it plays and records: its name on top (a card's with its PROFILE key beside it, named by the profile in use), then a strip for each output or input it has, what takes sound in at the left |
+| PLAY ON / RECORD FROM | on an app's strip, a push-push key for each output (input) shown: pushed in, its red LED lit, where the app plays (records). Click to push it in or out: as many in at once as you like. Ctrl+Z undoes it |
+| MAIN OUT / MAIN IN | on an output's (input's) strip: make it the default, where new apps play (record); pushed in, its amber LED lit, on the default |
+| PLAY ALL HERE / RECORD ALL HERE | every app that plays (records) moves here, and it becomes the default |
+| PORT | the card's port list, where it has a choice |
+| CUE · MUTE · SPLIT | listen to it in the default output (CUE mode, as on the rack); mute it; a fader for L and one for R. A key with a LED is pushed in while it is on, and does what it does when you let go over it |
+| Fader | the volume, as the rack's VOLUME knob: drag, or the wheel over it (Shift: finer); double-click: 100%. An app without a volume in PipeWire (a DAW's engine) says so |
+| Drag empty space · wheel | scroll the console |
 
 ### ENGINE: what PipeWire really has
 
@@ -238,6 +255,7 @@ some devices, or at a given size (`PATCHCORD_SCALE` sets the scale, 1.5 by defau
 `patchcord --render out.png engine [select=NODE] [tab=top|issues|objects|metadata|events]
 [itab=info|props|params|timing] [shut=bottom] [legend] [info] [size=WxH]` draws ENGINE the same
 way, after letting PipeWire's profiler run for two seconds; MAC addresses in names are masked.
+`patchcord --render out.png mixer [size=WxH]` draws MIXER, its meters measuring for a second.
 `patchcord --record DIR` plays a short scripted session on the current graph and saves it as
 frames for the README's animation; neither changes anything in PipeWire. `PATCHCORD_DEBUG=1`
 prints which GPU it uses and PipeWire's errors that are otherwise expected noise;
