@@ -210,21 +210,18 @@ what goes out, after its volume or gain).
 
 MIXER (M) shows what the rack shows as a mixing console, for setting volumes and choosing where
 things play without cords. Left to right, as on a hardware console: INPUTS (the microphones),
-APPS (each app's INPUT and OUTPUT), OUTPUTS (the default one too), and MASTER,
-the default output's volume and MUTE as a control of its own, always at the window's right edge
-(the rest scrolls under it); each group by name, A to Z (the defaults too: nothing jumps when
-they change).
+APPS (each app's INPUT and OUTPUT) and OUTPUTS (the default one too, MAIN lit on it); each
+group by name, A to Z (the defaults too: nothing jumps when they change).
 
 | | |
 | --- | --- |
 | Module | one strip in a frame of its kind's colour: a device's input or output, or an app's. Its band says whose it is and which frame, with GRAPH (#id, opens ENGINE). The keys are in titled groups: PLAY ON / RECORD FROM on an app, SETUP on a device; then VOLUME (GAIN). All modules are as tall as the tallest; in a low window the faders become the rack's knobs. A card that is off has a grey band saying OFF and its PROFILE |
 | PLAY ON / RECORD FROM | on an app's strip, a key for each output (input) shown, its red LED lit where the app plays (records). Click to link it there or not: as many at once as you like. Ctrl+Z undoes it |
-| MAIN | on an output's (input's) strip, lit amber on the default: make it the default, where new apps play (record); the default output is MASTER |
+| MAIN | on an output's (input's) strip, lit amber on the default: make it the default, where new apps play (record) |
 | ALL HERE | every app that plays (records) moves here, and it becomes the default |
 | PROFILE · PORT | small amber screens with the card's profile and port: click for the list |
 | CUE · MUTE · SPLIT | listen to it in the default output (CUE mode, as on the rack); mute it; a fader for L and one for R. Clear keys that glow in their colour while on. No key stays pushed in: each goes down while you hold it and does what it does when you let go over it. Each key has its own place; a key that would do nothing isn't there |
 | VOLUME / GAIN fader | the volume (GAIN on what comes in), as the rack's knob, on its cap (0 to 150%, red past 100%): drag, or the wheel over it (Shift: finer); double-click: 100%. Beside it the meter, after the volume. An app without a volume in PipeWire (a DAW's engine) says so. In a low window, the rack's VOLUME and BAL knobs instead |
-| MASTER | the default output's volume and MUTE, whichever device it is; the device itself stays among the OUTPUTS with its keys |
 | Drag empty space · wheel · scroll bars | scroll the console; the bars show where it goes on beyond the window, and their thumbs can be dragged |
 
 ### ENGINE: what PipeWire really has

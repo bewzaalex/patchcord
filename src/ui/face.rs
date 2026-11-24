@@ -356,12 +356,6 @@ pub fn paint(f: Finish, w: f64, h: f64, r: f64) -> (Skin, &'static str) {
     (Skin { w, h, r, base: hex(f.base), paint: f.paint, noise: f.noise as f32 }, f.print)
 }
 
-/// MIXER's MASTER: a paint of its own, no device's (ADR 0015): dark steel, the painted metal's
-/// texture on it.
-pub fn master_paint(w: f64, h: f64, r: f64) -> (Skin, &'static str) {
-    (Skin { w, h, r, base: hex("#34414f"), paint: true, noise: 0.0 }, "#e8edf2")
-}
-
 /// How many jacks a mult shows for `count` cords: one each, and a free one.
 pub fn slots(count: usize) -> usize {
     count + 1

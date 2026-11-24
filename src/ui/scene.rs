@@ -3548,14 +3548,14 @@ mod tests {
         for id in [10u32, 11, 12, 13, 14] {
             ev.insert(ev.len() - 1, Event::Mix { id, volumes: vec![0.8, 0.8], mute: false });
         }
-        // the speakers are the default output: MASTER's
+        // the speakers are the default output
         ev.insert(ev.len() - 1, Event::Setting { key: "default.audio.sink".into(), value: r#"{"name":"Speakers"}"#.into() });
         let mut s = Scene::new();
         s.apply(ev);
         s
     }
 
-    /// MIXER: the groups in a console's order (inputs, apps, outputs, master), a module a strip;
+    /// MIXER: the groups in a console's order (inputs, apps, outputs), a module a strip;
     /// an app's PLAY ON keys are its links.
     #[test]
     fn the_mixer_is_a_console_of_strips_and_its_keys_are_the_links() {
@@ -3566,8 +3566,7 @@ mod tests {
         let names: Vec<(Section, &str)> = mods.iter().map(|m| (m.section, m.name.as_str())).collect();
         assert!(mods.windows(2).all(|w| w[0].section <= w[1].section), "{names:?}");
         assert!(names.contains(&(Section::Inputs, "MICROPHONE")) && names.contains(&(Section::Outputs, "SPEAKERS")) && names.contains(&(Section::Apps, "MUSIC PLAYER")), "{names:?}");
-        // the default output stays among the outputs, and MASTER is a control of its own for it
-        assert_eq!(names.last(), Some(&(Section::Master, "SPEAKERS")), "{names:?}");
+        // the default output among the outputs, MAIN lit on it
         assert!(mods.iter().find(|m| m.section == Section::Outputs && m.name == "SPEAKERS").is_some_and(|m| m.strips[0].main));
         assert!(mods.iter().all(|m| m.strips.len() <= 1));
         let strip = |dev: &str| mods.iter().find(|m| m.name == dev).and_then(|m| m.strips.first()).expect(dev);
@@ -3575,7 +3574,7 @@ mod tests {
         let music = strip("MUSIC PLAYER");
         assert_eq!(music.targets.iter().map(|t| (t.label.as_str(), t.lit)).collect::<Vec<_>>(), vec![("SPEAKERS", true)]);
         assert!(strip("BROWSER").targets.iter().all(|t| !t.lit));
-        // MASTER isn't one more place to play on
+        // one place to play on: the one output
         assert_eq!(strip("BROWSER").targets.len(), 1);
         // a recorder's keys are the sources
         assert_eq!(strip("RECORDER").targets.iter().map(|t| t.label.as_str()).collect::<Vec<_>>(), vec!["MICROPHONE"]);

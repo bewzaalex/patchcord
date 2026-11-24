@@ -22,17 +22,14 @@ put a headset's mic and headphones together and the master anywhere). Left to ri
 - **INPUTS**: every source (a microphone, a virtual source), A to Z like the rest: the default
   input isn't put first, so nothing jumps when the default changes.
 - **APPS**: each program's INPUT and OUTPUT (an INPUT first).
-- **OUTPUTS**: every sink, the default one too (its MASTER key in), and the cards whose profile is
+- **OUTPUTS**: every sink, the default one too (its MAIN lit), and the cards whose profile is
   Off, all A to Z: a card doesn't jump when it goes on or off.
-- **MASTER**: a control of its own for the default output, always at the window's right edge
-  (2026-11-24; it used to be the default output's own module, moved there, so a device jumped
-  when it became the default). It shows whose it is (its band) and has the default output's ALL
-  HERE, its volume and MUTE (and SPLIT): no MAIN (it is it), no CUE (it is what CUE plays in),
-  nothing of the device's setup, which stays on the device among the outputs.
-  Its own paint, no device's: dark steel. It stands 3 from the window's right edge. While the
-  console is wider than the window, the rest scrolls under it: a frame of dark round it (3 at
-  either side) and a shadow at its left; while it all fits, the room
-  between the outputs and MASTER is empty.
+- **No MASTER** (2026-11-25). There was one: a control of its own for the default output, in dark
+  steel, held at the window's right edge, the rest scrolling under it (before that, the default
+  output's own module moved there, so a device jumped when it became the default). It only
+  repeated the default output's module, which is among the OUTPUTS with MAIN lit, and it cost a
+  pinned module, a backdrop, a shadow and presses kept from going through it. Commit 7b3f74a
+  has it, should it come back.
 - Within a group, by name, A to Z: static, whatever plays.
 - Between two groups a wider gap (22) with a groove down it; between two modules 3. Each group's
   name over its first module.
@@ -92,8 +89,7 @@ on a node whose ports go only one way.
 
 **A device's strip**, under SETUP
 - **MAIN**: the default output (input) (`default.configured.audio.*`), lit amber on the default;
-  the default output is what MASTER controls. (It was MAIN OUT, then MASTER and MAIN IN, which
-  mixed up with the MASTER module, 2026-11-25.)
+  (It was MAIN OUT, then MASTER and MAIN IN, which mixed up with the MASTER module, 2026-11-25.)
 - **ALL HERE**: every app that plays (records) somewhere moves here, and this becomes the
   default. (It was PLAY ALL HERE / RECORD ALL HERE.)
 - **PROFILE**: the card's profile list, once a card. **PORT**: its port list, when it has more
