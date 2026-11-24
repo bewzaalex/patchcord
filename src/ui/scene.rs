@@ -342,16 +342,19 @@ fn bal_text(volume: f64, balance: f64) -> String {
 /// What a meter measures for: the frames whose meters show it (`groups`). One measuring
 /// what a recording app takes in has its channels mapped to the app's (`map`).
 ///
-/// A meter shows the sound as it is, whatever a volume or gain does to it, but nothing when
-/// muted: `soft_of`, the node whose software volume the level is divided by (it is measured after
-/// it: what an app plays, a microphone after its gain); `mute_of`, the frame whose mute silences
-/// it (a monitor carries the sound even when muted).
+/// A meter shows the sound after the frame's volume or gain, everywhere (turned down, it falls;
+/// muted, nothing): `vol_of`, the frame whose volume is put on a level measured before it (an
+/// output's monitor, what comes into an app that records); `mute_of`, the frame whose mute
+/// silences it (a monitor carries the sound even when muted).
 #[derive(Clone, Debug, PartialEq)]
 struct MeterFor {
     dev: String,
     /// the frames whose meters show it
     groups: Vec<usize>,
-    soft_of: Option<u32>,
+    /// measured before this group's volume (an output's monitor, what comes into an app that
+    /// records): its volume is put on what is shown, so the meter falls with the fader as
+    /// everywhere else (measured after it, an app's output, a microphone: shown as it is)
+    vol_of: Option<usize>,
     mute_of: Option<usize>,
     map: Vec<usize>,
 }
@@ -1048,13 +1051,14 @@ impl Scene {
                     let channels = g.ports.iter().map(|p| if p.channel.is_empty() { "MONO".to_owned() } else { p.channel.clone() }).collect();
                     let map = (0..g.ports.len()).collect();
                     let groups = std::iter::once(gi).chain(output).collect();
-                    // measured after its own volume (an app's output, a microphone): undone
-                    let soft_of = if output.is_some() { None } else { g.mix.as_ref().map(|m| m.node) };
+                    // an output's monitor is before the output's volume: that volume put on it; anything
+                    // else measured after its own (an app's output, a microphone)
+                    let vol_of = output;
                     let mute_of = output.or(g.mix.is_some().then_some(gi));
                     if muted(mute_of) {
                         continue;
                     }
-                    want.insert(ports, (MeterFor { dev: d.dev.key.clone(), groups, soft_of, mute_of, map }, targets, channels));
+                    want.insert(ports, (MeterFor { dev: d.dev.key.clone(), groups, vol_of, mute_of, map }, targets, channels));
                     continue;
                 }
                 // what comes in: a device's output (PLAYBACK) shows its monitor's level (above)
@@ -1072,7 +1076,7 @@ impl Scene {
                     let key: Vec<u32> = mons.iter().map(|(p, _)| *p).collect();
                     let targets = mons.iter().map(|(p, _)| (node, *p)).collect();
                     let channels = mons.iter().enumerate().map(|(i, (_, c))| if c.is_empty() { format!("AUX{i}") } else { c.clone() }).collect();
-                    want.insert(key, (MeterFor { dev: d.dev.key.clone(), groups: vec![gi], soft_of: None, mute_of: Some(gi), map }, targets, channels));
+                    want.insert(key, (MeterFor { dev: d.dev.key.clone(), groups: vec![gi], vol_of: Some(gi), mute_of: Some(gi), map }, targets, channels));
                     continue;
                 }
                 // anything else: every port linked to each of its channels
@@ -1096,7 +1100,7 @@ impl Scene {
                 let named: Vec<String> = targets.iter().map(|(_, p)| self.graph.props_of(*p).and_then(|q| q.get("audio.channel")).cloned().unwrap_or_default()).collect();
                 let unique = named.iter().all(|c| !c.is_empty()) && named.iter().collect::<std::collections::HashSet<_>>().len() == named.len();
                 let channels = if unique { named } else { (0..targets.len()).map(|i| format!("AUX{i}")).collect() };
-                want.insert(key, (MeterFor { dev: d.dev.key.clone(), groups: vec![gi], soft_of: None, mute_of: gain.then_some(gi), map }, targets, channels));
+                want.insert(key, (MeterFor { dev: d.dev.key.clone(), groups: vec![gi], vol_of: g.mix.is_some().then_some(gi), mute_of: gain.then_some(gi), map }, targets, channels));
             }
         }
         let gone: Vec<Vec<u32>> = self.meters.keys().filter(|k| !want.contains_key(*k)).cloned().collect();
@@ -1309,12 +1313,15 @@ impl Scene {
                 let c = m.map.get(i).copied().unwrap_or(i).min(1);
                 ch[c] = ch[c].max(*v);
             }
-            // the sound as it is: the software volume it was measured after, undone (the knob's
-            // zero is -120 dB for this; a true 0 set elsewhere leaves nothing to show)
-            if let Some(soft) = m.soft_of.and_then(|n| self.graph.soft(n)) {
+            // what is shown is after the volume, everywhere: measured before it, the volume (as set
+            // here just now, else PipeWire's) is put on it
+            if let Some(gi) = m.vol_of
+                && let Some(d) = index.get(m.dev.as_str()).map(|&di| &self.devs[di])
+                && let (Some((vol, bal, _)), Some(mx)) = (d.mix(gi), d.dev.groups.get(gi).and_then(|g| g.mix.as_ref()))
+            {
+                let lin = mx.volumes_for(vol, bal);
                 for (c, v) in ch.iter_mut().enumerate() {
-                    let s = soft.get(c).or(soft.first()).copied().unwrap_or(1.0);
-                    *v = if s > 0.0 { (*v / s).min(1.0) } else { 0.0 };
+                    *v *= lin.get(c).or(lin.first()).copied().unwrap_or(1.0);
                 }
             }
             // muted: silent
@@ -3536,23 +3543,25 @@ mod tests {
     fn mixer_scene() -> Scene {
         let mut ev = demo_events();
         for id in [10u32, 11, 12, 13, 14] {
-            ev.insert(ev.len() - 1, Event::Mix { id, volumes: vec![0.8, 0.8], mute: false, soft: None });
+            ev.insert(ev.len() - 1, Event::Mix { id, volumes: vec![0.8, 0.8], mute: false });
         }
         let mut s = Scene::new();
         s.apply(ev);
         s
     }
 
-    /// MIXER: devices first, then apps; a module a device; an app's PLAY ON keys are its links.
+    /// MIXER: the groups in a console's order (inputs, apps, outputs, master), a module a strip;
+    /// an app's PLAY ON keys are its links.
     #[test]
-    fn the_mixer_is_a_module_a_device_and_its_keys_are_the_links() {
+    fn the_mixer_is_a_console_of_strips_and_its_keys_are_the_links() {
+        use super::super::mixer::{Role, Section};
         let s = mixer_scene();
         let mut m = super::super::mixer::Mixer::new(true);
         let mods = m.modules(&s);
-        let names: Vec<&str> = mods.iter().map(|m| m.name.as_str()).collect();
-        let first_app = mods.iter().position(|m| m.app).expect("apps");
-        assert!(mods[..first_app].iter().all(|m| !m.app) && mods[first_app..].iter().all(|m| m.app), "{names:?}");
-        assert!(names.contains(&"SPEAKERS") && names.contains(&"MUSIC PLAYER") && names.contains(&"MEETING"), "{names:?}");
+        let names: Vec<(Section, &str)> = mods.iter().map(|m| (m.section, m.name.as_str())).collect();
+        assert!(mods.windows(2).all(|w| w[0].section <= w[1].section), "{names:?}");
+        assert!(names.contains(&(Section::Inputs, "MICROPHONE")) && names.contains(&(Section::Outputs, "SPEAKERS")) && names.contains(&(Section::Apps, "MUSIC PLAYER")), "{names:?}");
+        assert!(mods.iter().all(|m| m.strips.len() <= 1));
         let strip = |dev: &str| mods.iter().find(|m| m.name == dev).and_then(|m| m.strips.first()).expect(dev);
         // the music player plays into the speakers: its key to them is lit; the browser's isn't
         let music = strip("MUSIC PLAYER");
@@ -3560,10 +3569,9 @@ mod tests {
         assert!(strip("BROWSER").targets.iter().all(|t| !t.lit));
         // a recorder's keys are the sources
         assert_eq!(strip("RECORDER").targets.iter().map(|t| t.label.as_str()).collect::<Vec<_>>(), vec!["MICROPHONE"]);
-        // one app on several streams is one module, a strip each, what records at the left
-        let meeting = mods.iter().find(|m| m.name == "MEETING").expect("meeting");
-        assert_eq!(meeting.strips.len(), 4);
-        assert_eq!(meeting.strips[0].role, super::super::mixer::Role::Rec);
+        // one app on several streams: a module each, side by side, what records first
+        let meeting: Vec<Role> = mods.iter().filter(|m| m.name == "MEETING").map(|m| m.strips[0].role).collect();
+        assert_eq!(meeting, vec![Role::Rec, Role::Play, Role::Play, Role::Play]);
     }
 
     /// PLAY ON's links: L to L and R to R, and only there takes the old ones away, as one step.

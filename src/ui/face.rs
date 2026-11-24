@@ -203,7 +203,7 @@ pub enum BalKnob {
     Out,
 }
 
-/// The knob's angle for a volume: from -135° (silence) to 135° (153%).
+/// The knob's angle for a volume: from -135° (silence) to 135° (150%).
 fn vol_angle(v: f64) -> f64 {
     -135.0 + 270.0 * v.clamp(0.0, VOL_MAX) / VOL_MAX
 }
@@ -929,7 +929,7 @@ fn mix_panel(m: &MixGeo, print: &str, band: bool) -> String {
         SECTION.text(m.x + m.w / 2.0, 31.0, ink, "middle", &if m.bal.is_some() { format!("{name} · BAL") } else { name.to_owned() }),
         x = m.x
     );
-    // VOLUME: silence to 153%, a long tick at 100% and red past it (louder than the app plays it:
+    // VOLUME: silence to 150%, a long tick at 100% and red past it (louder than the app plays it:
     // it can clip)
     let (cx, cy) = m.knob;
     let _ = write!(s, r##"<path d="M{} A19.5,19.5 0 0 1 {}" fill="none" stroke="#d2402f" stroke-width="2.2" opacity=".85"/>"##, polar(cx, cy, vol_angle(1.0), 19.5), polar(cx, cy, vol_angle(VOL_MAX), 19.5));

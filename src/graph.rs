@@ -128,8 +128,9 @@ pub struct Device {
     pub card: Option<Card>,
 }
 
-/// The highest volume a knob goes to: 153% (+11 dB), as in pavucontrol.
-pub const VOL_MAX: f64 = 1.53;
+/// The highest volume a knob or fader goes to: 150% (about +10.6 dB), as KDE's raised maximum; a
+/// round number on the scale people see (pavucontrol's +11 dB is 153%).
+pub const VOL_MAX: f64 = 1.5;
 
 /// The knob's zero: -120 dB, not silence, so a meter can still show what plays at it (the knob
 /// reads it, or less, as 0).
@@ -288,8 +289,6 @@ pub struct Graph {
     profiles: HashMap<u32, (Vec<Profile>, Option<u32>)>,
     /// each app stream's channel volumes and mute, by node
     mix: HashMap<u32, (Vec<f32>, bool)>,
-    /// the software part of each node's volumes, when it tells
-    soft: HashMap<u32, Vec<f32>>,
     /// each card's ports, and the ones in use (with the card's real volumes), by device
     routes: HashMap<u32, (Vec<Route>, Vec<Route>)>,
     pub synced: bool,
@@ -334,18 +333,13 @@ impl Graph {
                 let new = (all.clone(), active.clone());
                 self.routes.insert(*id, new.clone()) != Some(new)
             }
-            Event::Mix { id, volumes, mute, soft } => {
-                match soft {
-                    Some(s) => self.soft.insert(*id, s.clone()),
-                    None => self.soft.remove(id),
-                };
+            Event::Mix { id, volumes, mute } => {
                 let new = (volumes.clone(), *mute);
                 self.mix.insert(*id, new.clone()) != Some(new)
             }
             Event::Removed(id) => {
                 self.born.remove(id);
                 self.mix.remove(id);
-                self.soft.remove(id);
                 self.routes.remove(id);
                 self.profiles.remove(id);
                 self.info.remove(id);
@@ -460,11 +454,7 @@ impl Graph {
         self.of(Kind::Link).filter(|(_, p)| p.contains_key("link.output.port") && p.contains_key("link.input.port")).count()
     }
 
-    /// The part of a node's volumes applied in software (a stream's are all software; a card's may
-    /// be partly in its hardware), as PipeWire last told.
-    pub fn soft(&self, node: u32) -> Option<&Vec<f32>> {
-        self.soft.get(&node)
-    }
+
 
     /// A node's monitor ports (a copy of what comes in, before its volume), with their channels.
     pub fn monitor_ports(&self, node: u32) -> Vec<(u32, String)> {
@@ -1141,17 +1131,13 @@ mod tests {
     }
 
     #[test]
-    fn a_nodes_monitor_ports_and_soft_volumes_are_known() {
+    fn a_nodes_monitor_ports_are_known() {
         let mut g = Graph::default();
         let props = |kv: &[(&str, &str)]| kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Props>();
         g.apply(&Event::Added { id: 10, kind: Kind::Node, props: props(&[("media.class", "Stream/Input/Audio")]) });
         g.apply(&Event::Added { id: 12, kind: Kind::Port, props: props(&[("node.id", "10"), ("port.direction", "out"), ("port.monitor", "true"), ("audio.channel", "MONO")]) });
         g.apply(&Event::Added { id: 11, kind: Kind::Port, props: props(&[("node.id", "10"), ("port.direction", "in"), ("audio.channel", "MONO")]) });
         assert_eq!(g.monitor_ports(10), vec![(12, "MONO".to_owned())]);
-        g.apply(&Event::Mix { id: 10, volumes: vec![0.5], mute: false, soft: Some(vec![0.25]) });
-        assert_eq!(g.soft(10), Some(&vec![0.25]));
-        g.apply(&Event::Removed(10));
-        assert_eq!(g.soft(10), None);
     }
 
     #[test]
@@ -1181,7 +1167,7 @@ mod tests {
             g.apply(&Event::Info { id, props: p, state: Some("running") });
             let name = if dir == "in" { "input_MONO" } else { "output_MONO" };
             g.apply(&Event::Added { id: port_id, kind: Kind::Port, props: props(&[("node.id", &id.to_string()), ("port.direction", dir), ("port.name", name), ("format.dsp", "32 bit float mono audio"), ("audio.channel", "MONO")]) });
-            g.apply(&Event::Mix { id, volumes: vec![1.0], mute: false, soft: None });
+            g.apply(&Event::Mix { id, volumes: vec![1.0], mute: false });
         }
         // the recording stream's monitor: a copy of what it records
         g.apply(&Event::Added { id: 199, kind: Kind::Port, props: props(&[("node.id", "10"), ("port.direction", "out"), ("port.name", "monitor_MONO"), ("port.monitor", "true"), ("format.dsp", "32 bit float mono audio"), ("audio.channel", "MONO")]) });
@@ -1226,7 +1212,7 @@ mod tests {
             g.apply(&Event::Info { id, props: p, state: Some("running") });
             let name = if dir == "in" { "input_MONO" } else { "output_MONO" };
             g.apply(&Event::Added { id: 100 + id, kind: Kind::Port, props: props(&[("node.id", &id.to_string()), ("port.direction", dir), ("port.name", name), ("format.dsp", "32 bit float mono audio"), ("audio.channel", "MONO")]) });
-            g.apply(&Event::Mix { id, volumes: vec![1.0], mute: false, soft: None });
+            g.apply(&Event::Mix { id, volumes: vec![1.0], mute: false });
         }
         let d = &g.devices()[0];
         let ((_, h), at) = crate::ui::face_layout(d);
@@ -1265,8 +1251,8 @@ mod tests {
         port(&mut g, 12, 10, "out", "output_FR", "FR");
         port(&mut g, 21, 20, "in", "input_FL", "FL");
         port(&mut g, 22, 20, "in", "input_FR", "FR");
-        g.apply(&Event::Mix { id: 10, volumes: vec![1.0, 1.0], mute: false, soft: None });
-        g.apply(&Event::Mix { id: 20, volumes: vec![0.343, 0.343], mute: true, soft: None });
+        g.apply(&Event::Mix { id: 10, volumes: vec![1.0, 1.0], mute: false });
+        g.apply(&Event::Mix { id: 20, volumes: vec![0.343, 0.343], mute: true });
         let devs = g.devices();
         assert_eq!(devs.len(), 1, "{:?}", devs.iter().map(|d| &d.key).collect::<Vec<_>>());
         let d = &devs[0];
@@ -1319,7 +1305,7 @@ mod tests {
         g.client(50, &[("application.name", "easyeffects"), ("application.process.binary", "easyeffects"), ("application.process.id", "7")]);
         g.node(141, 50, &[("media.class", "Audio/Sink"), ("node.name", "easyeffects_sink"), ("node.description", "Easy Effects Sink")], &[("in", false), ("out", true)]);
         g.node(88, 50, &[("media.class", "Audio/Source/Virtual"), ("node.name", "easyeffects_source"), ("node.description", "Easy Effects Source")], &[("in", false), ("out", true)]);
-        g.0.apply(&Event::Mix { id: 88, volumes: vec![1.0, 1.0], mute: false, soft: None });
+        g.0.apply(&Event::Mix { id: 88, volumes: vec![1.0, 1.0], mute: false });
         g.client(60, &[("application.name", "Bitwig Studio"), ("application.process.binary", "bitwig"), ("application.process.id", "8")]);
         g.node(77, 60, &[("media.class", "Audio/Duplex"), ("node.name", "Bitwig Studio")], &[("in", false), ("out", false)]);
         g.client(70, &[("application.name", "Teams"), ("application.process.binary", "teams"), ("application.process.id", "9")]);

@@ -106,18 +106,44 @@ pub struct Strip {
     pub w: f64,
 }
 
+/// The console's groups, left to right, as on a hardware one: the microphones, the apps, the
+/// other outputs, and the master (the default output) at the right.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
+pub enum Section {
+    Inputs,
+    Apps,
+    Outputs,
+    Master,
+}
+
+impl Section {
+    fn name(self) -> &'static str {
+        match self {
+            Section::Inputs => "INPUTS",
+            Section::Apps => "APPS",
+            Section::Outputs => "OUTPUTS",
+            Section::Master => "MASTER",
+        }
+    }
+}
+
+/// A module of the console: one strip (a device's input or output, an app's INPUT or OUTPUT),
+/// under its device's name; or a card that is off, its name and PROFILE only.
 #[derive(Clone, Debug)]
 pub struct Module {
+    /// its picture's key: the device's, and the group's
     pub key: String,
     pub di: usize,
     pub name: String,
     pub finish: Finish,
-    /// a card's profile in use (its PROFILE key), and whether it is off
+    pub section: Section,
+    /// the card's profile in use, on its PROFILE key: on the card's output (else its input)
     pub profile: Option<String>,
-    pub app: bool,
     pub strips: Vec<Strip>,
     pub x: f64,
     pub w: f64,
+    /// MASTER held at the window's right edge, the console going on under it
+    pub pinned: bool,
 }
 
 /// A sink (source) an app's key can go to: its role, where it is, its label, its cords' colour.
@@ -170,27 +196,75 @@ enum Drag {
 // the console's measures, in logical pixels
 const LEFT: f64 = 14.0;
 const TOP: f64 = 26.0;
-/// one gap between every two modules, devices and apps alike
+const BOTTOM: f64 = 14.0;
+/// the gap between two modules of a group
 const GAP: f64 = 6.0;
-/// a module's heading: its name; a card's name in the left half, its PROFILE key in the right
+/// between two groups: wider, a groove down its middle
+const SEP: f64 = 22.0;
+/// a module's heading: its name
 const HEAD: f64 = 34.0;
-/// every strip is as wide: a module is one strip wide, two, three…
+/// a module is one strip, of one width
 const STRIP_W: f64 = 112.0;
 const BAND: f64 = 24.0;
+/// the first group of keys (OUTPUT, INPUT, PLAY ON, RECORD FROM): its title, then its keys in rows
 const ROUTE_Y: f64 = 31.0;
-const KEYS_Y: f64 = 188.0;
-const CHAN_Y: f64 = 219.0;
-const FBOX_Y: f64 = 250.0;
-const SLOT_Y: f64 = FBOX_Y + 12.0;
+const KEY_H: f64 = 17.0;
+fn row(i: usize) -> f64 {
+    ROUTE_Y + 17.0 + i as f64 * 23.0
+}
 const TRAVEL: f64 = 160.0;
-const READ_Y: f64 = 440.0;
-const STRIP_H: f64 = 462.0;
-const MOD_H: f64 = HEAD + STRIP_H;
+/// The window's height, for the modules' (each new one draws every module again): the last height
+/// once the window has kept still this long.
+const ROWS_DELAY: Duration = Duration::from_millis(150);
 const RADIUS: f64 = 8.0;
-/// a fader's cap
-const CAP: (f64, f64) = (26.0, 32.0);
-/// the lit LEDs' column: its height, a LED's
-const LEDS_H: f64 = 172.0;
+
+/// Where the lower part of a strip is (CHANNEL's keys, the fader block), from the strip's top:
+/// the modules are as tall as the window lets them (no shorter than these), what they gain the
+/// room under the first keys.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Rows {
+    keys_y: f64,
+    chan_y: f64,
+    strip_h: f64,
+}
+
+impl Rows {
+    const MIN: Rows = Rows { keys_y: 200.0, chan_y: 231.0, strip_h: 474.0 };
+
+    /// For a field `h` tall.
+    fn fit(h: f64) -> Rows {
+        let m = Rows::MIN;
+        let extra = (h - TOP - BOTTOM - HEAD - m.strip_h).floor().max(0.0);
+        Rows { keys_y: m.keys_y + extra, chan_y: m.chan_y + extra, strip_h: m.strip_h + extra }
+    }
+
+    fn mod_h(&self) -> f64 {
+        HEAD + self.strip_h
+    }
+
+    /// The fader block, under SPLIT (clear of its key's hole): where the caps go by (`cap_y` from
+    /// it; the slot from 6 under it), and the line of its name (VOLUME, GAIN) under it all.
+    fn fader_y(&self) -> f64 {
+        self.chan_y + 44.0
+    }
+
+    fn level_y(&self) -> f64 {
+        self.chan_y + 230.0
+    }
+}
+
+impl Default for Rows {
+    fn default() -> Self {
+        Rows::MIN
+    }
+}
+/// a fader's cap, its volume on it (and its shadow, a little lower)
+const CAP: (f64, f64) = (34.0, 22.0);
+/// the lit LEDs' column: as tall as the fader's slot, level with it; a LED's
+const LEDS_H: f64 = TRAVEL;
+/// the meter's LEDs: how many, how wide (thin, split or not)
+const LEDS: usize = 12;
+const LED_W: f64 = 4.0;
 
 /// Where the cap's middle is for a volume (1 is 100%), from the slot's top.
 fn cap_y(v: f64) -> f64 {
@@ -208,16 +282,24 @@ fn channels((v, b): (f64, f64)) -> [f64; 2] {
     [if b > 0.0 { v * (1.0 - b) } else { v }, if b < 0.0 { v * (1.0 + b) } else { v }]
 }
 
-/// Where a strip's scale, slots and meter go, from its left. Two faders (SPLIT) fit the strip as
-/// it is, a little closer together.
-fn fader_x(s: &Strip) -> (f64, Vec<f64>, f64) {
-    let n = if s.chans { 2 } else { 1 };
-    let gap = if n == 2 { 4.0 } else { 5.0 };
-    let meter = s.cols as f64 * 8.0 + 4.0;
-    let content = 20.0 + gap + n as f64 * 26.0 + (n - 1) as f64 * gap + gap + meter;
-    let x0 = ((s.w - content) / 2.0).max(4.0);
-    let slots = (0..n).map(|i| x0 + 20.0 + gap + i as f64 * (26.0 + gap)).collect();
-    (x0, slots, x0 + content - meter)
+/// The middles of a strip's slots, from its left: one, or L and R (SPLIT).
+fn slots_x(s: &Strip) -> Vec<f64> {
+    if s.chans { vec![38.0, 74.0] } else { vec![50.0] }
+}
+
+/// The meter's left, from the strip's.
+fn meter_x(s: &Strip) -> f64 {
+    if s.chans { 93.0 } else { 84.0 }
+}
+
+/// How many of the meter's LEDs a level (0…10, the rack's) lights.
+fn lit(level: f32) -> u8 {
+    (level as f64 / 10.0 * LEDS as f64).round().clamp(0.0, LEDS as f64) as u8
+}
+
+/// The role of the strip at `at`.
+fn at_role(m: &Mixer, at: (usize, usize)) -> Option<Role> {
+    m.strip(at).map(|s| s.role)
 }
 
 /// The strip a key with a LED is on (those go down while held and act when let go): PLAY ON and
@@ -229,9 +311,20 @@ fn key_of(h: &Hit) -> Option<(usize, usize)> {
     }
 }
 
-/// A card's PROFILE key in its heading (the right half of a module `w` wide).
+/// A device's second group of keys, DEVICE SETUP (its card's PROFILE, its PORT), under the first:
+/// where its title is, from the strip's top.
+fn setup_y() -> f64 {
+    row(2) + 4.0
+}
+
+/// The keys of DEVICE SETUP in rows under its title.
+fn setup_row(i: usize) -> f64 {
+    setup_y() + 17.0 + i as f64 * 23.0
+}
+
+/// A card's PROFILE key, first in DEVICE SETUP, in a module `w` wide.
 fn profile_key(w: f64) -> [f64; 4] {
-    [w / 2.0 + 2.0, (HEAD - 21.0) / 2.0 + 2.0, w / 2.0 - 10.0, 21.0]
+    [12.0, HEAD + setup_row(0), w - 24.0, KEY_H]
 }
 
 /// `t` cut to `w` wide in a style, with an ellipsis.
@@ -264,13 +357,21 @@ pub struct Mixer {
     /// stereo strips showing a fader for each channel: device key, group
     chans: HashSet<(String, usize)>,
     modules: Vec<Module>,
+    /// the grooves between the groups: their x, and whether MASTER's
+    grooves: Vec<(f64, bool)>,
+    rows: Rows,
+    /// a new height the window asks for, and since when (see `ROWS_DELAY`)
+    rows_want: Option<(Rows, Instant)>,
     hits: Vec<(Hit, [f64; 4])>,
     pics: HashMap<String, ModPic>,
     inbox: painter::Inbox,
     /// the cap, the lit LEDs (by columns and how many lit), the numbers, the sections' names
-    cap: Option<(u64, Layer)>,
+    /// the faders' caps, by the volume on them (%)
+    caps: HashMap<(u32, u64), Layer>,
     leds: HashMap<(usize, u8, u8, u64), Layer>,
-    texts: HashMap<(String, u64), Layer>,
+    texts: HashMap<(String, &'static str, u64), Layer>,
+    /// a groove, MASTER's backdrop, the shadow it casts on what goes under it
+    deco: Option<(u64, [Layer; 3])>,
     drag: Option<Drag>,
     last_click: Option<(Instant, Hit)>,
 }
@@ -280,14 +381,34 @@ impl Mixer {
         Mixer { on, ..Mixer::default() }
     }
 
-    /// The modules for what the scene shows now, and where everything is on the console.
-    fn layout(&mut self, scene: &Scene, pins: &[String]) {
+    /// The modules for what the scene shows now, and where everything is on the console (a field
+    /// `size` pixels at `dpi`: MASTER held at its right edge, the rows as tall as it lets them).
+    fn layout(&mut self, scene: &Scene, pins: &[String], size: (u32, u32), dpi: f64) {
+        let (fw, top, bottom) = Mixer::field(size, dpi);
+        // a new height (every module drawn again) once the window keeps still (`ROWS_DELAY`), as
+        // the rack takes a new width; at once the first time
+        let want = Rows::fit(bottom - top);
+        if want != self.rows {
+            match self.rows_want {
+                Some((w, at)) if w == want && at.elapsed() >= ROWS_DELAY => {
+                    self.rows = want;
+                    self.rows_want = None;
+                }
+                Some((w, _)) if w == want => {}
+                _ if self.modules.is_empty() => self.rows = want,
+                _ => self.rows_want = Some((want, Instant::now())),
+            }
+        } else {
+            self.rows_want = None;
+        }
+        let rows = self.rows;
         let out_default = scene.default_name(true);
         let in_default = scene.default_name(false);
-        let mut mods: Vec<Module> = Vec::new();
+        // (section, first, name, its order within the device) for the order
+        let mut mods: Vec<(Section, u8, usize, Module)> = Vec::new();
         for (di, d) in scene.devs.iter().enumerate() {
             let dev = &d.dev;
-            let mut strips: Vec<Strip> = (0..dev.groups.len())
+            let strips: Vec<Strip> = (0..dev.groups.len())
                 .filter_map(|gi| {
                     let role = role_of(dev, gi)?;
                     let g = &dev.groups[gi];
@@ -308,27 +429,44 @@ impl Mixer {
                         Some(Drag::Key(h)) if key_of(h) == Some((di, gi)) => Some(h.clone()),
                         _ => None,
                     };
-                    Some(Strip { at: (di, gi), role, node, name: face::name(dev, gi), kind: g.kind, mix, stereo: g.stereo, chans, held, targets: Vec::new(), main, node_name, port, cue, cols: if two { 2 } else { 1 }, level: d.level(gi), x: 0.0, w: STRIP_W })
+                    Some(Strip { at: (di, gi), role, node, name: face::name(dev, gi), kind: g.kind, mix, stereo: g.stereo, chans, held, targets: Vec::new(), main, node_name, port, cue, cols: if two { 2 } else { 1 }, level: d.level(gi), x: 6.0, w: STRIP_W })
                 })
                 .collect();
-            // what takes sound in at the left, what gives it out at the right (as the rack's frames)
-            strips.sort_by_key(|s| !s.role.takes());
             let profile = dev.card.as_ref().map(|c| c.profile().map_or_else(|| "Off".to_owned(), |p| p.description.clone()));
-            if strips.is_empty() && profile.is_none() {
+            // a card's PROFILE once: on its output, else its input
+            let profile_on = profile.as_ref().and_then(|_| strips.iter().find(|s| s.role == Role::Sink).or_else(|| strips.iter().find(|s| s.role == Role::Source)).map(|s| s.at));
+            let module = |key: String, section: Section, strips: Vec<Strip>, profile: Option<String>| Module { key, di, name: dev.name.to_uppercase(), finish: dev.finish, section, profile, strips, x: 0.0, w: STRIP_W + 12.0, pinned: false };
+            // an app's INPUT before its OUTPUT
+            let mut order: Vec<Strip> = strips.iter().filter(|s| s.role.takes()).cloned().chain(strips.iter().filter(|s| !s.role.takes()).cloned()).collect();
+            if order.is_empty() {
+                // a card that is off: its name and PROFILE, last of the outputs
+                if profile.is_some() {
+                    mods.push((Section::Outputs, 2, 0, module(dev.key.clone(), Section::Outputs, Vec::new(), profile.clone())));
+                }
                 continue;
             }
-            mods.push(Module { key: dev.key.clone(), di, name: dev.name.to_uppercase(), finish: dev.finish, profile, app: dev.finish == Finish::Black, strips, x: 0.0, w: 0.0 });
+            for (n, s) in order.drain(..).enumerate() {
+                let (section, first) = match s.role {
+                    Role::Source => (Section::Inputs, if s.main { 0 } else { 1 }),
+                    Role::Sink if s.main => (Section::Master, 0),
+                    Role::Sink => (Section::Outputs, 1),
+                    _ => (Section::Apps, 1),
+                };
+                let p = if profile_on == Some(s.at) { profile.clone() } else { None };
+                mods.push((section, first, n, module(format!("{}#{}", dev.key, s.at.1), section, vec![s], p)));
+            }
         }
-        // a static order, whatever plays or is the default: the devices by name, then the apps
-        mods.sort_by(|a, b| (a.app, &a.name, &a.key).cmp(&(b.app, &b.name, &b.key)));
-        // an app's keys: every sink (source) shown, lit where it is linked
+        // a static order within each group (the default input first): by name, A to Z
+        mods.sort_by(|a, b| (a.0, a.1, &a.3.name, &a.3.key, a.2).cmp(&(b.0, b.1, &b.3.name, &b.3.key, b.2)));
+        let mut mods: Vec<Module> = mods.into_iter().map(|m| m.3).collect();
+        // an app's keys: every sink (source) shown, lit where it is linked, in the console's order
         let ends: Vec<End> = mods
             .iter()
             .flat_map(|m| {
                 let dev = &scene.devs[m.di].dev;
+                let several = |role: Role| dev.groups.iter().enumerate().filter(|(gi, g)| g.mix.is_some() && role_of(dev, *gi) == Some(role)).count() > 1;
                 m.strips.iter().filter(|s| matches!(s.role, Role::Sink | Role::Source) && s.mix.is_some()).map(move |s| {
-                    let several = m.strips.iter().filter(|o| o.role == s.role).count() > 1;
-                    let label = if several { format!("{} · {}", dev.name, s.name) } else { dev.name.clone() };
+                    let label = if several(s.role) { format!("{} · {}", dev.name, s.name) } else { dev.name.clone() };
                     (s.role, s.at, label.to_uppercase(), dev.color)
                 })
             })
@@ -350,18 +488,30 @@ impl Mixer {
                     .collect();
             }
         }
-        // where everything is
+        // where everything is: a gap between modules, a groove between groups, MASTER held at the
+        // window's right edge whatever the console scrolls to
         self.hits.clear();
+        self.grooves.clear();
         let mut x = LEFT;
+        let mut was = None;
         for m in &mut mods {
-            let mut sx = 6.0;
-            for s in &mut m.strips {
-                s.x = sx;
-                sx += s.w;
+            let master = m.section == Section::Master;
+            if was.is_some_and(|w| w != m.section) {
+                x += SEP - GAP;
             }
-            // a fixed width: one strip's, two strips'…; a card that is off, one strip's
-            m.w = m.strips.len().max(1) as f64 * STRIP_W + 12.0;
-            m.x = x;
+            // MASTER at the window's right edge, always: over what scrolls under it while the
+            // console is wider than the window; its groove right before it
+            if master {
+                m.x = self.sx + fw - LEFT - m.w;
+                m.pinned = m.x < x - 0.5;
+            }
+            if was.is_some_and(|w| w != m.section) {
+                self.grooves.push((if master { m.x - SEP / 2.0 } else { x - SEP / 2.0 }, master));
+            }
+            was = Some(m.section);
+            if !master {
+                m.x = x;
+            }
             x += m.w + GAP;
             let (mx, my) = (m.x, TOP);
             if m.profile.is_some() {
@@ -369,6 +519,7 @@ impl Mixer {
                 self.hits.push((Hit::Profile(m.di), [mx + px, my + py, pw, ph]));
             }
             let sy = my + HEAD;
+            let below = usize::from(m.profile.is_some());
             for s in &m.strips {
                 let x0 = mx + s.x;
                 let gw = 10.0 + SMALL.width(&format!("#{}", s.node));
@@ -377,35 +528,38 @@ impl Mixer {
                 match s.role {
                     Role::Play | Role::Rec => {
                         for (i, t) in s.targets.iter().enumerate().take(6) {
-                            self.hits.push((Hit::To(s.at, t.at), [kx, sy + ROUTE_Y + 17.0 + i as f64 * 23.0, kw, 17.0]));
+                            self.hits.push((Hit::To(s.at, t.at), [kx, sy + row(i), kw, KEY_H]));
                         }
                     }
                     Role::Sink | Role::Source => {
                         if s.mix.is_some() && s.node_name.is_some() {
-                            self.hits.push((Hit::Main(s.at), [kx, sy + ROUTE_Y + 3.0, kw, 19.0]));
-                            self.hits.push((Hit::All(s.at), [kx, sy + ROUTE_Y + 28.0, kw, 19.0]));
+                            self.hits.push((Hit::Main(s.at), [kx, sy + row(0), kw, KEY_H]));
+                            self.hits.push((Hit::All(s.at), [kx, sy + row(1), kw, KEY_H]));
                         }
                         if s.port.is_some() {
-                            self.hits.push((Hit::Port(m.di), [kx, sy + ROUTE_Y + 53.0, kw, 19.0]));
+                            self.hits.push((Hit::Port(m.di), [kx, sy + setup_row(below), kw, KEY_H]));
                         }
                     }
                 }
                 let half = (s.w - 12.0 - 7.0) / 2.0;
-                self.hits.push((Hit::Cue(s.at), [kx, sy + KEYS_Y, half, 24.0]));
+                self.hits.push((Hit::Cue(s.at), [kx, sy + rows.keys_y, half, 24.0]));
                 if s.mix.is_some() {
-                    self.hits.push((Hit::Mute(s.at), [kx + half + 7.0, sy + KEYS_Y, half, 24.0]));
+                    self.hits.push((Hit::Mute(s.at), [kx + half + 7.0, sy + rows.keys_y, half, 24.0]));
                     if s.stereo {
-                        self.hits.push((Hit::Chan(s.at), [kx, sy + CHAN_Y, kw, 24.0]));
+                        self.hits.push((Hit::Chan(s.at), [kx, sy + rows.chan_y, kw, 24.0]));
                     }
-                    let (_, slots, _) = fader_x(s);
-                    for (i, slot) in slots.iter().enumerate() {
+                    for (i, cx) in slots_x(s).iter().enumerate() {
                         let ch = if s.chans { Some(i) } else { None };
-                        self.hits.push((Hit::Fader(s.at, ch, sy + SLOT_Y), [x0 + slot, sy + SLOT_Y, 26.0, TRAVEL + 12.0]));
+                        let top = sy + rows.fader_y();
+                        self.hits.push((Hit::Fader(s.at, ch, top), [x0 + cx - CAP.0 / 2.0, top, CAP.0, TRAVEL + 12.0]));
                     }
                 }
             }
         }
-        self.size = (x - GAP + LEFT, TOP + MOD_H + 16.0);
+        // (MASTER held at the edge: what it covers is where the console ends)
+        self.size = (x - GAP + LEFT, TOP + rows.mod_h() + BOTTOM);
+        // MASTER last: drawn over what goes under it
+        mods.sort_by_key(|m| m.section == Section::Master);
         self.modules = mods;
     }
 
@@ -609,7 +763,8 @@ impl Mixer {
                 let lit = self.strip(from).is_some_and(|s| s.targets.iter().any(|t| t.at == to && t.lit));
                 format!("{} {} {}. Click: {}", name(from), if lit { "goes to" } else { "doesn't go to" }, name(to), if lit { "not there any more" } else { "there too" })
             }
-            Hit::Main(at) => format!("Make {} the default: new apps go there", name(at)),
+            Hit::Main(at) if at_role(self, at) == Some(Role::Sink) => format!("Make {} the master: everything plays here, new apps too", name(at)),
+            Hit::Main(at) => format!("Make {} the default input: new apps record from here", name(at)),
             Hit::All(at) => format!("Every app to {}, and it becomes the default", name(at)),
             Hit::Cue(at) => format!("Listen to {} in the default output; nothing else changes", name(at)),
             Hit::Mute(at) => format!("Mute {}", name(at)),
@@ -634,7 +789,7 @@ impl Mixer {
 
     /// The pictures still being drawn.
     pub fn settling(&self) -> bool {
-        self.inbox.busy()
+        self.inbox.busy() || self.rows_want.is_some()
     }
 
     /// The GPU has these: keep them while another screen shows.
@@ -655,8 +810,12 @@ impl Mixer {
 
     /// Everything to draw, in window pixels.
     pub fn sprites(&mut self, scene: &Scene, pins: &[String], size: (u32, u32), dpi: f64) -> Vec<Pic<'_>> {
-        self.layout(scene, pins);
+        // (scrolled first: MASTER's place follows the scroll)
         self.clamp(size, dpi);
+        self.layout(scene, pins, size, dpi);
+        self.clamp(size, dpi);
+        let rows = self.rows;
+        let mod_h = rows.mod_h();
         for done in self.inbox.take() {
             for p in self.pics.values_mut() {
                 if let Some((sig, w, h)) = p.want
@@ -672,43 +831,54 @@ impl Mixer {
         // the modules' pictures: drawn again when what they show changes
         let keys: HashSet<&str> = self.modules.iter().map(|m| m.key.as_str()).collect();
         self.pics.retain(|k, _| keys.contains(k.as_str()));
+        let mut prints = Vec::new();
         for m in &self.modules {
-            let (skin, print) = face::paint(m.finish, m.w, MOD_H, RADIUS);
-            let svg = module_svg(m, print);
+            let (skin, print) = face::paint(m.finish, m.w, mod_h, RADIUS);
+            prints.push(print);
+            let svg = module_svg(m, print, &rows);
             let sig = painter::sig(&svg, dpi);
             let p = self.pics.entry(m.key.clone()).or_insert(ModPic { sig: 0, layer: None, want: None });
+            // (one of a new height too goes to the painter: the old one shows meanwhile; drawing every
+            // module here took 200 ms a frame)
             if p.layer.is_none() {
                 // the first one at once: nothing to show meanwhile
                 let pm = face::raster(&svg_options(), &svg, &skin, dpi);
-                p.layer = Some(Layer { id: next_id(), pm, x: -FACE_PAD, y: -FACE_PAD, w: m.w + 2.0 * FACE_PAD, h: MOD_H + 2.0 * FACE_PAD });
+                p.layer = Some(Layer { id: next_id(), pm, x: -FACE_PAD, y: -FACE_PAD, w: m.w + 2.0 * FACE_PAD, h: mod_h + 2.0 * FACE_PAD });
                 p.sig = sig;
             } else if p.sig != sig && p.want.is_none_or(|w| w.0 != sig) {
                 self.inbox.ask_skinned(painter::key("mixer", &m.key), sig, svg, dpi, Some(skin));
-                p.want = Some((sig, m.w, MOD_H));
+                p.want = Some((sig, m.w, mod_h));
             }
         }
-        // the small ones: the cap, the lit LEDs, the numbers
+        // the small ones: the caps, the lit LEDs, the groups' names, the grooves
         let scale = dpi.to_bits();
-        if self.cap.as_ref().is_none_or(|(s, _)| *s != scale) {
-            self.cap = Some((scale, small(&cap_svg(), CAP.0, CAP.1, dpi)));
+        if self.deco.as_ref().is_none_or(|(s, _)| *s != scale) {
+            let groove = r##"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="1"><rect width="1" height="1" fill="#000" fill-opacity=".6"/><rect x="1" width="1" height="1" fill="#fff" fill-opacity=".08"/></svg>"##;
+            let back = r##"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1" fill="#1b1c1e"/></svg>"##;
+            let shade = r##"<svg xmlns="http://www.w3.org/2000/svg" width="14" height="1"><defs><linearGradient id="g"><stop offset="0" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".45"/></linearGradient></defs><rect width="14" height="1" fill="url(#g)"/></svg>"##;
+            self.deco = Some((scale, [small(groove, 2.0, 1.0, dpi), small(back, 1.0, 1.0, dpi), small(shade, 14.0, 1.0, dpi)]));
         }
         let mut wanted_leds = Vec::new();
-        let mut wanted_texts = Vec::new();
+        let mut wanted_caps = Vec::new();
+        let mut wanted_texts: Vec<(String, &'static str, u64)> = Vec::new();
         for s in self.modules.iter().flat_map(|m| &m.strips) {
-            let lit = s.level.map(|l| l.round().clamp(0.0, 10.0) as u8);
-            wanted_leds.push((s.cols, lit[0], if s.cols == 2 { lit[1] } else { 0 }, scale));
-            wanted_texts.push((readout(s), scale));
+            let l = s.level.map(lit);
+            wanted_leds.push((s.cols, l[0], if s.cols == 2 { l[1] } else { 0 }, scale));
+            wanted_caps.extend(cap_values(s).into_iter().map(|v| (v, scale)));
         }
         for k in wanted_leds {
-            self.leds.entry(k).or_insert_with(|| small(&leds_svg(k.0, k.1, k.2), k.0 as f64 * 8.0 + 4.0, LEDS_H, dpi));
+            self.leds.entry(k).or_insert_with(|| small(&leds_svg(k.0, k.1, k.2), k.0 as f64 * (LED_W + 2.0) + 2.0, LEDS_H, dpi));
         }
-        for name in ["DEVICES", "APPS"] {
-            wanted_texts.push((name.to_owned(), scale));
+        for k in wanted_caps {
+            self.caps.entry(k).or_insert_with(|| small(&cap_svg(k.0), CAP.0 + 1.0, CAP.1 + 2.0, dpi));
+        }
+        for sec in [Section::Inputs, Section::Apps, Section::Outputs, Section::Master] {
+            wanted_texts.push((sec.name().to_owned(), LABEL, scale));
         }
         for k in wanted_texts {
             if !self.texts.contains_key(&k) {
                 let w = SECTION.width(&k.0) + 8.0;
-                let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="14" font-family="Noto Sans" font-weight="bold">{}</svg>"#, label_text(&k.0));
+                let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="14" font-family="Noto Sans" font-weight="bold">{}</svg>"#, label_text(&k.0, k.1));
                 self.texts.insert(k.clone(), small(&svg, w, 14.0, dpi));
             }
         }
@@ -719,46 +889,62 @@ impl Mixer {
         if self.texts.len() > 400 {
             self.texts.clear();
         }
+        if self.caps.len() > 400 {
+            self.caps.clear();
+        }
         let (fw, top, bottom) = Mixer::field(size, dpi);
         let clip = Some([0.0, top * dpi, fw * dpi, (bottom - top) * dpi]);
         let (ox, oy) = (-self.sx, panel::H - self.sy);
         let mut out: Vec<Pic> = Vec::new();
         let px = |x: f64| (x * dpi).round();
-        let mut first_app = None;
-        let mut first_dev = None;
+        let Some((_, [groove, back, shade])) = &self.deco else { return out };
+        let mut named = HashSet::new();
         for m in &self.modules {
-            if m.app { first_app.get_or_insert(m.x) } else { first_dev.get_or_insert(m.x) };
+            // before MASTER: the grooves; if it is held at the edge, what it covers goes under it
+            if m.section == Section::Master {
+                for (gx, master) in &self.grooves {
+                    if !(*master && m.pinned) {
+                        out.push((groove, px(ox + gx - 1.0), px(oy + TOP), 2.0 * dpi, mod_h * dpi, clip, 1.0));
+                    }
+                }
+                if m.pinned {
+                    out.push((shade, px(ox + m.x - GAP - 14.0), px(oy), 14.0 * dpi, self.size.1 * dpi, clip, 1.0));
+                    out.push((back, px(ox + m.x - GAP), px(oy), (m.w + GAP + LEFT) * dpi, self.size.1 * dpi, clip, 1.0));
+                }
+            }
+            // a group's name over its first module
+            if named.insert(m.section)
+                && let Some(l) = self.texts.get(&(m.section.name().to_owned(), LABEL, scale))
+            {
+                out.push((l, px(ox + m.x + 2.0), px(oy + 6.0), l.w * dpi, l.h * dpi, clip, 1.0));
+            }
             if let Some(l) = self.pics.get(&m.key).and_then(|p| p.layer.as_ref()) {
                 out.push((l, px(ox + m.x + l.x), px(oy + TOP + l.y), l.w * dpi, l.h * dpi, clip, 1.0));
             }
-        }
-        // the sections' names over the modules
-        for (name, x) in [("DEVICES", first_dev), ("APPS", first_app)] {
-            if let (Some(x), Some(l)) = (x, self.texts.get(&(name.to_owned(), scale))) {
-                out.push((l, px(ox + x + 2.0), px(oy + 6.0), l.w * dpi, l.h * dpi, clip, 1.0));
-            }
-        }
-        for m in &self.modules {
+            // the caps (their volume on them) and the lit LEDs, over the module
             let sy = TOP + HEAD;
             for s in &m.strips {
                 let x0 = m.x + s.x;
-                let (_, slots, meter) = fader_x(s);
-                if let Some((vol, bal, _)) = s.mix
-                    && let Some((_, cap)) = &self.cap
-                {
+                let top = sy + rows.fader_y();
+                if let Some((vol, bal, _)) = s.mix {
                     let lr = channels((vol, bal));
-                    for (i, slot) in slots.iter().enumerate() {
+                    for (i, cx) in slots_x(s).iter().enumerate() {
                         let v = if s.chans { lr[i] } else { vol };
-                        out.push((cap, px(ox + x0 + slot), px(oy + sy + SLOT_Y + cap_y(v) - CAP.1 / 2.0), CAP.0 * dpi, CAP.1 * dpi, clip, 1.0));
+                        if let Some(l) = self.caps.get(&(pct(v), scale)) {
+                            out.push((l, px(ox + x0 + cx - CAP.0 / 2.0), px(oy + top + cap_y(v) - CAP.1 / 2.0), l.w * dpi, l.h * dpi, clip, 1.0));
+                        }
                     }
                 }
-                let lit = s.level.map(|l| l.round().clamp(0.0, 10.0) as u8);
-                if let Some(l) = self.leds.get(&(s.cols, lit[0], if s.cols == 2 { lit[1] } else { 0 }, scale)) {
-                    out.push((l, px(ox + x0 + meter), px(oy + sy + FBOX_Y + 12.0), l.w * dpi, l.h * dpi, clip, 1.0));
+                let l = s.level.map(lit);
+                if let Some(layer) = self.leds.get(&(s.cols, l[0], if s.cols == 2 { l[1] } else { 0 }, scale)) {
+                    out.push((layer, px(ox + x0 + meter_x(s)), px(oy + top + cap_y(VOL_MAX)), layer.w * dpi, layer.h * dpi, clip, 1.0));
                 }
-                if let Some(l) = self.texts.get(&(readout(s), scale)) {
-                    out.push((l, px(ox + x0 + (s.w - l.w) / 2.0), px(oy + sy + READ_Y), l.w * dpi, l.h * dpi, clip, 1.0));
-                }
+            }
+        }
+        // no MASTER (no default output): the grooves all the same
+        if !self.modules.iter().any(|m| m.section == Section::Master) {
+            for (gx, _) in &self.grooves {
+                out.push((groove, px(ox + gx - 1.0), px(oy + TOP), 2.0 * dpi, mod_h * dpi, clip, 1.0));
             }
         }
         out
@@ -785,7 +971,7 @@ impl Mixer {
     /// The modules now (for tests).
     #[cfg(test)]
     pub fn modules(&mut self, scene: &Scene) -> &[Module] {
-        self.layout(scene, &[]);
+        self.layout(scene, &[], (1440, 900), 1.0);
         &self.modules
     }
 }
@@ -795,48 +981,56 @@ fn small(svg: &str, w: f64, h: f64, dpi: f64) -> Layer {
     Layer { id: next_id(), pm: rasterize(&svg_options(), svg, dpi).or_else(|| Pixmap::new(1, 1)), x: 0.0, y: 0.0, w, h }
 }
 
-/// What a strip's number says: its volume, or L and R.
-fn readout(s: &Strip) -> String {
+/// A volume as the % on its cap.
+fn pct(v: f64) -> u32 {
+    (v * 100.0).round().max(0.0) as u32
+}
+
+/// The volumes on a strip's caps (%): one, or L and R.
+fn cap_values(s: &Strip) -> Vec<u32> {
     match s.mix {
-        None => String::new(),
-        Some((v, b, _)) if s.chans => {
-            let [l, r] = channels((v, b));
-            format!("{:.0}% {:.0}%", l * 100.0, r * 100.0)
-        }
-        Some((v, ..)) => format!("{:.0}%", v * 100.0),
+        None => Vec::new(),
+        Some((v, b, _)) if s.chans => channels((v, b)).iter().map(|v| pct(*v)).collect(),
+        Some((v, ..)) => vec![pct(v)],
     }
 }
 
-/// A number under a fader, or a section's name: light print on the console.
-fn label_text(t: &str) -> String {
+/// A group's name over the console.
+const LABEL: &str = "#8a8d91";
+
+/// A number under a fader, in its module's print (red past 100%), or a group's name.
+fn label_text(t: &str, colour: &str) -> String {
     let red = t.split(' ').any(|p| p.trim_end_matches('%').parse::<f64>().is_ok_and(|v| v > 100.0));
-    let colour = if t.ends_with('%') { if red { "#ff4a32" } else { "#d5d7d9" } } else { "#8a8d91" };
-    SECTION.text(4.0, 11.0, colour, "start", t)
+    SECTION.text(4.0, 11.0, if red { "#ff4a32" } else { colour }, "start", t)
 }
 
-fn cap_svg() -> String {
+/// A fader's cap with its volume on it (red past 100%), and its shadow.
+fn cap_svg(pct: u32) -> String {
     let (w, h) = CAP;
     format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5a5b5f"/><stop offset=".45" stop-color="#2b2c2f"/><stop offset=".55" stop-color="#1b1c1e"/><stop offset="1" stop-color="#3c3d41"/></linearGradient></defs><rect x=".5" y=".5" width="{}" height="{}" rx="3" fill="url(#g)" stroke="#0b0b0c"/><rect x="3" y="{}" width="{}" height="2" fill="#e6e7e8"/></svg>"##,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5a5b5f"/><stop offset=".45" stop-color="#2b2c2f"/><stop offset=".55" stop-color="#1b1c1e"/><stop offset="1" stop-color="#3c3d41"/></linearGradient></defs><rect x="1" y="2" width="{w}" height="{h}" rx="3" fill="#000" opacity=".5"/><rect x=".5" y=".5" width="{}" height="{}" rx="3" fill="url(#g)" stroke="#0b0b0c"/><text x="{}" y="14.5" font-family="Noto Sans Mono" font-weight="bold" font-size="8.5" fill="{}" text-anchor="middle">{pct}</text></svg>"##,
+        w + 1.0,
+        h + 2.0,
         w - 1.0,
         h - 1.0,
-        h / 2.0 - 1.0,
-        w - 6.0
+        w / 2.0,
+        if pct > 100 { "#ff6a52" } else { "#e6e7e8" }
     )
 }
 
-/// The lit LEDs of a meter (`cols` columns, `l` and `r` lit from the bottom): green, then amber,
-/// then red, as on the rack's faces.
+/// The lit LEDs of a meter (`cols` columns, `l` and `r` of `LEDS` lit from the bottom): green, then
+/// amber, then red, as on the rack's faces; thin.
 fn leds_svg(cols: usize, l: u8, r: u8) -> String {
-    let w = cols as f64 * 8.0 + 4.0;
+    let w = cols as f64 * (LED_W + 2.0) + 2.0;
     let mut s = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{LEDS_H}">"#);
-    let step = (LEDS_H - 6.0) / 10.0;
+    let step = (LEDS_H - 6.0) / LEDS as f64;
     for c in 0..cols {
         let n = if c == 0 { l } else { r };
-        for i in 0..n.min(10) {
-            let colour = if i >= 9 { "#ff3b2f" } else if i >= 7 { "#ffb02e" } else { "#4cff6a" };
+        for i in 0..(n as usize).min(LEDS) {
+            let f = i as f64 / LEDS as f64;
+            let colour = if f >= 0.9 { "#ff3b2f" } else if f >= 0.7 { "#ffb02e" } else { "#4cff6a" };
             let y = LEDS_H - 3.0 - (i as f64 + 1.0) * step + 1.0;
-            let _ = write!(s, r#"<rect x="{}" y="{y}" width="6" height="{}" rx="1" fill="{colour}"/>"#, 3.0 + c as f64 * 8.0, step - 2.0);
+            let _ = write!(s, r#"<rect x="{}" y="{y}" width="{LED_W}" height="{}" rx="1" fill="{colour}"/>"#, 3.0 + c as f64 * (LED_W + 2.0), step - 2.0);
         }
     }
     s.push_str("</svg>");
@@ -891,21 +1085,24 @@ fn led_key(o: &mut String, r @ [x, y, w, h]: [f64; 4], label: &str, colour: &str
 
 /// A module: its plate's outline, its heading (a card's name and PROFILE side by side), its strips
 /// (all but the caps, the lit LEDs and the numbers).
-fn module_svg(m: &Module, print: &str) -> String {
-    let (w, h) = (m.w, MOD_H);
+fn module_svg(m: &Module, print: &str, rows: &Rows) -> String {
+    let (w, h) = (m.w, rows.mod_h());
     let (dw, dh) = (w + 2.0 * FACE_PAD, h + 2.0 * FACE_PAD);
     let mut o = format!(r##"<svg xmlns="http://www.w3.org/2000/svg" width="{dw}" height="{dh}" viewBox="0 0 {dw} {dh}" font-family="Noto Sans" font-weight="bold"><defs>{}</defs><g transform="translate({FACE_PAD},{FACE_PAD})">"##, panel::KEY_DEFS);
     let _ = write!(o, r##"<rect x=".5" y=".5" width="{}" height="{}" rx="{RADIUS}" fill="none" stroke="#000" stroke-opacity=".7"/>"##, w - 1.0, h - 1.0);
-    // the heading: a card's name in the left half and its PROFILE key, named by the profile, in
-    // the right; anything else its name across it
-    match &m.profile {
-        Some(p) => {
-            o.push_str(&SECTION.text(w / 4.0 + 2.0, 22.0, print, "middle", &fit(&m.name, SECTION, w / 2.0 - 14.0)));
-            let k = profile_key(w);
-            key(&mut o, k, &fit(p, SMALL, k[2] - 16.0), None, None, false);
-        }
-        None => o.push_str(&SECTION.text(w / 2.0, 22.0, print, "middle", &fit(&m.name, SECTION, w - 20.0))),
+    // the heading: whose it is
+    o.push_str(&SECTION.text(w / 2.0, 22.0, print, "middle", &fit(&m.name, SECTION, w - 20.0)));
+    // DEVICE SETUP, a group of its own under the first: the card's PROFILE and the PORT, each with
+    // what is in use at its right
+    let has_port = m.strips.iter().any(|s| s.port.is_some());
+    if m.profile.is_some() || has_port {
+        o.push_str(&SMALL.text(w / 2.0, HEAD + setup_y() + 8.0, print, "middle", "DEVICE SETUP"));
     }
+    if let Some(p) = &m.profile {
+        let k = profile_key(w);
+        key(&mut o, k, "PROFILE", None, Some(p), false);
+    }
+    let below = usize::from(m.profile.is_some());
     let sy = HEAD;
     for (i, s) in m.strips.iter().enumerate() {
         let x0 = s.x;
@@ -924,77 +1121,81 @@ fn module_svg(m: &Module, print: &str) -> String {
         // where it goes, or the device's keys
         let (kx, kw) = (x0 + 6.0, s.w - 12.0);
         let ry = sy + ROUTE_Y;
+        // every group of keys under its title, its keys in rows: where an app goes, or the
+        // device's own keys; then the channel itself
+        let title = match s.role {
+            Role::Play => "PLAY ON",
+            Role::Rec => "RECORD FROM",
+            Role::Sink => "OUTPUT",
+            Role::Source => "INPUT",
+        };
+        o.push_str(&SMALL.text(x0 + s.w / 2.0, ry + 8.0, print, "middle", title));
         match s.role {
             Role::Play | Role::Rec => {
-                o.push_str(&SMALL.text(x0 + s.w / 2.0, ry + 8.0, print, "middle", if s.role == Role::Play { "PLAY ON" } else { "RECORD FROM" }));
                 for (i, t) in s.targets.iter().enumerate().take(6) {
                     let down = s.held.as_ref().is_some_and(|h| matches!(h, Hit::To(_, to) if *to == t.at));
-                    push_key(&mut o, [kx, ry + 17.0 + i as f64 * 23.0, kw, 17.0], &t.label, t.lit, down);
+                    push_key(&mut o, [kx, sy + row(i), kw, KEY_H], &t.label, t.lit, down);
                 }
                 if s.targets.is_empty() {
-                    o.push_str(&SMALL.text(x0 + s.w / 2.0, ry + 30.0, print, "middle", "NOWHERE"));
+                    o.push_str(&SMALL.text(x0 + s.w / 2.0, sy + row(0) + 12.0, print, "middle", "NOWHERE"));
                 }
             }
             Role::Sink | Role::Source => {
                 if s.mix.is_some() && s.node_name.is_some() {
                     let out = s.role == Role::Sink;
-                    key(&mut o, [kx, ry + 3.0, kw, 19.0], if out { "MAIN OUT" } else { "MAIN IN" }, Some(("#ffb02e", s.main)), None, held(|h| matches!(h, Hit::Main(_))));
-                    key(&mut o, [kx, ry + 28.0, kw, 19.0], if out { "PLAY ALL HERE" } else { "RECORD ALL HERE" }, None, None, false);
+                    key(&mut o, [kx, sy + row(0), kw, KEY_H], if out { "MASTER" } else { "MAIN IN" }, Some(("#ffb02e", s.main)), None, held(|h| matches!(h, Hit::Main(_))));
+                    key(&mut o, [kx, sy + row(1), kw, KEY_H], if out { "PLAY ALL HERE" } else { "RECORD ALL HERE" }, None, None, false);
                 }
                 if let Some(p) = &s.port {
-                    key(&mut o, [kx, ry + 53.0, kw, 19.0], "PORT", None, Some(p), false);
+                    key(&mut o, [kx, sy + setup_row(below), kw, KEY_H], "PORT", None, Some(p), false);
                 }
             }
         }
+        o.push_str(&SMALL.text(x0 + s.w / 2.0, sy + rows.keys_y - 9.0, print, "middle", "CHANNEL"));
         let half = (s.w - 12.0 - 7.0) / 2.0;
-        led_key(&mut o, [kx, sy + KEYS_Y, half, 24.0], "CUE", "#5fd4ff", s.cue, false, held(|h| matches!(h, Hit::Cue(_))));
+        led_key(&mut o, [kx, sy + rows.keys_y, half, 24.0], "CUE", "#5fd4ff", s.cue, false, held(|h| matches!(h, Hit::Cue(_))));
         let muted = s.mix.is_some_and(|m| m.2);
-        led_key(&mut o, [kx + half + 7.0, sy + KEYS_Y, half, 24.0], "MUTE", "#ff4a32", muted, s.mix.is_none(), held(|h| matches!(h, Hit::Mute(_))));
-        led_key(&mut o, [kx, sy + CHAN_Y, kw, 24.0], "SPLIT", "#ffb02e", s.chans, !s.stereo || s.mix.is_none(), held(|h| matches!(h, Hit::Chan(_))));
-        // the faders: their scale, its zones and lines, the slots; the meter's dark LEDs
-        let (sx, slots, mx) = fader_x(s);
-        let top = sy + SLOT_Y;
+        led_key(&mut o, [kx + half + 7.0, sy + rows.keys_y, half, 24.0], "MUTE", "#ff4a32", muted, s.mix.is_none(), held(|h| matches!(h, Hit::Mute(_))));
+        led_key(&mut o, [kx, sy + rows.chan_y, kw, 24.0], "SPLIT", "#ffb02e", s.chans, !s.stereo || s.mix.is_none(), held(|h| matches!(h, Hit::Chan(_))));
+        // the fader block under SPLIT: the scale's numbers at the left, lines left of each slot
+        // (long at the numbers), the slot red past 100% (the caps, their volume on them, are
+        // pictures over it); the meter's dark LEDs at the right, as tall as the slot and level with it; its name under it all
+        let top = sy + rows.fader_y();
+        let slots = slots_x(s);
         if s.mix.is_some() {
             for m in [150.0, 100.0, 75.0, 50.0, 25.0, 0.0] {
-                o.push_str(&SMALL.text(x0 + sx + 18.0, top + cap_y(m / 100.0) + 2.6, print, "end", &format!("{m}")));
+                o.push_str(&SMALL.text(x0 + if s.chans { 17.0 } else { 30.0 }, top + cap_y(m / 100.0) + 2.6, print, "end", &format!("{m}")));
             }
-            // (on the pixel grid: each line one sharp pixel)
-            let px = |v: f64| (top + cap_y(v)).round() + 0.5;
-            for (i, slot) in slots.iter().enumerate() {
-                let cx = x0 + slot + 13.0;
+            for (i, c) in slots.iter().enumerate() {
+                let cx = x0 + c;
                 if s.chans {
-                    o.push_str(&SMALL.text(cx, top - 3.0, print, "middle", if i == 0 { "L" } else { "R" }));
+                    o.push_str(&SMALL.text(cx, top - 4.0, print, "middle", if i == 0 { "L" } else { "R" }));
                 }
-                // the zones behind the lines: up to 100% the print's grey, past it to the top a dull
-                // red; narrower than the cap
-                let (y0, y100, ytop) = (px(0.0), px(1.0), px(VOL_MAX));
-                let _ = write!(o, r##"<rect x="{}" y="{y100}" width="16" height="{}" fill="{print}" fill-opacity=".26"/><rect x="{}" y="{ytop}" width="16" height="{}" fill="#b4483c" fill-opacity=".7"/>"##, cx - 8.0, y0 - y100, cx - 8.0, y100 - ytop);
-                // a line at every 12.5%: long at the numbers (100% the strongest), shorter at 125%,
-                // short between
+                // (on the pixel grid: each line one sharp pixel)
                 for k in 0..=12 {
                     let v = k as f64 * 12.5;
-                    let major = [0.0, 25.0, 50.0, 75.0, 100.0, 150.0].contains(&v);
-                    let mid = v == 125.0;
-                    let half = if major { 8.0 } else if mid { 5.5 } else { 4.0 };
-                    let op = if v == 100.0 { 0.95 } else if major { 0.75 } else if mid { 0.6 } else { 0.5 };
-                    let _ = write!(o, r#"<path d="M{},{} h{}" stroke="{print}" stroke-opacity="{op}"/>"#, cx - half, px(v / 100.0), half * 2.0);
+                    let long = [0.0, 25.0, 50.0, 75.0, 100.0, 150.0].contains(&v);
+                    let _ = write!(o, r#"<path d="M{},{} h{}" stroke="{print}" stroke-opacity=".6"/>"#, cx - 12.0, (top + cap_y(v / 100.0)).round() + 0.5, if long { 7.0 } else { 4.0 });
                 }
-                let _ = write!(o, r##"<rect x="{}" y="{}" width="4" height="{TRAVEL}" rx="2" fill="#0b0b0c"/>"##, cx - 2.0, top + 6.0);
+                let _ = write!(o, r##"<rect x="{}" y="{}" width="4" height="{TRAVEL}" rx="2" fill="#0b0b0c"/><rect x="{}" y="{}" width="4" height="{}" rx="2" fill="#b4483c"/>"##, cx - 2.0, top + 6.0, cx - 2.0, top + cap_y(VOL_MAX), cap_y(1.0) - cap_y(VOL_MAX));
             }
         } else {
-            let _ = write!(o, r#"<text transform="translate({},{}) rotate(-90)" font-size="7.5" letter-spacing="1" fill="{print}" fill-opacity=".6" text-anchor="middle">NO VOLUME IN PIPEWIRE</text>"#, x0 + sx + 40.0, top + TRAVEL / 2.0 + 6.0);
+            let _ = write!(o, r#"<text transform="translate({},{}) rotate(-90)" font-size="7.5" letter-spacing="1" fill="{print}" fill-opacity=".6" text-anchor="middle">NO VOLUME IN PIPEWIRE</text>"#, x0 + 48.0, top + TRAVEL / 2.0 + 6.0);
         }
-        let mw = s.cols as f64 * 8.0 + 4.0;
-        let my = sy + FBOX_Y + 12.0;
-        let _ = write!(o, r##"<rect x="{}" y="{my}" width="{mw}" height="{LEDS_H}" rx="3" fill="#0b0b0c"/>"##, x0 + mx);
-        let step = (LEDS_H - 6.0) / 10.0;
+        let (mx, my) = (x0 + meter_x(s), top + cap_y(VOL_MAX));
+        let _ = write!(o, r##"<rect x="{mx}" y="{my}" width="{}" height="{LEDS_H}" rx="3" fill="#0b0b0c"/>"##, s.cols as f64 * (LED_W + 2.0) + 2.0);
+        let step = (LEDS_H - 6.0) / LEDS as f64;
         for c in 0..s.cols {
-            for i in 0..10 {
+            for i in 0..LEDS {
+                let f = i as f64 / LEDS as f64;
                 let y = my + LEDS_H - 3.0 - (i as f64 + 1.0) * step + 1.0;
-                let dark = if i >= 9 { "#351612" } else if i >= 7 { "#2f2810" } else { "#1c2a1f" };
-                let _ = write!(o, r#"<rect x="{}" y="{y}" width="6" height="{}" rx="1" fill="{dark}"/>"#, x0 + mx + 3.0 + c as f64 * 8.0, step - 2.0);
+                let dark = if f >= 0.9 { "#351612" } else if f >= 0.7 { "#2f2810" } else { "#1c2a1f" };
+                let _ = write!(o, r#"<rect x="{}" y="{y}" width="{LED_W}" height="{}" rx="1" fill="{dark}"/>"#, mx + 3.0 + c as f64 * (LED_W + 2.0), step - 2.0);
             }
         }
+        // named as on the rack: VOLUME on what plays, GAIN on what comes in
+        let name = if matches!(s.role, Role::Source | Role::Rec) { "GAIN" } else { "VOLUME" };
+        o.push_str(&SMALL.text(x0 + s.w / 2.0, sy + rows.level_y(), print, "middle", name));
     }
     o.push_str("</g></svg>");
     o

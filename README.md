@@ -168,7 +168,7 @@ what goes out, after its volume or gain).
 
 | | |
 | --- | --- |
-| VOLUME / GAIN knob | in each frame with controls: VOLUME on what plays (an app's OUTPUT, a card's SPEAKERS), GAIN on what comes in (an app's INPUT, a MIC). A sound card's are its own hardware volume, as pavucontrol sets it. From silence to 153% (red past 100%: it can clip): drag up or down (Shift: fine), or the wheel (5%, Shift: 1%); it rests at 100% for a moment, and a double-click sets 100%. The screen shows the value in % and dB while it changes |
+| VOLUME / GAIN knob | in each frame with controls: VOLUME on what plays (an app's OUTPUT, a card's SPEAKERS), GAIN on what comes in (an app's INPUT, a MIC). A sound card's are its own hardware volume, as pavucontrol sets it. From silence to 150% (red past 100%: it can clip): drag up or down (Shift: fine), or the wheel (5%, Shift: 1%); it rests at 100% for a moment, and a double-click sets 100%. The screen shows the value in % and dB while it changes |
 | BAL knob | on stereo: the balance between L and R. A push-push knob, as on an old car stereo: click to pop it out, then turn it like VOLUME; click again to push it back in, where it can't be turned by accident |
 | MUTE key | silences it; its LED lights red |
 
@@ -208,19 +208,20 @@ what goes out, after its volume or gain).
 
 ### MIXER: a console
 
-MIXER (M) shows every device and app the rack shows as a module of a mixing console, for setting
-volumes and choosing where things play without cords. Devices come first, then the apps, each
-by name.
+MIXER (M) shows what the rack shows as a mixing console, for setting volumes and choosing where
+things play without cords. Left to right, as on a hardware console: INPUTS (the microphones, the
+default one first), APPS (each app's INPUT and OUTPUT), OUTPUTS, and MASTER (the default output),
+always at the window's right edge (the rest scrolls under it); each group by name.
 
 | | |
 | --- | --- |
-| Module | a device, or an app with everything it plays and records: its name on top (a card's with its PROFILE key beside it, named by the profile in use), then a strip for each output or input it has, what takes sound in at the left |
+| Module | one strip: a device's input or output, or an app's, its name on top. The keys are in titled groups: OUTPUT or INPUT (or PLAY ON / RECORD FROM); on a device, DEVICE SETUP with its card's PROFILE (once, on the card's output) and its PORT, each with what is in use at its right; then CHANNEL. Modules are as tall as the window |
 | PLAY ON / RECORD FROM | on an app's strip, a push-push key for each output (input) shown: pushed in, its red LED lit, where the app plays (records). Click to push it in or out: as many in at once as you like. Ctrl+Z undoes it |
-| MAIN OUT / MAIN IN | on an output's (input's) strip: make it the default, where new apps play (record); pushed in, its amber LED lit, on the default |
+| MASTER / MAIN IN | on an output's (input's) strip: make it the default, where everything plays (new apps record), and MASTER on the console; pushed in, its amber LED lit, on the default |
 | PLAY ALL HERE / RECORD ALL HERE | every app that plays (records) moves here, and it becomes the default |
 | PORT | the card's port list, where it has a choice |
 | CUE · MUTE · SPLIT | listen to it in the default output (CUE mode, as on the rack); mute it; a fader for L and one for R. A key with a LED is pushed in while it is on, and does what it does when you let go over it |
-| Fader | the volume, as the rack's VOLUME knob: drag, or the wheel over it (Shift: finer); double-click: 100%. An app without a volume in PipeWire (a DAW's engine) says so |
+| VOLUME / GAIN fader | the volume (GAIN on what comes in), as the rack's knob, on its cap (0 to 150%, red past 100%): drag, or the wheel over it (Shift: finer); double-click: 100%. Beside it the meter, after the volume. An app without a volume in PipeWire (a DAW's engine) says so |
 | Drag empty space · wheel | scroll the console |
 
 ### ENGINE: what PipeWire really has

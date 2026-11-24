@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mixer faders</title>
+<!--
+  Ten ways to draw a MIXER strip's fader, its meter and its number (mixer.rs: the block under
+  CHANNEL), in Patchcord's colours: the panel's dark keys and LEDs, the amber screen, the
+  modules' paints. Each is shown on a program's black module and a device's metal one, one fader
+  and SPLIT (L and R). One CSS pixel is one of the app's logical pixels; the block is the strip's
+  width (112) and the height it has now (fader travel 160).
+-->
+<style>
+  @font-face { font-family: "Noto Sans"; font-weight: 700; src: url(../../../assets/fonts/NotoSans-Bold.ttf); }
+  @font-face { font-family: "Noto Sans Mono"; font-weight: 700; src: url(../../../assets/fonts/NotoSansMono-Bold.ttf); }
+  body { margin: 0; padding: 24px; background: radial-gradient(ellipse 120% 90% at 50% 20%, #2a2c2f, #151618 70%) fixed; color: #c9cbcd;
+    font: 13px "Noto Sans", sans-serif; }
+  h1 { font: bold 20px "Noto Sans"; letter-spacing: 1.5px; color: #e58f2c; margin: 0 0 4px; }
+  p.sub { margin: 0 0 22px; color: #8a8d91; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(560px, 1fr)); gap: 22px; }
+  .card { background: #1a1b1d; border: 1px solid #26272a; border-radius: 8px; padding: 14px 16px 16px; }
+  .card h2 { margin: 0 0 2px; font: bold 13px "Noto Sans"; letter-spacing: 1.2px; color: #e6e7e8; }
+  .card p { margin: 0 0 12px; color: #8a8d91; font-size: 12px; min-height: 32px; }
+  .card a { color: #f7bb62; }
+  svg { display: block; }
+</style>
+</head>
+<body>
+<h1>MIXER · FADER, METER, NUMBER: TEN WAYS</h1>
+<p class="sub">Each on a program (black) and a device (metal), one fader and SPLIT. The meter shows a signal at about -10 dB, the faders at 100% (L at 80% when split).</p>
+<div class="grid" id="grid"></div>
+<script>
+"use strict";
+// ---------- the app's measures and type (mixer.rs, print.rs) ----------
+const SECTION = { size: 9, spacing: 1.2 }, SMALL = { size: 7.5, spacing: 0.8 };
+const VOL_MAX = 1.5, TRAVEL = 160, W = 112, H = 212;
+const FIN = {
+  black: { base: "#232427", noise: 0.9, print: "#d5d7d9" },
+  alu: { base: "#8c8e91", paint: true, print: "#1d1e20" },
+};
+const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+function T(st, x, y, fill, anchor, t, extra = "") {
+  const shift = anchor === "middle" ? st.spacing / 2 : anchor === "end" ? st.spacing : 0;
+  return `<text x="${x + shift}" y="${y}" font-size="${st.size}" letter-spacing="${st.spacing}" fill="${fill}" text-anchor="${anchor}" ${extra}>${esc(t)}</text>`;
+}
+// from the slot's top (6 in, as mixer.rs): where a volume is
+const capY = (v) => 6 + (1 - Math.min(Math.max(v / VOL_MAX, 0), 1)) * TRAVEL;
+const px = (y) => Math.round(y) + 0.5;
+// a volume on the faders' scale (1 is 100%) in dB: PipeWire's linear volume is its cube
+const db = (v) => (v <= 0 ? "-∞" : (60 * Math.log10(v)).toFixed(0));
+// a level: LEDs lit of 10 (the app's -54…0 dB scale), and a signal at about -10 dB through a fader
+const LIT = [8, 7];
+
+// ---------- pieces ----------
+const defs = `<defs>
+  <pattern id="paint" width="80" height="80" patternUnits="userSpaceOnUse"><image href="../../../assets/paint.png" width="80" height="80"/></pattern>
+  <pattern id="noise" width="128" height="128" patternUnits="userSpaceOnUse"><image href="../../../assets/noise.png" width="128" height="128"/></pattern>
+  <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".16"/><stop offset=".35" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".24"/></linearGradient>
+  <linearGradient id="cap" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5a5b5f"/><stop offset=".45" stop-color="#2b2c2f"/><stop offset=".55" stop-color="#1b1c1e"/><stop offset="1" stop-color="#3c3d41"/></linearGradient>
+  <linearGradient id="btn" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#303134"/><stop offset=".6" stop-color="#1d1e20"/><stop offset="1" stop-color="#131314"/></linearGradient>
+  <linearGradient id="hole" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#050506"/><stop offset="1" stop-color="#232427"/></linearGradient>
+  <linearGradient id="edgeHole" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2a2c2e"/><stop offset=".5" stop-color="#55585b"/><stop offset="1" stop-color="#a7aaad"/></linearGradient>
+  <linearGradient id="capEdge" x1="0" y1="0" x2=".3" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".28"/><stop offset=".45" stop-color="#fff" stop-opacity=".04"/><stop offset="1" stop-color="#000" stop-opacity=".5"/></linearGradient>
+  <linearGradient id="lcd" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f7bb62"/><stop offset="1" stop-color="#e58f2c"/></linearGradient>
+  <linearGradient id="bar" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#3fd45c"/><stop offset=".62" stop-color="#4cff6a"/><stop offset=".72" stop-color="#ffb02e"/><stop offset=".9" stop-color="#ffb02e"/><stop offset=".92" stop-color="#ff3b2f"/><stop offset="1" stop-color="#ff3b2f"/></linearGradient>
+  <linearGradient id="chrome" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#6b6d70"/><stop offset=".5" stop-color="#d9dbdd"/><stop offset="1" stop-color="#6b6d70"/></linearGradient>
+</defs>`;
+function plate(fin, w, h) {
+  let o = `<rect width="${w}" height="${h}" rx="8" fill="${fin.base}"/>`;
+  if (fin.paint) o += `<rect width="${w}" height="${h}" rx="8" fill="url(#paint)"/>`;
+  if (fin.noise) o += `<rect width="${w}" height="${h}" rx="8" fill="url(#noise)" opacity="${fin.noise}"/>`;
+  return o + `<rect width="${w}" height="${h}" rx="8" fill="url(#sheen)"/><rect x=".5" y=".5" width="${w - 1}" height="${h - 1}" rx="8" fill="none" stroke="#000" stroke-opacity=".7"/>`;
+}
+// the meter's LEDs: `cols` columns at x, y (top), `h` tall; `kind`: "rect" the rack's, "dot" round as
+// the panel's LEDs, "bar" one bar
+function meter(x, y, h, cols, kind = "rect", n = 10, w = 6, gap = 2) {
+  let o = `<rect x="${x}" y="${y}" width="${cols * (w + gap) + 2}" height="${h}" rx="3" fill="#0b0b0c"/>`;
+  const step = (h - 6) / n;
+  for (let c = 0; c < cols; c++) {
+    const lit = LIT[c] / 10 * n;
+    const cx = x + 3 + c * (w + gap);
+    if (kind === "bar") {
+      const lh = (h - 6) * LIT[c] / 10;
+      o += `<rect x="${cx}" y="${y + 3}" width="${w}" height="${h - 6}" rx="1" fill="#1a1d1b"/><rect x="${cx}" y="${y + h - 3 - lh}" width="${w}" height="${lh}" rx="1" fill="url(#bar)"/>`;
+      continue;
+    }
+    for (let i = 0; i < n; i++) {
+      const top = y + h - 3 - (i + 1) * step + 1;
+      const f = i / n;
+      const on = i < lit, red = f >= 0.9, amb = f >= 0.7;
+      const col = on ? (red ? "#ff3b2f" : amb ? "#ffb02e" : "#4cff6a") : (red ? "#351612" : amb ? "#2f2810" : "#1c2a1f");
+      if (kind === "dot") {
+        const r = Math.min(w, step - 2) / 2;
+        o += (on ? `<circle cx="${cx + w / 2}" cy="${top + (step - 2) / 2}" r="${r + 1.6}" fill="${col}" opacity=".3"/>` : "") + `<circle cx="${cx + w / 2}" cy="${top + (step - 2) / 2}" r="${r}" fill="${col}"/>`;
+      } else {
+        o += `<rect x="${cx}" y="${top}" width="${w}" height="${step - 2}" rx="1" fill="${col}"/>`;
+      }
+    }
+  }
+  return o;
+}
+const capKey = (x, y, w, h) => `<rect x="${x - 2}" y="${y - 2}" width="${w + 4}" height="${h + 4}" rx="5" fill="url(#hole)" stroke="url(#edgeHole)" stroke-width="1"/><rect x="${x + 1}" y="${y + 2}" width="${w}" height="${h}" rx="3.5" fill="#000" opacity=".45"/><rect x="${x}" y="${y}" width="${w}" height="${h}" rx="3.5" fill="url(#btn)" stroke="#070708"/><rect x="${x + .8}" y="${y + .8}" width="${w - 1.6}" height="${h - 1.6}" rx="3" fill="none" stroke="url(#capEdge)" stroke-width="1.2"/>`;
+const number = (x, y, t, fill) => T(SECTION, x, y, fill, "middle", t);
+
+// ---------- the ten ----------
+// each: (fin, split) → svg body of a block W×H; `vals`: the faders' volumes
+const V = { one: [1.0], two: [0.8, 1.0] };
+const VARIANTS = [
+  {
+    name: "1 · PRINTED SCALE",
+    note: "As a console's channel: a thin dark slot, the scale printed on the panel both sides of it (long lines at the numbers), the zones as a thin line beside the scale, grey then red. The rack's meter.",
+    draw(fin, vals) {
+      const p = fin.print, n = vals.length, top = 14;
+      let o = "";
+      const slots = n === 1 ? [44] : [36, 66];
+      for (const v of [150, 100, 75, 50, 25, 0]) o += T(SMALL, n === 1 ? 24 : 18, top + capY(v / 100) + 2.6, p, "end", String(v));
+      slots.forEach((sx, i) => {
+        const cx = sx + 13;
+        for (let k = 0; k <= 12; k++) {
+          const v = k * 12.5, major = [0, 25, 50, 75, 100, 150].includes(v);
+          const y = px(top + capY(v / 100)), half = major ? 11 : 7;
+          o += `<path d="M${cx - half},${y} h${half - 4} M${cx + 4},${y} h${half - 4}" stroke="${v > 100 ? "#c0453a" : p}" stroke-opacity="${v === 100 ? 1 : major ? .7 : .45}"/>`;
+        }
+        o += `<path d="M${cx - 13.5},${top + capY(1)} V${top + capY(0)}" stroke="${p}" stroke-opacity=".5" stroke-width="1.5"/><path d="M${cx - 13.5},${top + capY(VOL_MAX)} V${top + capY(1)}" stroke="#c0453a" stroke-width="1.5"/>`;
+        o += `<rect x="${cx - 1.5}" y="${top + 6}" width="3" height="${TRAVEL}" rx="1.5" fill="#050506"/>`;
+        o += capSimple(sx, top + capY(vals[i]) - 16);
+        if (n === 2) o += T(SMALL, cx, top - 4, p, "middle", i ? "R" : "L");
+      });
+      o += meter(n === 1 ? 82 : 92, top + 2, TRAVEL + 8, n === 1 ? 2 : 2, "rect", 10, n === 1 ? 6 : 5, 2);
+      o += number(56, H - 8, vals.map((v) => Math.round(v * 100) + "%").join(" "), p);
+      return o;
+    },
+  },
+  {
+    name: "2 · THE METER IN THE SLOT",
+    note: "The slot is the meter: its LEDs light up the groove behind the cap, as on a digital console. One column a fader; no meter beside, more room for the scale.",
+    draw(fin, vals) {
+      const p = fin.print, n = vals.length, top = 14;
+      let o = "";
+      const slots = n === 1 ? [50] : [38, 72];
+      for (const v of [150, 100, 75, 50, 25, 0]) o += T(SMALL, n === 1 ? 32 : 22, top + capY(v / 100) + 2.6, p, "end", String(v));
+      slots.forEach((sx, i) => {
+        const cx = sx + 13;
+        o += `<rect x="${cx - 5}" y="${top + 3}" width="10" height="${TRAVEL + 6}" rx="3" fill="#0b0b0c"/>`;
+        const step = TRAVEL / 15;
+        for (let k = 0; k < 15; k++) {
+          const y = top + 6 + TRAVEL - (k + 1) * step + 1, v = (k + 1) / 15 * 150;
+          const on = k < Math.round(LIT[i % 2] * 1.5) - 2, red = v > 100, amb = v > 80;
+          o += `<rect x="${cx - 3}" y="${y}" width="6" height="${step - 2}" rx="1" fill="${on ? (red ? "#ff3b2f" : amb ? "#ffb02e" : "#4cff6a") : (red ? "#351612" : amb ? "#2f2810" : "#1c2a1f")}"/>`;
+        }
+        o += `<path d="M${cx + 8},${px(top + capY(1))} h6" stroke="${p}"/>`;
+        o += capSimple(sx, top + capY(vals[i]) - 16, 0.92);
+        if (n === 2) o += T(SMALL, cx, top - 4, p, "middle", i ? "R" : "L");
+      });
+      o += number(56, H - 8, vals.map((v) => Math.round(v * 100) + "%").join(" "), p);
+      return o;
+    },
+  },
+  {
+    name: "3 · ONE SCALE FOR BOTH",
+    note: "The meter at the left, the fader at the right, one scale between them: the meter's level and the fader's volume read against the same marks.",
+    draw(fin, vals) {
+      const p = fin.print, n = vals.length, top = 14;
+      let o = meter(10, top + 2, TRAVEL + 8, 2, "rect", 10, n === 1 ? 6 : 5, 2);
+      for (const v of [150, 100, 75, 50, 25, 0]) {
+        const y = px(top + capY(v / 100));
+        o += T(SMALL, 44, y + 2.6, p, "middle", String(v)) + `<path d="M${30},${y} h4 M${54},${y} h4" stroke="${v > 100 ? "#c0453a" : p}" stroke-opacity=".7"/>`;
+      }
+      const slots = n === 1 ? [66] : [62, 84];
+      slots.forEach((sx, i) => {
+        const cx = sx + 11;
+        o += `<rect x="${cx - 2}" y="${top + 6}" width="4" height="${TRAVEL}" rx="2" fill="#0b0b0c"/><rect x="${cx - 2}" y="${top + capY(VOL_MAX)}" width="4" height="${capY(1) - capY(VOL_MAX)}" rx="2" fill="#7a2a22"/>`;
+        o += capSimple(sx, top + capY(vals[i]) - 16, n === 2 ? 0.85 : 1);
+        if (n === 2) o += T(SMALL, cx, top - 4, p, "middle", i ? "R" : "L");
+      });
+      o += number(56, H - 8, vals.map((v) => Math.round(v * 100) + "%").join(" "), p);
+      return o;
+    },
+  },
+  {
+    name: "4 · THE PANEL'S KEY AS A CAP",
+    note: "The cap is a key of the top panel (dark cap, lit edge) in a recessed groove with the panel keys' rim; red only on the lines past 100%. The meter's LEDs round, as the panel's.",
+    draw(fin, vals) {
+      const p = fin.print, n = vals.length, top = 14;
+      let o = "";
+      const slots = n === 1 ? [46] : [34, 64];
+      for (const v of [150, 100, 75, 50, 25, 0]) o += T(SMALL, n === 1 ? 28 : 20, top + capY(v / 100) + 2.6, p, "end", String(v));
+      slots.forEach((sx, i) => {
+        const cx = sx + 12;
+        o += `<rect x="${cx - 4}" y="${top + 3}" width="8" height="${TRAVEL + 6}" rx="4" fill="url(#hole)" stroke="url(#edgeHole)"/>`;
+        for (let k = 0; k <= 12; k++) {
+          const v = k * 12.5, y = px(top + capY(v / 100));
+          o += `<path d="M${cx + 7},${y} h${[0, 25, 50, 75, 100, 150].includes(v) ? 6 : 3}" stroke="${v > 100 ? "#ff4a32" : p}" stroke-opacity="${v > 100 ? .8 : .6}"/>`;
+        }
+        o += capKey(sx, top + capY(vals[i]) - 13, 24, 26) + `<path d="M${sx + 4},${top + capY(vals[i])} h16" stroke="#ffb02e" stroke-width="1.6"/>`;
+        if (n === 2) o += T(SMALL, cx, top - 4, p, "middle", i ? "R" : "L");
+      });
+      o += meter(n === 1 ? 84 : 92, top + 2, TRAVEL + 8, 2, "dot", 12, n === 1 ? 6 : 5, 2);
+      o += number(56, H - 8, vals.map((v) => Math.round(v * 100) + "%").join(" "), p);
+      return o;
+    },
+  },
+  {
+    name: "5 · AMBER SCALE PLATE",
+    note: "The scale is printed on a strip of the amber screen, as the LCDs are: the numbers dark on it, the zone past 100% a darker amber. The cap black with an amber line.",
+    draw(fin, vals) {
+      const p = fin.print, n = vals.length, top = 14;
+      let o = `<rect x="8" y="${top + 2}" width="26" height="${TRAVEL + 8}" rx="3" fill="#111214"/><rect x="10" y="${top + 4}" width="22" height="${TRAVEL + 4}" rx="2" fill="url(#lcd)"/><rect x="10" y="${top + capY(VOL_MAX)}" width="22" height="${capY(1) - capY(VOL_MAX)}" fill="#a8461c" opacity=".45"/>`;
+      for (const v of [150, 100, 75, 50, 25, 0]) {
+        const y = px(top + capY(v / 100));
+        o += `<text x="28" y="${y + 2.6}" font-family="Noto Sans Mono" font-size="7.5" fill="#3a2408" text-anchor="end">${v}</text><path d="M29,${y} h3" stroke="#3a2408"/>`;
+      }
+      const slots = n === 1 ? [44] : [40, 68];
+      slots.forEach((sx, i) => {
+        const cx = sx + 13;
+        o += `<rect x="${cx - 2}" y="${top + 6}" width="4" height="${TRAVEL}" rx="2" fill="#0b0b0c"/>`;
+        o += `<g transform="translate(${sx},${top + capY(vals[i]) - 16})"><rect x=".5" y=".5" width="25" height="31" rx="3" fill="#161718" stroke="#050506"/><rect x="2" y="2" width="22" height="6" rx="2" fill="#fff" opacity=".06"/><rect x="3" y="15" width="20" height="2" fill="#ffb02e"/></g>`;
+        if (n === 2) o += T(SMALL, cx, top - 4, p, "middle", i ? "R" : "L");
+      });
+      o += meter(n === 1 ? 82 : 92, top + 2, TRAVEL + 8, 2, "rect", 10, n === 1 ? 6 : 5, 2);
+      o += `<rect x="22" y="${H - 22}" width="68" height="17" rx="3" fill="#111214"/><rect x="24" y="${H - 20}" width="64" height="13" rx="2" fill="url(#lcd)"/><text x="56" y="${H - 10.5}" font-family="Noto Sans Mono" font-weight="700" font-size="9" fill="#3a2408" text-anchor="middle">${vals.map((v) => Math.round(v * 100)).join(" ")}%</text>`;
+      return o;
+    },
+  },
+  {
+    name: "6 · DECIBELS",
+    note: "The scale says what it does to the sound: 0 dB at 100%, +10 at the top, -10, -20, -40, -∞. The number under it still in %, its dB small beside.",
+    draw(fin, vals) {
+      const p = fin.print, n = vals.length, top = 14;
+      let o = "";
+      const slots = n === 1 ? [44] : [36, 66];
+      const marks = [[1.5, "+10"], [1, "0"], [Math.cbrt(Math.pow(10, -10 / 20)), "-10"], [Math.cbrt(Math.pow(10, -20 / 20)), "-20"], [Math.cbrt(Math.pow(10, -40 / 20)), "-40"], [0, "-∞"]];
+      for (const [v, t] of marks) {
+        const y = px(top + capY(v));
+        o += T(SMALL, n === 1 ? 26 : 18, y + 2.6, v > 1 ? "#c0453a" : p, "end", t);
+        slots.forEach((sx) => { o += `<path d="M${sx + 2},${y} h22" stroke="${v > 1 ? "#c0453a" : p}" stroke-opacity="${v === 1 ? .9 : .4}"/>`; });
+      }
+      slots.forEach((sx, i) => {
+        const cx = sx + 13;
+        o += `<rect x="${cx - 2}" y="${top + 6}" width="4" height="${TRAVEL}" rx="2" fill="#0b0b0c"/>`;
+        o += capSimple(sx, top + capY(vals[i]) - 16);
+        if (n === 2) o += T(SMALL, cx, top - 4, p, "middle", i ? "R" : "L");
+      });
+      o += meter(n === 1 ? 82 : 92, top + 2, TRAVEL + 8, 2, "rect", 10, n === 1 ? 6 : 5, 2);
+      o += number(56, H - 14, vals.map((v) => Math.round(v * 100) + "%").join(" "), p);
+      o += T(SMALL, 56, H - 4, p, "middle", vals.map((v) => db(v) + " dB").join("  "), 'fill-opacity=".7"');
+      return o;
+    },
+  },
+  {
+    name: "7 · BAR METER",
+    note: "One smooth bar a channel, green into amber into red, instead of steps; a thin peak line holding at the top. Slot with a red top end, a scale of lines only on the left.",
+    draw(fin, vals) {
+      const p = fin.print, n = vals.length, top = 14;
+      let o = "";
+      const slots = n === 1 ? [44] : [36, 66];
+      for (const v of [150, 100, 75, 50, 25, 0]) o += T(SMALL, n === 1 ? 26 : 18, top + capY(v / 100) + 2.6, p, "end", String(v));
+      slots.forEach((sx, i) => {
+        const cx = sx + 13;
+        for (let k = 0; k <= 12; k++) {
+          const v = k * 12.5, y = px(top + capY(v / 100));
+          o += `<path d="M${cx - 12},${y} h${[0, 25, 50, 75, 100, 150].includes(v) ? 7 : 4}" stroke="${p}" stroke-opacity=".6"/>`;
+        }
+        o += `<rect x="${cx - 2}" y="${top + 6}" width="4" height="${TRAVEL}" rx="2" fill="#0b0b0c"/><rect x="${cx - 2}" y="${top + capY(VOL_MAX)}" width="4" height="${capY(1) - capY(VOL_MAX)}" rx="2" fill="#b4483c"/>`;
+        o += capSimple(sx, top + capY(vals[i]) - 16);
+        if (n === 2) o += T(SMALL, cx, top - 4, p, "middle", i ? "R" : "L");
+      });
+      const mx = n === 1 ? 84 : 94;
+      o += meter(mx, top + 2, TRAVEL + 8, 2, "bar", 10, n === 1 ? 6 : 5, 2);
+      o += `<path d="M${mx + 2},${top + 2 + (TRAVEL + 2) * 0.12} h${(n === 1 ? 6 : 5) * 2 + 4}" stroke="#ffb02e" stroke-width="1.2"/>`;
+      o += number(56, H - 8, vals.map((v) => Math.round(v * 100) + "%").join(" "), p);
+      return o;
+    },
+  },
+  {
+    name: "8 · LONG THROW, CHROME CAP",
+    note: "A classic long fader: a wide black slot, a chrome T-cap with a black line, small ticks right of the slot; the meter as a narrow column of round LEDs.",
+    draw(fin, vals) {
+      const p = fin.print, n = vals.length, top = 14;
+      let o = "";
+      const slots = n === 1 ? [40] : [32, 62];
+      for (const v of [150, 100, 75, 50, 25, 0]) o += T(SMALL, n === 1 ? 22 : 16, top + capY(v / 100) + 2.6, p, "end", String(v));
+      slots.forEach((sx, i) => {
+        const cx = sx + 13;
+        o += `<rect x="${cx - 3}" y="${top + 4}" width="6" height="${TRAVEL + 4}" rx="1" fill="#050506" stroke="#000"/>`;
+        for (let k = 0; k <= 12; k++) {
+          const v = k * 12.5, y = px(top + capY(v / 100));
+          o += `<path d="M${cx + 6},${y} h${[0, 25, 50, 75, 100, 150].includes(v) ? 5 : 3}" stroke="${v > 100 ? "#c0453a" : p}" stroke-opacity=".7"/>`;
+        }
+        const y = top + capY(vals[i]);
+        o += `<rect x="${sx + 1}" y="${y - 9}" width="24" height="20" rx="2" fill="#000" opacity=".5"/><rect x="${sx}" y="${y - 10}" width="24" height="20" rx="2" fill="url(#chrome)" stroke="#3a3b3e"/><rect x="${sx}" y="${y - 1}" width="24" height="2" fill="#151618"/>`;
+        if (n === 2) o += T(SMALL, cx, top - 4, p, "middle", i ? "R" : "L");
+      });
+      o += meter(n === 1 ? 84 : 92, top + 2, TRAVEL + 8, 2, "dot", 14, 5, 2);
+      o += number(56, H - 8, vals.map((v) => Math.round(v * 100) + "%").join(" "), p);
+      return o;
+    },
+  },
+  {
+    name: "9 · THE BAND'S COLOUR",
+    note: "Quiet: the slot and scale in the print's grey only, no zones; the part of the slot below the cap lit in the strip's kind colour (here an app's brown), as a level of the volume itself.",
+    draw(fin, vals) {
+      const p = fin.print, n = vals.length, top = 14, kind = "#7e5a42";
+      let o = "";
+      const slots = n === 1 ? [44] : [36, 66];
+      for (const v of [150, 100, 75, 50, 25, 0]) o += T(SMALL, n === 1 ? 26 : 18, top + capY(v / 100) + 2.6, v > 100 ? "#c0453a" : p, "end", String(v));
+      slots.forEach((sx, i) => {
+        const cx = sx + 13, y = top + capY(vals[i]);
+        o += `<rect x="${cx - 3}" y="${top + 6}" width="6" height="${TRAVEL}" rx="3" fill="#0b0b0c"/><rect x="${cx - 2}" y="${y}" width="4" height="${top + 6 + TRAVEL - y}" rx="2" fill="${kind}"/>`;
+        o += `<path d="M${cx - 9},${px(top + capY(1))} h18" stroke="${p}" stroke-opacity=".8"/>`;
+        o += capSimple(sx, y - 16);
+        if (n === 2) o += T(SMALL, cx, top - 4, p, "middle", i ? "R" : "L");
+      });
+      o += meter(n === 1 ? 82 : 92, top + 2, TRAVEL + 8, 2, "rect", 10, n === 1 ? 6 : 5, 2);
+      o += number(56, H - 8, vals.map((v) => Math.round(v * 100) + "%").join(" "), p);
+      return o;
+    },
+  },
+  {
+    name: "10 · NUMBER ON THE CAP",
+    note: "The volume printed on the cap itself (a wider cap), no number under the fader; the meter full height on the right, the scale only as lines.",
+    draw(fin, vals) {
+      const p = fin.print, n = vals.length, top = 22;
+      let o = "";
+      const slots = n === 1 ? [30] : [16, 52];
+      slots.forEach((sx, i) => {
+        const cx = sx + 17;
+        for (let k = 0; k <= 12; k++) {
+          const v = k * 12.5, y = px(top + capY(v / 100)), major = [0, 25, 50, 75, 100, 150].includes(v);
+          o += `<path d="M${cx - (major ? 16 : 12)},${y} h${major ? 8 : 5} M${cx + (major ? 8 : 7)},${y} h${major ? 8 : 5}" stroke="${v > 100 ? "#c0453a" : p}" stroke-opacity="${v === 100 ? 1 : .55}"/>`;
+        }
+        o += `<rect x="${cx - 2}" y="${top + 6}" width="4" height="${TRAVEL}" rx="2" fill="#0b0b0c"/>`;
+        const y = top + capY(vals[i]);
+        o += `<g transform="translate(${cx - 17},${y - 11})"><rect x="1" y="2" width="34" height="22" rx="3" fill="#000" opacity=".5"/><rect x=".5" y=".5" width="33" height="21" rx="3" fill="url(#cap)" stroke="#0b0b0c"/><text x="17" y="14.5" font-family="Noto Sans Mono" font-weight="700" font-size="8.5" fill="#e6e7e8" text-anchor="middle">${Math.round(vals[i] * 100)}</text></g>`;
+        if (n === 2) o += T(SMALL, cx, top - 9, p, "middle", i ? "R" : "L");
+      });
+      o += meter(n === 1 ? 84 : 92, top - 4, TRAVEL + 14, 2, "rect", 12, n === 1 ? 6 : 5, 2);
+      return o;
+    },
+  },
+];
+// ---------- the two together: 7's numbers and lines, 10's caps; the meter as 10's or as 8's ----------
+function combined(meterKind) {
+  return (fin, vals) => block(fin.print, vals.length === 2, vals, meterKind, 4);
+}
+// the block from `ft` down: the L and R
+// over the slots when split, the numbers and lines, the slots, the caps, the meter; LEVEL just
+// under the frame
+function block(p, split, vals, meterKind, ft) {
+  const top = ft + 14;
+  let o = T(SMALL, W / 2, ft + 200, p, "middle", "LEVEL");
+  const slots = split ? [38, 74] : [50];
+  for (const v of [150, 100, 75, 50, 25, 0]) o += T(SMALL, split ? 17 : 30, top + capY(v / 100) + 2.6, p, "end", String(v));
+  slots.forEach((cx, i) => {
+    for (let k = 0; k <= 12; k++) {
+      const v = k * 12.5, y = px(top + capY(v / 100));
+      o += `<path d="M${cx - 12},${y} h${[0, 25, 50, 75, 100, 150].includes(v) ? 7 : 4}" stroke="${p}" stroke-opacity=".6"/>`;
+    }
+    o += `<rect x="${cx - 2}" y="${top + 6}" width="4" height="${TRAVEL}" rx="2" fill="#0b0b0c"/><rect x="${cx - 2}" y="${top + capY(VOL_MAX)}" width="4" height="${capY(1) - capY(VOL_MAX)}" rx="2" fill="#b4483c"/>`;
+    const y = top + capY(vals[i]);
+    o += `<g transform="translate(${cx - 17},${y - 11})"><rect x="1" y="2" width="34" height="22" rx="3" fill="#000" opacity=".5"/><rect x=".5" y=".5" width="33" height="21" rx="3" fill="url(#cap)" stroke="#0b0b0c"/><text x="17" y="14.5" font-family="Noto Sans Mono" font-weight="700" font-size="8.5" fill="${vals[i] > 1 ? "#ff6a52" : "#e6e7e8"}" text-anchor="middle">${Math.round(vals[i] * 100)}</text></g>`;
+    if (split) o += T(SMALL, cx, ft + 10, p, "middle", i ? "R" : "L");
+  });
+  // (the meter's LEDs as thin, split or not)
+  const lw = 4, mx = split ? 93 : 84;
+  o += meterKind === "dot" ? meter(mx, top - 4, TRAVEL + 14, 2, "dot", 14, lw, 2) : meter(mx, top - 4, TRAVEL + 14, 2, "rect", 12, lw, 2);
+  return o;
+}
+VARIANTS.unshift(
+  { name: "A · TOGETHER, THE RACK'S LEDS", note: "7's numbers and lines (the lines left of the slot, the slot red past 100%), 10's caps with the volume on them, LEVEL under it; the meter's LEDs as 10's, full height. Whole modules: <a href=\"index.html?fader=a\">index.html?fader=a</a>", draw: combined("rect") },
+  { name: "B · TOGETHER, ROUND LEDS", note: "The same, the meter as 8's: a column of round LEDs, as the panel's. Whole modules: <a href=\"index.html?fader=b\">index.html?fader=b</a>", draw: combined("dot") },
+);
+
+// the app's cap now (cap_svg), at `scale`
+function capSimple(x, y, scale = 1) {
+  const w = 26 * scale;
+  return `<g transform="translate(${x + (26 - w) / 2},${y})"><rect x=".5" y=".5" width="${w - 1}" height="31" rx="3" fill="url(#cap)" stroke="#0b0b0c"/><rect x="3" y="15" width="${w - 6}" height="2" fill="#e6e7e8"/></g>`;
+}
+
+const grid = document.getElementById("grid");
+for (const v of VARIANTS) {
+  const card = document.createElement("div");
+  card.className = "card";
+  let s = `<svg xmlns="http://www.w3.org/2000/svg" width="${4 * (W + 12) + 3 * 12}" height="${H + 8}" font-family="Noto Sans" font-weight="bold">${defs}`;
+  let x = 0;
+  for (const fin of [FIN.black, FIN.alu]) {
+    for (const vals of [V.one, V.two]) {
+      s += `<g transform="translate(${x},4)">${plate(fin, W + 12, H)}<g transform="translate(6,0)">${v.draw(fin, vals)}</g></g>`;
+      x += W + 12 + 12;
+    }
+  }
+  card.innerHTML = `<h2>${v.name}</h2><p>${v.note}</p>${s}</svg>`;
+  grid.appendChild(card);
+}
+</script>
+</body>
+</html>

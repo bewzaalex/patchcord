@@ -16,26 +16,35 @@ rounds (channels and buses, masters, KDE's lists) before this shape.
 - E opens ENGINE from it, and E again comes back to MIXER.
 - DESK stays for now.
 
-**A module is a device of the rack.** A card, a program (every node it made) or a node of its
-own each make one module.
-- Its heading: a card's name in the left half and its PROFILE key, named by the profile in use, in
-  the right; anything else its name across it. Names are cut with an ellipsis: they never widen a
-  module. (A PROFILE row under the heading left the apps an empty one, 2026-11-24.)
-- A fixed width: one strip's, two strips', three… (112 each); a card that is off, one strip's.
-  SPLIT doesn't widen a strip. One gap (6) between every two modules, devices and apps alike.
-- No screens.
-- Paint by owner, as on the rack: hardware the top panel's metal, a program black, PipeWire's
-  own olive.
-- Every module is the full height of the console.
+**A console, by what things do** (2026-11-24, as a hardware one; it was a module a device, which
+put a headset's mic and headphones together and the master anywhere). Left to right:
+- **INPUTS**: every source (a microphone, a virtual source), the default input first.
+- **APPS**: each program's INPUT and OUTPUT (an INPUT first).
+- **OUTPUTS**: every sink but the default one; cards whose profile is Off after them.
+- **MASTER**: the default output, always at the window's right edge. While the console is wider
+  than the window, the rest scrolls under it (a backdrop and a shadow at its left); while it all
+  fits, the room between the outputs and MASTER is empty.
+- Within a group, by name, A to Z: static, whatever plays.
+- Between two groups a wider gap (22) with a groove down it; between two modules 6. Each group's
+  name over its first module.
+
+**A module is one strip**, of one width (112 + 12), under whose it is: its device's (or app's)
+name, cut with an ellipsis. A card's PROFILE key is once: on its output (else its input), in
+DEVICE SETUP, the profile in use at its right, as PORT's port; a card that is off is its name and DEVICE SETUP with
+PROFILE.
+No screens. Paint by owner, as on the rack: hardware the top panel's metal, a program black,
+PipeWire's own olive. Every module is as tall as the window (no shorter than 550): what it gains
+is room under the first group of keys; CHANNEL's keys, the fader and the meter keep their size.
+
+**Every group of keys has its title**, its keys in rows under it (17 tall, 23 apart), so they line
+up across the console: OUTPUT (MASTER, PLAY ALL HERE), INPUT (MAIN IN, RECORD ALL HERE), PLAY
+ON, RECORD FROM; on a device, under its first group, DEVICE SETUP (PROFILE, PORT): what sets up
+the card rather than routes the sound; then CHANNEL (CUE, MUTE, SPLIT).
 
 **Every key is the top panel's** (`panel::cap_svg`, its LED as `panel::led_svg`). A key with a LED
-(PLAY ON, RECORD FROM, MAIN, CUE, MUTE, SPLIT) is in while it is on, pressed into its hole; held
-down it sinks deeper, and it does what it does when let go over it, as the rack's BAL knob. The
-others (PLAY ALL HERE, PORT, PROFILE) act on the press.
-
-**Order.** DEVICES first, then APPS (`Finish::Black`), each by name, A to Z. The order is static:
-it doesn't follow what plays or which device is the default (2026-11-24; it put the default
-output last, which moved modules about). A card whose profile is Off is its heading only.
+(PLAY ON, RECORD FROM, MASTER, MAIN IN, CUE, MUTE, SPLIT) is in while it is on, pressed into its
+hole; held down it sinks deeper, and it does what it does when let go over it, as the rack's BAL
+knob. The others (PLAY ALL HERE, PORT, PROFILE) act on the press.
 
 **A strip is a group** (`graph::Group`, `mixer::role_of`): audio, no MONITOR, with a volume, or
 on a node whose ports go only one way.
@@ -45,9 +54,8 @@ on a node whose ports go only one way.
 - MIDI and video are not in MIXER. Devices hidden on the rack (HIDE, SYSTEM) are not in it
   either.
 
-**Inside a module**, what takes sound in is at the left (a sink, an app's INPUT) and what gives it
-out is at the right (a source, an app's OUTPUT), as the rack's frames go. The band is the block
-kind's colour, with GRAPH (`#id`, opens ENGINE) and the frame's name.
+**A strip's band** is the block kind's colour, with GRAPH (`#id`, opens ENGINE) and the frame's
+name.
 
 **An app's strip**
 - **PLAY ON** keys go to every sink shown; **RECORD FROM** keys go to every source shown.
@@ -58,8 +66,9 @@ kind's colour, with GRAPH (`#id`, opens ENGINE) and the frame's name.
 - One step to undo (`Scene::reroute`). These are links, as cords on the rack are.
 
 **A device's strip**
-- **MAIN OUT / MAIN IN**: the default (`default.configured.audio.*`); in, its amber LED lit, on
-  the default. (An amber outline round the strip went, 2026-11-24.)
+- **MASTER** (an output's) / **MAIN IN** (an input's): the default (`default.configured.audio.*`);
+  in, its amber LED lit, on the default. (It was MAIN OUT; an amber outline round the strip
+  went, 2026-11-24.)
 - **PLAY ALL HERE / RECORD ALL HERE**: every app that plays (records) somewhere moves here, and
   this becomes the default.
 - **PORT**: the card's port list, when it has more than one port.
@@ -68,11 +77,17 @@ kind's colour, with GRAPH (`#id`, opens ENGINE) and the frame's name.
 - **CUE**: its jacks heard in CUE mode, as on the rack.
 - **MUTE**.
 - **SPLIT**: a fader for L and one for R, for a stereo pair; it stands for BAL.
-- **The fader**: 0–153% (the rack's VOLUME), double-click 100%, the wheel steps it (Shift:
-  finer). Its scale: a line at every 12.5% (long at the numbers, 100% the strongest), on the pixel
-  grid; behind the lines, up to 100% in the print's grey, past it to the top a dull red; narrower
-  than the cap.
-- **The meter**: the rack's, ten LEDs.
+- **The fader block** (2026-11-24, from `docs/design/mixer/faders.html`'s A): under SPLIT, the
+  scale's numbers at the left (0, 25, 50, 75, 100, 150), a line at every 12.5% left of each slot
+  (long at the numbers), the slot red past 100%; each cap has its volume (%) on it (red past
+  100%), so there is no number under the fader; under it all its name as on the rack's knob:
+  VOLUME on what plays (an output, an app's OUTPUT), GAIN on what comes in (a microphone, an
+  app's INPUT). The fader goes from 0 to 150%
+  (the rack's VOLUME; 153% until 2026-11-24, as pavucontrol's +11 dB), double-click 100%, the
+  wheel steps it (Shift: finer).
+- **The meter**: at the right, as tall as the fader's slot and level with it, 12 thin LEDs a channel, green, amber, red. It shows the
+  sound after the strip's volume, as every meter of Patchcord does now (2026-11-24; a meter used
+  to undo a stream's volume and show what it was sent): a fader turned down, the meter falls.
 
 The console scrolls by dragging empty space or with the wheel. It has no zoom and no animation.
 
