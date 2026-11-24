@@ -1950,10 +1950,13 @@ impl Scene {
     /// volume, the quieter one its balance.
     pub fn set_channels(&mut self, at: (usize, usize), l: f64, r: f64) {
         let Some((_, _, mute)) = self.devs.get(at.0).and_then(|d| d.mix(at.1)) else { return };
-        let (l, r) = (l.clamp(0.0, VOL_MAX), r.clamp(0.0, VOL_MAX));
+        // each channel to a whole per cent, and the balance exactly from them: a balance rounded
+        // on its own moved the other channel a little whenever one fader moved
+        let pct = |x: f64| (x.clamp(0.0, VOL_MAX) * 100.0).round() / 100.0;
+        let (l, r) = (pct(l), pct(r));
         let v = l.max(r);
         let bal = if v <= 0.0 || l == r { 0.0 } else if l > r { r / l - 1.0 } else { 1.0 - l / r };
-        self.set_mix(at, (v * 100.0).round() / 100.0, (bal * 100.0).round() / 100.0, mute);
+        self.set_mix(at, v, bal, mute);
     }
 
     pub fn toggle_mute(&mut self, at: (usize, usize)) {
@@ -3545,6 +3548,8 @@ mod tests {
         for id in [10u32, 11, 12, 13, 14] {
             ev.insert(ev.len() - 1, Event::Mix { id, volumes: vec![0.8, 0.8], mute: false });
         }
+        // the speakers are the default output: MASTER's
+        ev.insert(ev.len() - 1, Event::Setting { key: "default.audio.sink".into(), value: r#"{"name":"Speakers"}"#.into() });
         let mut s = Scene::new();
         s.apply(ev);
         s
@@ -3561,17 +3566,42 @@ mod tests {
         let names: Vec<(Section, &str)> = mods.iter().map(|m| (m.section, m.name.as_str())).collect();
         assert!(mods.windows(2).all(|w| w[0].section <= w[1].section), "{names:?}");
         assert!(names.contains(&(Section::Inputs, "MICROPHONE")) && names.contains(&(Section::Outputs, "SPEAKERS")) && names.contains(&(Section::Apps, "MUSIC PLAYER")), "{names:?}");
+        // the default output stays among the outputs, and MASTER is a control of its own for it
+        assert_eq!(names.last(), Some(&(Section::Master, "SPEAKERS")), "{names:?}");
+        assert!(mods.iter().find(|m| m.section == Section::Outputs && m.name == "SPEAKERS").is_some_and(|m| m.strips[0].main));
         assert!(mods.iter().all(|m| m.strips.len() <= 1));
         let strip = |dev: &str| mods.iter().find(|m| m.name == dev).and_then(|m| m.strips.first()).expect(dev);
         // the music player plays into the speakers: its key to them is lit; the browser's isn't
         let music = strip("MUSIC PLAYER");
         assert_eq!(music.targets.iter().map(|t| (t.label.as_str(), t.lit)).collect::<Vec<_>>(), vec![("SPEAKERS", true)]);
         assert!(strip("BROWSER").targets.iter().all(|t| !t.lit));
+        // MASTER isn't one more place to play on
+        assert_eq!(strip("BROWSER").targets.len(), 1);
         // a recorder's keys are the sources
         assert_eq!(strip("RECORDER").targets.iter().map(|t| t.label.as_str()).collect::<Vec<_>>(), vec!["MICROPHONE"]);
         // one app on several streams: a module each, side by side, what records first
         let meeting: Vec<Role> = mods.iter().filter(|m| m.name == "MEETING").map(|m| m.strips[0].role).collect();
         assert_eq!(meeting, vec![Role::Rec, Role::Play, Role::Play, Role::Play]);
+    }
+
+    /// A split fader moves its own channel only: the other stays where it is.
+    #[test]
+    fn one_channel_of_a_split_fader_leaves_the_other_where_it_is() {
+        let mut s = mixer_scene();
+        let at = (s.devs.iter().position(|d| d.dev.name == "Speakers").expect("speakers"), 0);
+        // (the made-up graph's ports say no channel: a stereo pair here)
+        s.devs[at.0].dev.groups[at.1].stereo = true;
+        let lr = |s: &Scene| {
+            let (v, b, _) = s.devs[at.0].mix(at.1).expect("a volume");
+            [if b > 0.0 { v * (1.0 - b) } else { v }, if b < 0.0 { v * (1.0 + b) } else { v }]
+        };
+        s.set_channels(at, 0.8, 0.53);
+        for l in [0.81, 0.97, 1.13, 0.6, 0.4, 0.77] {
+            let r = lr(&s)[1];
+            s.set_channels(at, l, r);
+            let now = lr(&s);
+            assert!((now[0] - l).abs() < 1e-9 && (now[1] - 0.53).abs() < 1e-9, "{l}: {now:?}");
+        }
     }
 
     /// PLAY ON's links: L to L and R to R, and only there takes the old ones away, as one step.

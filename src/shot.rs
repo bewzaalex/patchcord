@@ -758,6 +758,15 @@ pub fn compose_mixer(mixer: &mut ui::mixer::Mixer, scene: &Scene, (w, h): (u32, 
         });
         out.draw_pixmap(0, 0, pm.as_ref(), &paint, Transform::from_row(sx, 0.0, 0.0, sy, x.round() as f32, y.round() as f32), mask.as_ref());
     }
+    // its scroll bars, as the window draws them (`app::bar_px`)
+    for (i, [x, y, bw, bh]) in mixer.bars((w, h), dpi) {
+        let mut p = resvg::tiny_skia::Paint::default();
+        let (c, a) = if i == 0 { (0x2a2b2e_u32, 0.55) } else { (0x9a9da2, 0.8) };
+        p.set_color(resvg::tiny_skia::Color::from_rgba8((c >> 16) as u8, (c >> 8) as u8, c as u8, (a * 255.0) as u8));
+        if let Some(r) = resvg::tiny_skia::Rect::from_xywh(x.round() as f32, y.round() as f32, bw.round() as f32, bh.round() as f32) {
+            out.fill_rect(r, &p, Transform::identity(), None);
+        }
+    }
     panel.state.mixer = true;
     panel.layer(w as f64 / dpi, dpi);
     for l in panel.layers() {
@@ -765,7 +774,7 @@ pub fn compose_mixer(mixer: &mut ui::mixer::Mixer, scene: &Scene, (w, h): (u32, 
             out.draw_pixmap((l.x * dpi).round() as i32, (l.y * dpi).round() as i32, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
         }
     }
-    let st = panel::status(w as f64 / dpi, &format!("PipeWire {} · {} devices", scene.version.as_deref().unwrap_or("?"), scene.devs.len()), "drag: scroll · wheel over a fader: volume · M: back · E: ENGINE", dpi);
+    let st = panel::status(w as f64 / dpi, &format!("PipeWire {} · {} devices", scene.version.as_deref().unwrap_or("?"), scene.devs.len()), "drag: scroll · wheel over a fader: volume · D: desk · R: rack · E: ENGINE", dpi);
     if let Some(pm) = &st.pm {
         out.draw_pixmap(0, (h as f64 - panel::STATUS_H * dpi).round() as i32, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
     }

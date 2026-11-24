@@ -15,12 +15,12 @@ use std::time::{Duration, Instant};
 
 use resvg::tiny_skia::Pixmap;
 
-use super::face::{self, FACE_PAD};
+use super::face::{self, BalKnob, FACE_PAD};
 use super::painter;
 use super::panel;
 use super::print::{SECTION, SMALL};
 use super::scene::{Layer, Scene, next_id, rasterize};
-use super::text::svg_options;
+use super::text::{esc, svg_options};
 use crate::graph::{Device, Finish, VOL_MAX};
 
 /// A picture to draw (see `engine::Pic`).
@@ -107,7 +107,9 @@ pub struct Strip {
 }
 
 /// The console's groups, left to right, as on a hardware one: the microphones, the apps, the
-/// other outputs, and the master (the default output) at the right.
+/// outputs (the default one too), and MASTER at the right: a control of its own for the default
+/// output (its volume and MUTE), which changes nothing of the device; the device stays among the
+/// outputs with its keys and its setup.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub enum Section {
     Inputs,
@@ -165,12 +167,23 @@ enum Hit {
     /// an app's key to a sink (source)
     To((usize, usize), (usize, usize)),
     Main((usize, usize)),
-    All((usize, usize)),
+    All((usize, usize), bool),
     Cue((usize, usize)),
-    Mute((usize, usize)),
-    Chan((usize, usize)),
+    /// MUTE, SPLIT: and whether on MASTER (the same group as the output's own, a key of its own)
+    Mute((usize, usize), bool),
+    Chan((usize, usize), bool),
     /// a fader's slot: which channel (none: the fader for all), the slot's top
     Fader((usize, usize), Option<usize>, f64),
+    /// the knobs, when the window is too low for the faders: VOLUME (GAIN), BAL
+    Knob((usize, usize)),
+    Bal((usize, usize)),
+}
+
+impl Hit {
+    /// A key of MASTER's.
+    fn on_master(&self) -> bool {
+        matches!(self, Hit::Mute(_, true) | Hit::Chan(_, true) | Hit::All(_, true))
+    }
 }
 
 /// What MIXER asks the window to do.
@@ -188,9 +201,16 @@ pub enum Action {
 
 enum Drag {
     Fader { at: (usize, usize), ch: Option<usize>, top: f64 },
+    /// the VOLUME knob turned: up is louder (`raw`: where it would be, before it rests at 100%)
+    Knob { at: (usize, usize), last: f64, raw: f64 },
+    /// the BAL knob pressed: it turns once the pointer moves (if it was out), else the release pops
+    /// it out or pushes it in, as the rack's
+    Bal { at: (usize, usize), y0: f64, last: f64, raw: f64, was: BalKnob, turned: bool },
     /// a key with a LED held down: it does what it does when let go over it
     Key(Hit),
     Pan { from: (f64, f64), x: f64, y: f64 },
+    /// a scroll bar's thumb carried: down (or along) it, from where it was, the scroll then
+    Bar { down: bool, from: f64, s0: f64 },
 }
 
 // the console's measures, in logical pixels
@@ -198,16 +218,25 @@ const LEFT: f64 = 14.0;
 const TOP: f64 = 26.0;
 const BOTTOM: f64 = 14.0;
 /// the gap between two modules of a group
-const GAP: f64 = 6.0;
+const GAP: f64 = 3.0;
+/// A scroll bar's lane, at the window's right edge or bottom, only while the console goes on
+/// beyond the window that way: the console stands back from it, nothing under the bar
+const BAR: f64 = 10.0;
+/// MASTER's frame of dark round it: from the window's right edge, and from what it covers
+const EDGE: f64 = 3.0;
 /// between two groups: wider, a groove down its middle
 const SEP: f64 = 22.0;
-/// a module's heading: its name
-const HEAD: f64 = 34.0;
+/// over the strip's frame: nothing, the frame is the module's edge
+const HEAD: f64 = 0.0;
 /// a module is one strip, of one width
 const STRIP_W: f64 = 112.0;
-const BAND: f64 = 24.0;
+/// the frame's band: two lines on it, the device's name and the frame's
+const BAND: f64 = 38.0;
+/// GRAPH (`#id`, opens ENGINE): on the band's second line, at its right
+const GRAPH_Y: f64 = 20.0;
+const GRAPH_H: f64 = 13.0;
 /// the first group of keys (OUTPUT, INPUT, PLAY ON, RECORD FROM): its title, then its keys in rows
-const ROUTE_Y: f64 = 31.0;
+const ROUTE_Y: f64 = BAND + 7.0;
 const KEY_H: f64 = 17.0;
 fn row(i: usize) -> f64 {
     ROUTE_Y + 17.0 + i as f64 * 23.0
@@ -218,53 +247,98 @@ const TRAVEL: f64 = 160.0;
 const ROWS_DELAY: Duration = Duration::from_millis(150);
 const RADIUS: f64 = 8.0;
 
-/// Where the lower part of a strip is (CHANNEL's keys, the fader block), from the strip's top:
-/// the modules are as tall as the window lets them (no shorter than these), what they gain the
-/// room under the first keys.
+/// How far a knob turns for a pointer's move (logical pixels for its whole way), as the rack's.
+const KNOB_TRAVEL: f64 = 200.0;
+
+/// Where the lower part of a strip is, from the strip's top: the VOLUME (GAIN) block, its name
+/// at `keys_y - 9`. The modules are all as tall as the tallest (the most keys), not the window: the
+/// block right under the lowest key of any module, no empty room over it. Under the block's name,
+/// the faders while the window has room for them (`TAIL_FADERS`), else the rack's knobs
+/// (`TAIL_KNOBS`); lower still, the console scrolls.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Rows {
     keys_y: f64,
-    chan_y: f64,
     strip_h: f64,
+    knobs: bool,
 }
 
-impl Rows {
-    const MIN: Rows = Rows { keys_y: 200.0, chan_y: 231.0, strip_h: 474.0 };
+const TAIL_FADERS: f64 = 228.0;
+const TAIL_KNOBS: f64 = 80.0;
 
-    /// For a field `h` tall.
-    fn fit(h: f64) -> Rows {
-        let m = Rows::MIN;
-        let extra = (h - TOP - BOTTOM - HEAD - m.strip_h).floor().max(0.0);
-        Rows { keys_y: m.keys_y + extra, chan_y: m.chan_y + extra, strip_h: m.strip_h + extra }
+impl Rows {
+    /// For a field `h` tall, the lowest key's bottom on any module at `need`.
+    fn fit(h: f64, need: f64) -> Rows {
+        // (the block's name as far under the lowest key as a group's title under the keys over it)
+        let keys = need + 27.0;
+        let room = (h - TOP - BOTTOM - HEAD).floor();
+        let knobs = room < keys + TAIL_FADERS;
+        let tail = if knobs { TAIL_KNOBS } else { TAIL_FADERS };
+        let keys_y = keys;
+        Rows { keys_y, strip_h: keys_y + tail, knobs }
     }
 
     fn mod_h(&self) -> f64 {
         HEAD + self.strip_h
     }
 
-    /// The fader block, under SPLIT (clear of its key's hole): where the caps go by (`cap_y` from
-    /// it; the slot from 6 under it), and the line of its name (VOLUME, GAIN) under it all.
+    /// The faders, under the block's keys: where the caps go by (`cap_y` from it; the slot from 6
+    /// under it).
     fn fader_y(&self) -> f64 {
-        self.chan_y + 44.0
-    }
-
-    fn level_y(&self) -> f64 {
-        self.chan_y + 230.0
+        self.keys_y + 37.0
     }
 }
 
 impl Default for Rows {
     fn default() -> Self {
-        Rows::MIN
+        Rows { keys_y: 200.0, strip_h: 200.0 + TAIL_FADERS, knobs: false }
     }
 }
+
+/// The lowest key's bottom on any module (from the strip's top): an app's every PLAY ON (RECORD
+/// FROM) key (`sinks`, `sources` of them), a device's MAIN row and SETUP's LCDs.
+fn lowest(mods: &[Module], sinks: usize, sources: usize) -> f64 {
+    let mut b = row(0) + KEY_H;
+    for m in mods.iter().filter(|m| m.section != Section::Master) {
+        let setup = usize::from(m.profile.is_some()) + usize::from(m.strips.iter().any(|s| s.port.is_some()));
+        if setup > 0 {
+            b = b.max(setup_row(setup - 1) + LCD_H);
+        }
+        for s in &m.strips {
+            let n = match s.role {
+                Role::Play => sinks.max(1),
+                Role::Rec => sources.max(1),
+                _ => 1,
+            };
+            b = b.max(row(n - 1) + KEY_H);
+        }
+    }
+    b
+}
+
 /// a fader's cap, its volume on it (and its shadow, a little lower)
 const CAP: (f64, f64) = (34.0, 22.0);
-/// the lit LEDs' column: as tall as the fader's slot, level with it; a LED's
+/// the lit LEDs' column: as tall as the fader's slot, level with it; under the knobs, from the
+/// block's name down to its keys' bottom
 const LEDS_H: f64 = TRAVEL;
+/// The meter beside the knobs: under the block's name (`KNOB_LEDS_Y` under its line; the name and
+/// its rule go across the whole strip over it), its bottom level with the keys' (their shadow
+/// under them): the keys at the name's line + 57, 17 high, their shadow 3 under them.
+const KNOB_LEDS_Y: f64 = 6.0;
+const KNOB_LEDS_H: f64 = 57.0 + KEY_H + 3.0 - KNOB_LEDS_Y;
 /// the meter's LEDs: how many, how wide (thin, split or not)
 const LEDS: usize = 12;
 const LED_W: f64 = 4.0;
+
+/// A meter's width for `cols` columns of LEDs: 3 of dark round them on every side, 2 between.
+fn meter_w(cols: usize) -> f64 {
+    cols as f64 * (LED_W + 2.0) + 4.0
+}
+
+/// From one LED to the next in a meter `h` high (each 2 shorter than this, 3 of dark at the top
+/// and the bottom).
+fn led_step(h: f64) -> f64 {
+    (h - 4.0) / LEDS as f64
+}
 
 /// Where the cap's middle is for a volume (1 is 100%), from the slot's top.
 fn cap_y(v: f64) -> f64 {
@@ -302,29 +376,91 @@ fn at_role(m: &Mixer, at: (usize, usize)) -> Option<Role> {
     m.strip(at).map(|s| s.role)
 }
 
-/// The strip a key with a LED is on (those go down while held and act when let go): PLAY ON and
-/// RECORD FROM, MAIN, CUE, MUTE, SPLIT.
+/// The strip a key is on (those go down while held and act when let go): PLAY ON and RECORD FROM,
+/// MAIN, ALL HERE, CUE, MUTE, SPLIT.
 fn key_of(h: &Hit) -> Option<(usize, usize)> {
     match h {
-        Hit::To(at, _) | Hit::Main(at) | Hit::Cue(at) | Hit::Mute(at) | Hit::Chan(at) => Some(*at),
+        Hit::To(at, _) | Hit::Main(at) | Hit::All(at, _) | Hit::Cue(at) | Hit::Mute(at, _) | Hit::Chan(at, _) => Some(*at),
         _ => None,
     }
 }
 
-/// A device's second group of keys, DEVICE SETUP (its card's PROFILE, its PORT), under the first:
-/// where its title is, from the strip's top.
-fn setup_y() -> f64 {
-    row(2) + 4.0
-}
-
-/// The keys of DEVICE SETUP in rows under its title.
+/// A device's keys are under one title, SETUP: MAIN and ALL HERE in its first row (`row(0)`), each
+/// in its own half (`halves`); then its card's PROFILE, its PORT, each a small LCD (`LCD_H` high)
+/// with its name over it: where the `i`th LCD is, from the strip's top.
+const LCD_H: f64 = 16.0;
 fn setup_row(i: usize) -> f64 {
-    setup_y() + 17.0 + i as f64 * 23.0
+    row(0) + KEY_H + 6.0 + i as f64 * 30.0 + 9.0
 }
 
-/// A card's PROFILE key, first in DEVICE SETUP, in a module `w` wide.
+/// MAIN's and ALL HERE's places in a row from `x`, `w` wide.
+fn halves(x: f64, w: f64) -> [[f64; 2]; 2] {
+    let hw = (w - 5.0) / 2.0;
+    [[x, hw], [x + (w + 5.0) / 2.0, hw]]
+}
+
+/// A card's PROFILE LCD, first under MAIN, in a module `w` wide.
 fn profile_key(w: f64) -> [f64; 4] {
-    [12.0, HEAD + setup_row(0), w - 24.0, KEY_H]
+    [12.0, HEAD + setup_row(0), w - 24.0, LCD_H]
+}
+
+/// The VOLUME (GAIN) block's keys in one row from `x`, `w` wide: CUE, MUTE, SPLIT (`split`; MASTER
+/// and the default output have no CUE). Every key has its own place, always the same, the places
+/// equal; a key that would do nothing (no volume in PipeWire: no MUTE; mono: no SPLIT) isn't there,
+/// its place empty.
+fn row_keys(s: &Strip, x: f64, y: f64, w: f64, master: bool, split: bool) -> Vec<(Hit, [f64; 4])> {
+    let mut hs = Vec::new();
+    // (no CUE on what CUE plays in, the default output: it would feed back, it can't go on)
+    if !master && !(s.role == Role::Sink && s.main) {
+        hs.push(Hit::Cue(s.at));
+    }
+    if s.mix.is_some() {
+        hs.push(Hit::Mute(s.at, master));
+        if split && s.stereo {
+            hs.push(Hit::Chan(s.at, master));
+        }
+    }
+    let n = if split { 3.0 } else { 2.0 };
+    let kw = (w - (n - 1.0) * 5.0) / n;
+    let place = |h: &Hit| match h {
+        Hit::Cue(_) => 0.0,
+        Hit::Mute(..) => 1.0,
+        _ => 2.0,
+    };
+    hs.into_iter().map(|h| { let px = x + place(&h) * (kw + 5.0); (h, [px, y, kw, KEY_H]) }).collect()
+}
+
+/// The block when the window is too low for the faders, as the rack's: its name on top (· BAL on a
+/// stereo strip), the VOLUME (GAIN) knob, the BAL knob, CUE and MUTE small under them, the meter at
+/// the right under the name; no SPLIT (BAL instead).
+struct KnobGeo {
+    /// the meter's left
+    mx: f64,
+    /// the name's line
+    t: f64,
+    vol: (f64, f64),
+    bal: Option<(f64, f64)>,
+    keys: Vec<(Hit, [f64; 4])>,
+}
+
+fn knob_geo(s: &Strip, x0: f64, sy: f64, rows: &Rows, master: bool) -> KnobGeo {
+    let mw = meter_w(s.cols);
+    let mx = x0 + s.w - 8.0 - mw;
+    let t = sy + rows.keys_y - 9.0;
+    let kx = x0 + 6.0;
+    let bal = s.stereo && s.mix.is_some();
+    KnobGeo {
+        mx,
+        t,
+        vol: (if bal { x0 + 30.0 } else { (kx + mx - 5.0) / 2.0 }, t + 29.0),
+        bal: bal.then_some((x0 + 68.0, t + 25.0)),
+        keys: row_keys(s, kx, t + 57.0, mx - 5.0 - kx, master, false),
+    }
+}
+
+/// The block's name, as on the rack: VOLUME on what plays, GAIN on what comes in.
+fn block_name(s: &Strip) -> &'static str {
+    if matches!(s.role, Role::Source | Role::Rec) { "GAIN" } else { "VOLUME" }
 }
 
 /// `t` cut to `w` wide in a style, with an ellipsis.
@@ -354,11 +490,19 @@ pub struct Mixer {
     sy: f64,
     /// the console's size
     size: (f64, f64),
+    /// the window's (pixels), as last drawn
+    win: (u32, u32),
+    /// the scroll bars' lanes taken from the field: down the right (the console taller than the
+    /// window), along the bottom (wider)
+    lanes: (bool, bool),
     /// stereo strips showing a fader for each channel: device key, group
     chans: HashSet<(String, usize)>,
     modules: Vec<Module>,
     /// the grooves between the groups: their x, and whether MASTER's
     grooves: Vec<(f64, bool)>,
+    /// from where MASTER covers the console, held at the edge over what scrolls under it: a press
+    /// there is MASTER's or nothing's
+    cover: Option<f64>,
     rows: Rows,
     /// a new height the window asks for, and since when (see `ROWS_DELAY`)
     rows_want: Option<(Rows, Instant)>,
@@ -368,7 +512,10 @@ pub struct Mixer {
     /// the cap, the lit LEDs (by columns and how many lit), the numbers, the sections' names
     /// the faders' caps, by the volume on them (%)
     caps: HashMap<(u32, u64), Layer>,
-    leds: HashMap<(usize, u8, u8, u64), Layer>,
+    leds: HashMap<(usize, u8, u8, bool, u64), Layer>,
+    /// the knobs, by the volume (%), and BAL by its balance (%) and whether in, held or out
+    knobs: HashMap<(u32, u64), Layer>,
+    bals: HashMap<(i32, u8, u64), Layer>,
     texts: HashMap<(String, &'static str, u64), Layer>,
     /// a groove, MASTER's backdrop, the shadow it casts on what goes under it
     deco: Option<(u64, [Layer; 3])>,
@@ -385,23 +532,6 @@ impl Mixer {
     /// `size` pixels at `dpi`: MASTER held at its right edge, the rows as tall as it lets them).
     fn layout(&mut self, scene: &Scene, pins: &[String], size: (u32, u32), dpi: f64) {
         let (fw, top, bottom) = Mixer::field(size, dpi);
-        // a new height (every module drawn again) once the window keeps still (`ROWS_DELAY`), as
-        // the rack takes a new width; at once the first time
-        let want = Rows::fit(bottom - top);
-        if want != self.rows {
-            match self.rows_want {
-                Some((w, at)) if w == want && at.elapsed() >= ROWS_DELAY => {
-                    self.rows = want;
-                    self.rows_want = None;
-                }
-                Some((w, _)) if w == want => {}
-                _ if self.modules.is_empty() => self.rows = want,
-                _ => self.rows_want = Some((want, Instant::now())),
-            }
-        } else {
-            self.rows_want = None;
-        }
-        let rows = self.rows;
         let out_default = scene.default_name(true);
         let in_default = scene.default_name(false);
         // (section, first, name, its order within the device) for the order
@@ -426,7 +556,7 @@ impl Mixer {
                     let two = g.stereo || g.ports.len() == 2;
                     let chans = g.stereo && mix.is_some() && self.chans.contains(&(dev.key.clone(), gi));
                     let held = match &self.drag {
-                        Some(Drag::Key(h)) if key_of(h) == Some((di, gi)) => Some(h.clone()),
+                        Some(Drag::Key(h)) if key_of(h) == Some((di, gi)) && !h.on_master() => Some(h.clone()),
                         _ => None,
                     };
                     Some(Strip { at: (di, gi), role, node, name: face::name(dev, gi), kind: g.kind, mix, stereo: g.stereo, chans, held, targets: Vec::new(), main, node_name, port, cue, cols: if two { 2 } else { 1 }, level: d.level(gi), x: 6.0, w: STRIP_W })
@@ -439,29 +569,42 @@ impl Mixer {
             // an app's INPUT before its OUTPUT
             let mut order: Vec<Strip> = strips.iter().filter(|s| s.role.takes()).cloned().chain(strips.iter().filter(|s| !s.role.takes()).cloned()).collect();
             if order.is_empty() {
-                // a card that is off: its name and PROFILE, last of the outputs
+                // a card that is off: its name and PROFILE, among the outputs in its place by name
+                // (nothing jumps when it goes on or off)
                 if profile.is_some() {
-                    mods.push((Section::Outputs, 2, 0, module(dev.key.clone(), Section::Outputs, Vec::new(), profile.clone())));
+                    mods.push((Section::Outputs, 1, 0, module(dev.key.clone(), Section::Outputs, Vec::new(), profile.clone())));
                 }
                 continue;
             }
             for (n, s) in order.drain(..).enumerate() {
                 let (section, first) = match s.role {
-                    Role::Source => (Section::Inputs, if s.main { 0 } else { 1 }),
-                    Role::Sink if s.main => (Section::Master, 0),
+                    Role::Source => (Section::Inputs, 1),
                     Role::Sink => (Section::Outputs, 1),
                     _ => (Section::Apps, 1),
                 };
+                // the default output: in its place among the outputs, and MASTER's too, a control
+                // of its own (its keys held apart from the device's)
+                if s.role == Role::Sink && s.main {
+                    let mut ms = s.clone();
+                    ms.held = match &self.drag {
+                        Some(Drag::Key(h)) if key_of(h) == Some(s.at) && h.on_master() => Some(h.clone()),
+                        _ => None,
+                    };
+                    mods.push((Section::Master, 0, n, module(format!("{}#{}#master", dev.key, s.at.1), Section::Master, vec![ms], None)));
+                }
                 let p = if profile_on == Some(s.at) { profile.clone() } else { None };
                 mods.push((section, first, n, module(format!("{}#{}", dev.key, s.at.1), section, vec![s], p)));
             }
         }
-        // a static order within each group (the default input first): by name, A to Z
+        // a static order within each group: by name, A to Z (the default input too: nothing moves
+        // when the default changes)
         mods.sort_by(|a, b| (a.0, a.1, &a.3.name, &a.3.key, a.2).cmp(&(b.0, b.1, &b.3.name, &b.3.key, b.2)));
         let mut mods: Vec<Module> = mods.into_iter().map(|m| m.3).collect();
         // an app's keys: every sink (source) shown, lit where it is linked, in the console's order
+        // (MASTER is no other one)
         let ends: Vec<End> = mods
             .iter()
+            .filter(|m| m.section != Section::Master)
             .flat_map(|m| {
                 let dev = &scene.devs[m.di].dev;
                 let several = |role: Role| dev.groups.iter().enumerate().filter(|(gi, g)| g.mix.is_some() && role_of(dev, *gi) == Some(role)).count() > 1;
@@ -488,10 +631,52 @@ impl Mixer {
                     .collect();
             }
         }
+        // a new height (every module drawn again) once the window keeps still (`ROWS_DELAY`), as
+        // the rack takes a new width; at once the first time
+        let count = |role: Role| ends.iter().filter(|e| e.0 == role).count();
+        let need = lowest(&mods, count(Role::Sink), count(Role::Source));
+        // the scroll bars' lanes: along the bottom while the console is wider than the window, down
+        // the right while taller (then narrower: wider, perhaps)
+        let wide_at = |w: f64| {
+            let (mut x, mut was) = (LEFT, None);
+            for m in &mods {
+                if was.is_some_and(|w| w != m.section) {
+                    x += SEP - GAP;
+                }
+                was = Some(m.section);
+                x += m.w + GAP;
+            }
+            x - GAP + if mods.iter().any(|m| m.section == Section::Master) { EDGE } else { LEFT } > w + 0.5
+        };
+        let mut wide = wide_at(fw);
+        let room = |wide: bool| bottom - top - if wide { BAR } else { 0.0 };
+        let mut want = Rows::fit(room(wide), need);
+        let tall = TOP + want.mod_h() + BOTTOM > room(wide) + 0.5;
+        if tall && !wide && wide_at(fw - BAR) {
+            wide = true;
+            want = Rows::fit(room(true), need);
+        }
+        self.lanes = (tall, wide);
+        if want != self.rows {
+            match self.rows_want {
+                Some((w, at)) if w == want && at.elapsed() >= ROWS_DELAY => {
+                    self.rows = want;
+                    self.rows_want = None;
+                }
+                Some((w, _)) if w == want => {}
+                _ if self.modules.is_empty() => self.rows = want,
+                _ => self.rows_want = Some((want, Instant::now())),
+            }
+        } else {
+            self.rows_want = None;
+        }
+        let rows = self.rows;
+        let fw = fw - if self.lanes.0 { BAR } else { 0.0 };
         // where everything is: a gap between modules, a groove between groups, MASTER held at the
         // window's right edge whatever the console scrolls to
         self.hits.clear();
         self.grooves.clear();
+        self.cover = None;
         let mut x = LEFT;
         let mut was = None;
         for m in &mut mods {
@@ -502,8 +687,11 @@ impl Mixer {
             // MASTER at the window's right edge, always: over what scrolls under it while the
             // console is wider than the window; its groove right before it
             if master {
-                m.x = self.sx + fw - LEFT - m.w;
+                m.x = self.sx + fw - EDGE - m.w;
                 m.pinned = m.x < x - 0.5;
+                if m.pinned {
+                    self.cover = Some(m.x - EDGE);
+                }
             }
             if was.is_some_and(|w| w != m.section) {
                 self.grooves.push((if master { m.x - SEP / 2.0 } else { x - SEP / 2.0 }, master));
@@ -522,32 +710,42 @@ impl Mixer {
             let below = usize::from(m.profile.is_some());
             for s in &m.strips {
                 let x0 = mx + s.x;
+                let [[lx, lw], [rx, rw]] = halves(x0 + 6.0, s.w - 12.0);
                 let gw = 10.0 + SMALL.width(&format!("#{}", s.node));
-                self.hits.push((Hit::Graph(s.node), [x0 + 8.0, sy + 5.0, gw, 14.0]));
+                self.hits.push((Hit::Graph(s.node), [x0 + s.w - 2.0 - gw, sy + GRAPH_Y, gw, GRAPH_H]));
                 let (kx, kw) = (x0 + 6.0, s.w - 12.0);
                 match s.role {
+                    // MASTER: ALL HERE only, in its place
+                    _ if master => self.hits.push((Hit::All(s.at, true), [rx, sy + row(0), rw, KEY_H])),
                     Role::Play | Role::Rec => {
-                        for (i, t) in s.targets.iter().enumerate().take(6) {
+                        for (i, t) in s.targets.iter().enumerate() {
                             self.hits.push((Hit::To(s.at, t.at), [kx, sy + row(i), kw, KEY_H]));
                         }
                     }
                     Role::Sink | Role::Source => {
                         if s.mix.is_some() && s.node_name.is_some() {
-                            self.hits.push((Hit::Main(s.at), [kx, sy + row(0), kw, KEY_H]));
-                            self.hits.push((Hit::All(s.at), [kx, sy + row(1), kw, KEY_H]));
+                            self.hits.push((Hit::Main(s.at), [lx, sy + row(0), lw, KEY_H]));
+                            self.hits.push((Hit::All(s.at, false), [rx, sy + row(0), rw, KEY_H]));
                         }
                         if s.port.is_some() {
-                            self.hits.push((Hit::Port(m.di), [kx, sy + setup_row(below), kw, KEY_H]));
+                            self.hits.push((Hit::Port(m.di), [kx, sy + setup_row(below), kw, LCD_H]));
                         }
                     }
                 }
-                let half = (s.w - 12.0 - 7.0) / 2.0;
-                self.hits.push((Hit::Cue(s.at), [kx, sy + rows.keys_y, half, 24.0]));
-                if s.mix.is_some() {
-                    self.hits.push((Hit::Mute(s.at), [kx + half + 7.0, sy + rows.keys_y, half, 24.0]));
-                    if s.stereo {
-                        self.hits.push((Hit::Chan(s.at), [kx, sy + rows.chan_y, kw, 24.0]));
+                // the VOLUME (GAIN) block: its keys, and the faders or the knobs
+                if rows.knobs {
+                    let g = knob_geo(s, x0, sy, &rows, master);
+                    self.hits.extend(g.keys);
+                    if s.mix.is_some() {
+                        self.hits.push((Hit::Knob(s.at), [g.vol.0 - 21.0, g.vol.1 - 21.0, 42.0, 42.0]));
+                        if let Some((bx, by)) = g.bal {
+                            self.hits.push((Hit::Bal(s.at), [bx - 15.0, by - 15.0, 30.0, 30.0]));
+                        }
                     }
+                    continue;
+                }
+                self.hits.extend(row_keys(s, kx, sy + rows.keys_y, kw, master, true));
+                if s.mix.is_some() {
                     for (i, cx) in slots_x(s).iter().enumerate() {
                         let ch = if s.chans { Some(i) } else { None };
                         let top = sy + rows.fader_y();
@@ -557,10 +755,47 @@ impl Mixer {
             }
         }
         // (MASTER held at the edge: what it covers is where the console ends)
-        self.size = (x - GAP + LEFT, TOP + rows.mod_h() + BOTTOM);
+        let end = if mods.iter().any(|m| m.section == Section::Master) { EDGE } else { LEFT };
+        self.size = (x - GAP + end, TOP + rows.mod_h() + BOTTOM);
         // MASTER last: drawn over what goes under it
         mods.sort_by_key(|m| m.section == Section::Master);
         self.modules = mods;
+    }
+
+    /// The console's scroll bars where it goes on beyond the window, as the rack's: down the right
+    /// edge, along the bottom. Whether down, its track and its thumb, in window pixels.
+    fn bar_geo(&self, size: (u32, u32), dpi: f64) -> Vec<(bool, [f64; 4], [f64; 4])> {
+        let (w, top, bottom) = self.view(size, dpi);
+        let (fw, top, bottom) = (w * dpi, top * dpi, bottom * dpi);
+        let (fh, t) = (bottom - top, 4.0 * dpi);
+        // (in the middle of its lane)
+        let inset = (BAR * dpi - t) / 2.0;
+        let (cw, ch) = (self.size.0 * dpi, self.size.1 * dpi);
+        let mut out = Vec::new();
+        if self.lanes.0 && ch > fh + 1.0 {
+            let th = (fh * fh / ch).max(24.0 * dpi);
+            let at = (self.sy * dpi / (ch - fh)).clamp(0.0, 1.0);
+            let x = fw + inset;
+            out.push((true, [x, top + 2.0, t, fh - 4.0], [x, top + 2.0 + (fh - 4.0 - th) * at, t, th]));
+        }
+        if self.lanes.1 && cw > fw + 1.0 {
+            let tw = (fw * fw / cw).max(24.0 * dpi);
+            let at = (self.sx * dpi / (cw - fw)).clamp(0.0, 1.0);
+            let y = bottom + inset;
+            out.push((false, [2.0, y, fw - 4.0, t], [2.0 + (fw - 4.0 - tw) * at, y, tw, t]));
+        }
+        out
+    }
+
+    /// The field less the scroll bars' lanes: what shows the console (logical pixels).
+    fn view(&self, size: (u32, u32), dpi: f64) -> (f64, f64, f64) {
+        let (w, top, bottom) = Mixer::field(size, dpi);
+        (w - if self.lanes.0 { BAR } else { 0.0 }, top, bottom - if self.lanes.1 { BAR } else { 0.0 })
+    }
+
+    /// The scroll bars to draw: track (0) and thumb (1), in window pixels (see `bar_geo`).
+    pub fn bars(&self, size: (u32, u32), dpi: f64) -> Vec<(usize, [f64; 4])> {
+        self.bar_geo(size, dpi).into_iter().flat_map(|(_, track, thumb)| [(0, track), (1, thumb)]).collect()
     }
 
     /// The console's field in the window (logical pixels): below the panel, above the status bar.
@@ -571,7 +806,7 @@ impl Mixer {
 
     /// Keeps the console's scroll inside it.
     fn clamp(&mut self, size: (u32, u32), dpi: f64) {
-        let (w, top, bottom) = Mixer::field(size, dpi);
+        let (w, top, bottom) = self.view(size, dpi);
         self.sx = self.sx.clamp(0.0, (self.size.0 - w).max(0.0));
         self.sy = self.sy.clamp(0.0, (self.size.1 - (bottom - top)).max(0.0));
     }
@@ -583,7 +818,14 @@ impl Mixer {
 
     fn hit(&self, p: (f64, f64), dpi: f64) -> Option<Hit> {
         let (x, y) = self.at(p, dpi);
-        self.hits.iter().find(|(_, [hx, hy, hw, hh])| x >= *hx && x <= hx + hw && y >= *hy && y <= hy + hh).map(|(h, _)| h.clone())
+        // (what is drawn last is on top: MASTER over what goes under it)
+        let covered = self.cover.is_some_and(|c| x >= c);
+        self.hits
+            .iter()
+            .rev()
+            .filter(|(_, [hx, ..])| !covered || self.cover.is_some_and(|c| *hx >= c))
+            .find(|(_, [hx, hy, hw, hh])| x >= *hx && x <= hx + hw && y >= *hy && y <= hy + hh)
+            .map(|(h, _)| h.clone())
     }
 
     /// A rectangle on the console as window pixels.
@@ -597,6 +839,29 @@ impl Mixer {
 
     /// A press at `p` (window pixels).
     pub fn press(&mut self, scene: &mut Scene, p: (f64, f64), dpi: f64) -> Option<Action> {
+        // a scroll bar: its thumb is carried; pressed beside it, the thumb comes to the pointer
+        for (down, track, thumb) in self.bar_geo(self.win, dpi) {
+            let grab = BAR / 2.0 * dpi;
+            let (along, at, lo, len, th) = if down { (p.0, p.1, track[1], track[3], thumb[3]) } else { (p.1, p.0, track[0], track[2], thumb[2]) };
+            let across = if down { track[0] } else { track[1] };
+            if (along - across - 2.0 * dpi).abs() > grab || at < lo || at > lo + len {
+                continue;
+            }
+            let t0 = if down { thumb[1] } else { thumb[0] };
+            if at < t0 || at > t0 + th {
+                // (its middle under the pointer)
+                let room = (len - th).max(1.0);
+                let k = ((at - th / 2.0 - lo) / room).clamp(0.0, 1.0);
+                let (w, top, bottom) = self.view(self.win, dpi);
+                if down {
+                    self.sy = k * (self.size.1 - (bottom - top)).max(0.0);
+                } else {
+                    self.sx = k * (self.size.0 - w).max(0.0);
+                }
+            }
+            self.drag = Some(Drag::Bar { down, from: at, s0: if down { self.sy } else { self.sx } });
+            return None;
+        }
         let Some(hit) = self.hit(p, dpi) else {
             let (x, y) = (p.0 / dpi, p.1 / dpi);
             self.drag = Some(Drag::Pan { from: (x, y), x: self.sx, y: self.sy });
@@ -614,7 +879,6 @@ impl Mixer {
             Hit::Graph(node) => Some(Action::Graph(node)),
             Hit::Profile(di) => Some(Action::Profile(di, self.to_window(rect, dpi))),
             Hit::Port(di) => Some(Action::Port(di, self.to_window(rect, dpi))),
-            Hit::All(at) => self.play_all(scene, at),
             Hit::Fader(at, ch, top) => {
                 if double {
                     self.set_fader(scene, at, ch, 1.0);
@@ -624,6 +888,27 @@ impl Mixer {
                     self.set_fader(scene, at, ch, vol_at(y - top));
                 }
                 Some(Action::Changed)
+            }
+            // a knob: up is louder; a double click, 100%
+            Hit::Knob(at) => {
+                if double {
+                    scene.set_volume(at, 1.0);
+                    return Some(Action::Changed);
+                }
+                let raw = scene.devs.get(at.0).and_then(|d| d.mix(at.1)).map_or(1.0, |m| m.0);
+                self.drag = Some(Drag::Knob { at, last: p.1 / dpi, raw });
+                None
+            }
+            // BAL, as the rack's (the same knob: in or out on both)
+            Hit::Bal(at) => {
+                let d = scene.devs.get_mut(at.0)?;
+                let raw = d.mix(at.1).map_or(0.0, |m| m.1);
+                let was = d.bal(at.1);
+                // down under the finger, below flush
+                d.bal.insert(at.1, BalKnob::Held);
+                let y = p.1 / dpi;
+                self.drag = Some(Drag::Bal { at, y0: y, last: y, raw, was, turned: false });
+                None
             }
             _ => None,
         }
@@ -642,16 +927,17 @@ impl Mixer {
                 if lit { scene.reroute(&[], &[pair(to)]) } else { scene.reroute(&[pair(to)], &[]) }
                 Some(Action::Changed)
             }
+            Hit::All(at, _) => self.play_all(scene, at),
             Hit::Main(at) => {
                 let s = self.strip(at)?;
                 scene.set_default(s.role == Role::Sink, s.node_name.as_deref()?);
                 Some(Action::Changed)
             }
-            Hit::Mute(at) => {
+            Hit::Mute(at, _) => {
                 scene.toggle_mute(at);
                 Some(Action::Changed)
             }
-            Hit::Chan(at) => {
+            Hit::Chan(at, _) => {
                 let key = (scene.devs.get(at.0)?.dev.key.clone(), at.1);
                 if !self.chans.remove(&key) {
                     self.chans.insert(key);
@@ -707,6 +993,48 @@ impl Mixer {
                 self.clamp(size, dpi);
                 true
             }
+            // the thumb goes with the pointer: the console as much further as the thumb's room
+            // stands for
+            Some(Drag::Bar { down, from, s0 }) => {
+                let Some((_, track, thumb)) = self.bar_geo(size, dpi).into_iter().find(|b| b.0 == down) else { return false };
+                let (w, top, bottom) = self.view(size, dpi);
+                let (len, th, at) = if down { (track[3], thumb[3], p.1) } else { (track[2], thumb[2], p.0) };
+                let span = if down { self.size.1 - (bottom - top) } else { self.size.0 - w };
+                let v = s0 + (at - from) / (len - th).max(1.0) * span.max(0.0);
+                if down {
+                    self.sy = v;
+                } else {
+                    self.sx = v;
+                }
+                self.clamp(size, dpi);
+                true
+            }
+            // (as the rack's: it rests at 100% for a moment on the way)
+            Some(Drag::Knob { at, last, raw }) => {
+                let y = p.1 / dpi;
+                let raw = (raw + (last - y) * VOL_MAX / KNOB_TRAVEL).clamp(0.0, VOL_MAX);
+                self.drag = Some(Drag::Knob { at, last: y, raw });
+                scene.set_volume(at, if (raw - 1.0).abs() < 0.04 { 1.0 } else { raw });
+                true
+            }
+            Some(Drag::Bal { at, y0, last, raw, was, mut turned }) => {
+                let y = p.1 / dpi;
+                // pushed in, it can't turn; out, it turns once the pointer really moves
+                if was != BalKnob::Out || (!turned && (y - y0).abs() < 3.0) {
+                    return false;
+                }
+                if !turned {
+                    // turning, not pressing: it comes back up without a click
+                    turned = true;
+                    if let Some(d) = scene.devs.get_mut(at.0) {
+                        d.bal.insert(at.1, BalKnob::Out);
+                    }
+                }
+                let raw = (raw + (last - y) * 2.0 / KNOB_TRAVEL).clamp(-1.0, 1.0);
+                self.drag = Some(Drag::Bal { at, y0, last: y, raw, was, turned });
+                scene.set_balance(at, if raw.abs() < 0.05 { 0.0 } else { raw });
+                true
+            }
             // (a key held: it stays down; the release says whether it was let go over it)
             Some(Drag::Key(_)) | None => false,
         }
@@ -716,22 +1044,56 @@ impl Mixer {
     pub fn release(&mut self, scene: &mut Scene, p: (f64, f64), dpi: f64) -> Option<Action> {
         match self.drag.take() {
             Some(Drag::Key(h)) if self.hit(p, dpi).as_ref() == Some(&h) => self.key_up(scene, h),
+            // a press without a turn: it comes back up, out if it was in, in if it was out
+            Some(Drag::Bal { at, was, turned, .. }) => {
+                if let Some(d) = scene.devs.get_mut(at.0) {
+                    d.bal.insert(at.1, if turned || was == BalKnob::In { BalKnob::Out } else { BalKnob::In });
+                }
+                None
+            }
             _ => None,
         }
     }
 
-    /// Lets go of what is held without doing anything (switching screens).
-    pub fn let_go(&mut self) {
-        self.drag = None;
+    /// Lets go of what is held without doing anything (switching screens); a BAL knob held comes
+    /// back as it was.
+    pub fn let_go(&mut self, scene: &mut Scene) {
+        if let Some(Drag::Bal { at, was, .. }) = self.drag.take()
+            && let Some(d) = scene.devs.get_mut(at.0)
+        {
+            d.bal.insert(at.1, was);
+        }
     }
 
     pub fn dragging(&self) -> bool {
         self.drag.is_some()
     }
 
-    /// The wheel: over a fader it steps the volume (`clicks`, finer with Shift); elsewhere it
-    /// scrolls the console (`d`: logical pixels, sideways first when it is wider than the window).
+    /// The wheel: over a fader or the VOLUME knob it steps the volume (`clicks`, finer with Shift),
+    /// over BAL when it is out the balance; elsewhere it scrolls the console (`d`: logical pixels,
+    /// sideways first when it is wider than the window).
     pub fn wheel(&mut self, scene: &mut Scene, p: (f64, f64), Wheel { clicks, d, fine }: Wheel, size: (u32, u32), dpi: f64) -> bool {
+        let step = clicks as f64 * if fine { 0.01 } else { 0.05 };
+        match self.hit(p, dpi) {
+            Some(Hit::Knob(at)) => {
+                if clicks == 0 {
+                    return false;
+                }
+                let Some((vol, ..)) = scene.devs.get(at.0).and_then(|d| d.mix(at.1)) else { return false };
+                scene.set_volume(at, (vol + step).clamp(0.0, VOL_MAX));
+                return true;
+            }
+            Some(Hit::Bal(at)) if scene.devs.get(at.0).is_some_and(|d| d.bal(at.1) == BalKnob::Out) => {
+                if clicks == 0 {
+                    return false;
+                }
+                let Some((_, bal, _)) = scene.devs.get(at.0).and_then(|d| d.mix(at.1)) else { return false };
+                let b = (bal + step).clamp(-1.0, 1.0);
+                scene.set_balance(at, if b.abs() < 0.03 { 0.0 } else { b });
+                return true;
+            }
+            _ => {}
+        }
         if let Some(Hit::Fader(at, ch, _)) = self.hit(p, dpi) {
             if clicks == 0 {
                 return false;
@@ -741,10 +1103,10 @@ impl Mixer {
                 None => vol,
                 Some(c) => channels((vol, bal))[c.min(1)],
             };
-            self.set_fader(scene, at, ch, now + clicks as f64 * if fine { 0.01 } else { 0.05 });
+            self.set_fader(scene, at, ch, now + step);
             return true;
         }
-        let (w, top, bottom) = Mixer::field(size, dpi);
+        let (w, top, bottom) = self.view(size, dpi);
         let wide = self.size.0 > w;
         let (dx, dy) = if d.0 == 0.0 && wide && self.size.1 <= bottom - top { (d.1, 0.0) } else { d };
         (self.sx, self.sy) = (self.sx - dx, self.sy - dy);
@@ -763,13 +1125,17 @@ impl Mixer {
                 let lit = self.strip(from).is_some_and(|s| s.targets.iter().any(|t| t.at == to && t.lit));
                 format!("{} {} {}. Click: {}", name(from), if lit { "goes to" } else { "doesn't go to" }, name(to), if lit { "not there any more" } else { "there too" })
             }
-            Hit::Main(at) if at_role(self, at) == Some(Role::Sink) => format!("Make {} the master: everything plays here, new apps too", name(at)),
-            Hit::Main(at) => format!("Make {} the default input: new apps record from here", name(at)),
-            Hit::All(at) => format!("Every app to {}, and it becomes the default", name(at)),
+            Hit::Main(at) if at_role(self, at) == Some(Role::Sink) => format!("MAIN: make {} the default output (MASTER): new apps play here", name(at)),
+            Hit::Main(at) => format!("MAIN: make {} the default input: new apps record from here", name(at)),
+            Hit::All(at, _) if at_role(self, at) == Some(Role::Source) => format!("ALL HERE: every app records from {}, and it becomes the default", name(at)),
+            Hit::All(at, _) => format!("ALL HERE: every app plays on {}, and it becomes the default", name(at)),
             Hit::Cue(at) => format!("Listen to {} in the default output; nothing else changes", name(at)),
-            Hit::Mute(at) => format!("Mute {}", name(at)),
-            Hit::Chan(_) => "CHANNELS: a fader for L and one for R".into(),
-            Hit::Fader(at, ..) => format!("{}: drag or wheel; double-click 100%", name(at)),
+            Hit::Mute(at, true) => format!("Mute the master ({})", name(at)),
+            Hit::Mute(at, false) => format!("Mute {}", name(at)),
+            Hit::Chan(..) => "SPLIT: a fader for L and one for R".into(),
+            Hit::Fader(at, ..) | Hit::Knob(at) => format!("{}: drag or wheel; double-click 100%", name(at)),
+            Hit::Bal(at) if scene.devs.get(at.0).is_some_and(|d| d.bal(at.1) == BalKnob::Out) => "BAL: drag or wheel turns it; a click pushes it in".into(),
+            Hit::Bal(_) => "BAL: a click and it comes out, to turn".into(),
         })
     }
 
@@ -811,6 +1177,7 @@ impl Mixer {
     /// Everything to draw, in window pixels.
     pub fn sprites(&mut self, scene: &Scene, pins: &[String], size: (u32, u32), dpi: f64) -> Vec<Pic<'_>> {
         // (scrolled first: MASTER's place follows the scroll)
+        self.win = size;
         self.clamp(size, dpi);
         self.layout(scene, pins, size, dpi);
         self.clamp(size, dpi);
@@ -833,7 +1200,7 @@ impl Mixer {
         self.pics.retain(|k, _| keys.contains(k.as_str()));
         let mut prints = Vec::new();
         for m in &self.modules {
-            let (skin, print) = face::paint(m.finish, m.w, mod_h, RADIUS);
+            let (skin, print) = if m.section == Section::Master { face::master_paint(m.w, mod_h, RADIUS) } else { face::paint(m.finish, m.w, mod_h, RADIUS) };
             prints.push(print);
             let svg = module_svg(m, print, &rows);
             let sig = painter::sig(&svg, dpi);
@@ -856,18 +1223,38 @@ impl Mixer {
             let groove = r##"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="1"><rect width="1" height="1" fill="#000" fill-opacity=".6"/><rect x="1" width="1" height="1" fill="#fff" fill-opacity=".08"/></svg>"##;
             let back = r##"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1" fill="#1b1c1e"/></svg>"##;
             let shade = r##"<svg xmlns="http://www.w3.org/2000/svg" width="14" height="1"><defs><linearGradient id="g"><stop offset="0" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".45"/></linearGradient></defs><rect width="14" height="1" fill="url(#g)"/></svg>"##;
-            self.deco = Some((scale, [small(groove, 2.0, 1.0, dpi), small(back, 1.0, 1.0, dpi), small(shade, 14.0, 1.0, dpi)]));
+            // (in whole pixels, whatever the scale: they are stretched anyway, and a pixel cut by a
+            // fractional scale comes out see-through, MASTER's backdrop showing what goes under it)
+            self.deco = Some((scale, [small(groove, 2.0, 1.0, 1.0), small(back, 1.0, 1.0, 1.0), small(shade, 14.0, 1.0, 1.0)]));
         }
         let mut wanted_leds = Vec::new();
         let mut wanted_caps = Vec::new();
+        let mut wanted_knobs = Vec::new();
+        let mut wanted_bals = Vec::new();
         let mut wanted_texts: Vec<(String, &'static str, u64)> = Vec::new();
         for s in self.modules.iter().flat_map(|m| &m.strips) {
             let l = s.level.map(lit);
-            wanted_leds.push((s.cols, l[0], if s.cols == 2 { l[1] } else { 0 }, scale));
-            wanted_caps.extend(cap_values(s).into_iter().map(|v| (v, scale)));
+            wanted_leds.push((s.cols, l[0], if s.cols == 2 { l[1] } else { 0 }, rows.knobs, scale));
+            if rows.knobs {
+                if let Some((v, b, _)) = s.mix {
+                    wanted_knobs.push((pct(v), scale));
+                    if s.stereo {
+                        wanted_bals.push((bal_pct(b), bal_state(scene, s.at), scale));
+                    }
+                }
+            } else {
+                wanted_caps.extend(cap_values(s).into_iter().map(|v| (v, scale)));
+            }
         }
         for k in wanted_leds {
-            self.leds.entry(k).or_insert_with(|| small(&leds_svg(k.0, k.1, k.2), k.0 as f64 * (LED_W + 2.0) + 2.0, LEDS_H, dpi));
+            let h = if k.3 { KNOB_LEDS_H } else { LEDS_H };
+            self.leds.entry(k).or_insert_with(|| small(&leds_svg(k.0, k.1, k.2, h), meter_w(k.0), h, dpi));
+        }
+        for k in wanted_knobs {
+            self.knobs.entry(k).or_insert_with(|| small(&vol_knob_svg(k.0), 40.0, 40.0, dpi));
+        }
+        for k in wanted_bals {
+            self.bals.entry(k).or_insert_with(|| small(&bal_knob_svg(k.0, k.1), 30.0, 30.0, dpi));
         }
         for k in wanted_caps {
             self.caps.entry(k).or_insert_with(|| small(&cap_svg(k.0), CAP.0 + 1.0, CAP.1 + 2.0, dpi));
@@ -892,7 +1279,13 @@ impl Mixer {
         if self.caps.len() > 400 {
             self.caps.clear();
         }
-        let (fw, top, bottom) = Mixer::field(size, dpi);
+        if self.knobs.len() > 400 {
+            self.knobs.clear();
+        }
+        if self.bals.len() > 400 {
+            self.bals.clear();
+        }
+        let (fw, top, bottom) = self.view(size, dpi);
         let clip = Some([0.0, top * dpi, fw * dpi, (bottom - top) * dpi]);
         let (ox, oy) = (-self.sx, panel::H - self.sy);
         let mut out: Vec<Pic> = Vec::new();
@@ -908,8 +1301,8 @@ impl Mixer {
                     }
                 }
                 if m.pinned {
-                    out.push((shade, px(ox + m.x - GAP - 14.0), px(oy), 14.0 * dpi, self.size.1 * dpi, clip, 1.0));
-                    out.push((back, px(ox + m.x - GAP), px(oy), (m.w + GAP + LEFT) * dpi, self.size.1 * dpi, clip, 1.0));
+                    out.push((shade, px(ox + m.x - EDGE - 14.0), px(oy), 14.0 * dpi, self.size.1 * dpi, clip, 1.0));
+                    out.push((back, px(ox + m.x - EDGE), px(oy), (m.w + 2.0 * EDGE) * dpi, self.size.1 * dpi, clip, 1.0));
                 }
             }
             // a group's name over its first module
@@ -921,10 +1314,28 @@ impl Mixer {
             if let Some(l) = self.pics.get(&m.key).and_then(|p| p.layer.as_ref()) {
                 out.push((l, px(ox + m.x + l.x), px(oy + TOP + l.y), l.w * dpi, l.h * dpi, clip, 1.0));
             }
-            // the caps (their volume on them) and the lit LEDs, over the module
+            // the caps (their volume on them) or the knobs, and the lit LEDs, over the module
             let sy = TOP + HEAD;
             for s in &m.strips {
                 let x0 = m.x + s.x;
+                if rows.knobs {
+                    let g = knob_geo(s, x0, sy, &rows, m.section == Section::Master);
+                    if let Some((v, b, _)) = s.mix {
+                        if let Some(l) = self.knobs.get(&(pct(v), scale)) {
+                            out.push((l, px(ox + g.vol.0 - 20.0), px(oy + g.vol.1 - 20.0), l.w * dpi, l.h * dpi, clip, 1.0));
+                        }
+                        if let Some((bx, by)) = g.bal
+                            && let Some(l) = self.bals.get(&(bal_pct(b), bal_state(scene, s.at), scale))
+                        {
+                            out.push((l, px(ox + bx - 15.0), px(oy + by - 15.0), l.w * dpi, l.h * dpi, clip, 1.0));
+                        }
+                    }
+                    let l = s.level.map(lit);
+                    if let Some(layer) = self.leds.get(&(s.cols, l[0], if s.cols == 2 { l[1] } else { 0 }, true, scale)) {
+                        out.push((layer, px(ox + g.mx), px(oy + g.t + KNOB_LEDS_Y), layer.w * dpi, layer.h * dpi, clip, 1.0));
+                    }
+                    continue;
+                }
                 let top = sy + rows.fader_y();
                 if let Some((vol, bal, _)) = s.mix {
                     let lr = channels((vol, bal));
@@ -936,7 +1347,7 @@ impl Mixer {
                     }
                 }
                 let l = s.level.map(lit);
-                if let Some(layer) = self.leds.get(&(s.cols, l[0], if s.cols == 2 { l[1] } else { 0 }, scale)) {
+                if let Some(layer) = self.leds.get(&(s.cols, l[0], if s.cols == 2 { l[1] } else { 0 }, false, scale)) {
                     out.push((layer, px(ox + x0 + meter_x(s)), px(oy + top + cap_y(VOL_MAX)), layer.w * dpi, layer.h * dpi, clip, 1.0));
                 }
             }
@@ -946,6 +1357,14 @@ impl Mixer {
             for (gx, _) in &self.grooves {
                 out.push((groove, px(ox + gx - 1.0), px(oy + TOP), 2.0 * dpi, mod_h * dpi, clip, 1.0));
             }
+        }
+        // the scroll bars' lanes, the field's dark: the bars go in them (drawn by the window)
+        let (full_w, _, full_bottom) = Mixer::field(size, dpi);
+        if self.lanes.0 {
+            out.push((back, px(fw), px(top), px(full_w) - px(fw), px(full_bottom) - px(top), None, 1.0));
+        }
+        if self.lanes.1 {
+            out.push((back, 0.0, px(bottom), px(full_w), px(full_bottom) - px(bottom), None, 1.0));
         }
         out
     }
@@ -1018,18 +1437,79 @@ fn cap_svg(pct: u32) -> String {
     )
 }
 
+/// A balance as a whole per cent (-100 all left … 100 all right).
+fn bal_pct(b: f64) -> i32 {
+    (b.clamp(-1.0, 1.0) * 100.0).round() as i32
+}
+
+/// The BAL knob of a group: in, held or out (the rack's, the same knob).
+fn bal_state(scene: &Scene, at: (usize, usize)) -> u8 {
+    match scene.devs.get(at.0).map(|d| d.bal(at.1)) {
+        Some(BalKnob::Out) => 2,
+        Some(BalKnob::Held) => 1,
+        _ => 0,
+    }
+}
+
+/// A point `r` from (x, y) at angle `a` (degrees, 0 straight up, clockwise).
+fn polar(x: f64, y: f64, a: f64, r: f64) -> String {
+    let a = a.to_radians();
+    format!("{:.2},{:.2}", x + r * a.sin(), y - r * a.cos())
+}
+
+/// The VOLUME knob's angle for a volume: from -135° (silence) to 135° (150%), as the rack's.
+fn vol_angle(v: f64) -> f64 {
+    -135.0 + 270.0 * v.clamp(0.0, VOL_MAX) / VOL_MAX
+}
+
+/// A knob `r` round at (x, y), its pointer at `a`, as the rack's (`face::mix_pic`).
+fn knob(x: f64, y: f64, r: f64, a: f64) -> String {
+    format!(
+        r##"<circle cx="{x}" cy="{}" r="{}" fill="#111" opacity=".5"/><circle cx="{x}" cy="{y}" r="{r}" fill="url(#gVol)" stroke="#0c0c0d"/><circle cx="{x}" cy="{y}" r="{}" fill="none" stroke="rgba(255,255,255,.08)"/><path d="M{} L{}" stroke="#ffb02e" stroke-width="{}" stroke-linecap="round"/>"##,
+        y + 1.5,
+        r + 0.5,
+        r * 0.75,
+        polar(x, y, a, r * 0.29),
+        polar(x, y, a, r * 0.86),
+        if r > 12.0 { 2.4 } else { 2.0 }
+    )
+}
+
+const KNOB_DEFS: &str = r##"<defs><radialGradient id="gVol" cx=".38" cy=".3" r=".8"><stop offset="0" stop-color="#5a5b5f"/><stop offset="1" stop-color="#151618"/></radialGradient></defs>"##;
+
+/// The VOLUME knob at a volume (%), in the middle of 40×40.
+fn vol_knob_svg(pct: u32) -> String {
+    format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40">{KNOB_DEFS}{}</svg>"#, knob(20.0, 20.0, 14.0, vol_angle(pct as f64 / 100.0)))
+}
+
+/// The BAL knob at a balance (%), in (0), held down (1) or out (2), in the middle of 30×30.
+fn bal_knob_svg(bal: i32, state: u8) -> String {
+    let (bx, by) = (15.0, 15.0);
+    let a = bal as f64 / 100.0 * 135.0;
+    let pointer = |dy: f64, colour: &str, w: f64, r0: f64, r1: f64| format!(r#"<path d="M{} L{}" stroke="{colour}" stroke-width="{w}" stroke-linecap="round"/>"#, polar(bx, by + dy, a, r0), polar(bx, by + dy, a, r1));
+    let body = match state {
+        // held down: below flush, deeper in its well
+        1 => format!(r##"<circle cx="{bx}" cy="{}" r="8.3" fill="#151618" stroke="#050506"/><circle cx="{bx}" cy="{}" r="8.6" fill="none" stroke="rgba(0,0,0,.7)" stroke-width="1.6"/>{}"##, by + 0.6, by - 0.4, pointer(0.6, "#6a5028", 1.7, 2.4, 6.6)),
+        // out: a taller cap with a shadow under it
+        2 => format!(r##"<circle cx="{}" cy="{}" r="10.4" fill="#000" opacity=".55"/><circle cx="{bx}" cy="{}" r="9.6" fill="#0d0e0f"/>{}"##, bx + 1.6, by + 3.2, by + 2.0, knob(bx, by, 9.6, a)),
+        // in: flush, a dim pointer
+        _ => format!(r##"<circle cx="{bx}" cy="{by}" r="9" fill="#202124" stroke="#0c0c0d"/>{}"##, pointer(0.0, "#8a6a32", 1.8, 2.6, 7.4)),
+    };
+    format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30">{KNOB_DEFS}{body}</svg>"#)
+}
+
 /// The lit LEDs of a meter (`cols` columns, `l` and `r` of `LEDS` lit from the bottom): green, then
 /// amber, then red, as on the rack's faces; thin.
-fn leds_svg(cols: usize, l: u8, r: u8) -> String {
-    let w = cols as f64 * (LED_W + 2.0) + 2.0;
-    let mut s = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{LEDS_H}">"#);
-    let step = (LEDS_H - 6.0) / LEDS as f64;
+fn leds_svg(cols: usize, l: u8, r: u8, h: f64) -> String {
+    let w = meter_w(cols);
+    let mut s = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}">"#);
+    let step = led_step(h);
     for c in 0..cols {
         let n = if c == 0 { l } else { r };
         for i in 0..(n as usize).min(LEDS) {
             let f = i as f64 / LEDS as f64;
             let colour = if f >= 0.9 { "#ff3b2f" } else if f >= 0.7 { "#ffb02e" } else { "#4cff6a" };
-            let y = LEDS_H - 3.0 - (i as f64 + 1.0) * step + 1.0;
+            let y = h - 1.0 - (i as f64 + 1.0) * step;
             let _ = write!(s, r#"<rect x="{}" y="{y}" width="{LED_W}" height="{}" rx="1" fill="{colour}"/>"#, 3.0 + c as f64 * (LED_W + 2.0), step - 2.0);
         }
     }
@@ -1047,40 +1527,163 @@ fn led(o: &mut String, cx: f64, cy: f64, on: bool, colour: &str) {
     }
 }
 
-/// A key as the panel's (`panel::cap_svg`), its name at the left (after its LED, if it has one: then
-/// it is in while it is on, deeper while `held`), a value at the right (PORT).
-fn key(o: &mut String, r @ [x, y, w, h]: [f64; 4], label: &str, led_on: Option<(&str, bool)>, value: Option<&str>, held: bool) {
-    o.push_str(&panel::cap_svg(r, led_on.is_some_and(|(_, on)| on) || held, held));
-    let ty = y + h / 2.0 + 3.2;
-    let lx = if led_on.is_some() { x + 15.0 } else { x + 8.0 };
-    if let Some((colour, on)) = led_on {
-        led(o, x + 8.0, y + h / 2.0, on, colour);
-    }
-    o.push_str(&SMALL.text(lx, ty, "#e6e7e8", "start", label));
-    if let Some(v) = value {
-        let room = w - 16.0 - (lx - x) - SMALL.width(label) - 6.0;
-        o.push_str(&SMALL.text(x + w - 8.0, ty, "#9a9da1", "end", &fit(v, SMALL, room)));
-    }
+/// A key that does something once (ALL HERE), as the panel's (`panel::cap_svg`): no light, its
+/// name in the middle; down while `held`.
+fn action_key(o: &mut String, r @ [x, y, w, h]: [f64; 4], label: &str, held: bool) {
+    o.push_str(&panel::cap_svg(r, held, false));
+    o.push_str(&SMALL.text(x + w / 2.0, y + h / 2.0 + 3.1, "#e6e7e8", "middle", label));
 }
 
-/// A push-push key (PLAY ON, RECORD FROM): in, pressed into its hole, its red LED lit; out, up;
-/// held down, deeper.
+/// A choice with a list (PROFILE, PORT): its name small over a little amber LCD, as the top
+/// panel's, the value in it at full width and ▾ at its right; a click opens the list.
+fn lcd(o: &mut String, [x, y, w, h]: [f64; 4], label: &str, value: &str, print: &str) {
+    o.push_str(&SMALL.text(x + 2.0, y - 4.0, print, "start", label));
+    let _ = write!(
+        o,
+        r##"<rect x="{}" y="{}" width="{}" height="{}" rx="4" fill="#121214"/><rect x="{}" y="{}" width="{}" height="{}" rx="4.5" fill="none" stroke="#fff" stroke-opacity=".18"/><rect x="{x}" y="{y}" width="{w}" height="{h}" rx="2.5" fill="url(#gLcd)"/><rect x="{x}" y="{y}" width="{w}" height="{h}" rx="2.5" fill="none" stroke="#783200" stroke-opacity=".35" stroke-width="2"/>"##,
+        x - 2.0,
+        y - 2.0,
+        w + 4.0,
+        h + 4.0,
+        x - 2.5,
+        y - 2.5,
+        w + 5.0,
+        h + 5.0
+    );
+    let chars = ((w - 20.0) / 5.75) as usize;
+    let v = if value.chars().count() > chars { format!("{}…", value.chars().take(chars.saturating_sub(1)).collect::<String>()) } else { value.to_owned() };
+    let _ = write!(o, r##"<text x="{}" y="{}" font-family="Noto Sans Mono" font-weight="400" font-size="9.5" fill="#3a2408" xml:space="preserve">{}</text><path d="M{},{} l3,3.5 l3,-3.5 z" fill="#3a2408"/>"##, x + 6.0, y + h / 2.0 + 3.4, esc(&v), x + w - 11.0, y + h / 2.0 - 1.5);
+}
+
+/// A key with a LED (PLAY ON, RECORD FROM): it doesn't latch, down only while held; its red LED
+/// says whether it is on.
 fn push_key(o: &mut String, r @ [x, y, w, h]: [f64; 4], label: &str, on: bool, held: bool) {
-    o.push_str(&panel::cap_svg(r, on || held, held));
+    o.push_str(&panel::cap_svg(r, held, false));
     led(o, x + 8.0, y + h / 2.0, on, "#ff4a32");
     o.push_str(&SMALL.text(x + 15.0, y + h / 2.0 + 3.1, if on { "#f3efe6" } else { "#c9cbcd" }, "start", &fit(label, SMALL, w - 22.0)));
 }
 
-/// A key with its LED and its name in the middle (CUE, MUTE, SPLIT): in while it is on, deeper while
-/// held; greyed where it does nothing.
-fn led_key(o: &mut String, r @ [x, y, w, h]: [f64; 4], label: &str, colour: &str, on: bool, off: bool, held: bool) {
-    o.push_str(if off { r#"<g opacity=".35">"# } else { "<g>" });
-    o.push_str(&panel::cap_svg(r, on || held, held));
-    let tw = SMALL.width(label) + 11.0;
-    let lx = x + (w - tw) / 2.0;
-    led(o, lx + 3.0, y + h / 2.0, on, colour);
-    o.push_str(&SMALL.text(lx + 11.0, y + h / 2.0 + 3.2, "#e6e7e8", "start", label));
-    o.push_str("</g>");
+/// CUE, MUTE, SPLIT's colours when lit, and their gradients' ids (`glass_defs`).
+const GLASS: [(&str, &str); 3] = [("#5fd4ff", "gC"), ("#ff4a32", "gM"), ("#ffb02e", "gS")];
+
+/// `a` toward `b` by `t` (colours #rrggbb).
+fn mix(a: &str, b: &str, t: f64) -> String {
+    let p = |c: &str, i: usize| u8::from_str_radix(&c[1 + 2 * i..3 + 2 * i], 16).unwrap_or(0) as f64;
+    let c = |i| (p(a, i) + (p(b, i) - p(a, i)) * t).round() as u8;
+    format!("#{:02x}{:02x}{:02x}", c(0), c(1), c(2))
+}
+
+/// The clear keys' gradients: lit (the whole cap glows, its side too, a little paler in the middle,
+/// never dark at an edge), and unlit frosted plastic (milky, matte, lighter at its edges).
+fn glass_defs() -> String {
+    let mut o = String::new();
+    for (c, id) in GLASS {
+        let _ = write!(
+            o,
+            r#"<radialGradient id="{id}On" cx=".5" cy=".5" r=".75"><stop offset="0" stop-color="{}"/><stop offset=".7" stop-color="{}"/><stop offset="1" stop-color="{}"/></radialGradient><linearGradient id="{id}Body" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="{}"/><stop offset="1" stop-color="{}"/></linearGradient>"#,
+            mix(c, "#ffffff", 0.3),
+            mix(c, "#ffffff", 0.08),
+            c,
+            mix(c, "#000000", 0.08),
+            mix(c, "#000000", 0.2)
+        );
+    }
+    o.push_str(r##"<linearGradient id="gFrost" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#d9dcdc" stop-opacity=".9"/><stop offset="1" stop-color="#cdd0d1" stop-opacity=".88"/></linearGradient><radialGradient id="gFrostIn" cx=".5" cy=".5" r=".62"><stop offset="0" stop-color="#5a5f63" stop-opacity=".16"/><stop offset=".75" stop-color="#5a5f63" stop-opacity=".04"/><stop offset="1" stop-color="#fff" stop-opacity=".22"/></radialGradient><linearGradient id="gFrostSide" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#b9bdbf" stop-opacity=".85"/><stop offset="1" stop-color="#a3a7aa" stop-opacity=".85"/></linearGradient>"##);
+    o
+}
+
+/// CUE, MUTE, SPLIT: a clear key lit from inside, as a DJ mixer's CUE. A flat cap of frosted
+/// plastic standing on the panel (its side under it, its shadow on the panel), no hole round it. It
+/// doesn't latch: down only while held, back up either way. Off, milky and unlit; on, the whole cap
+/// glows in its colour, paler in the middle. Its name black. No blur: fills and gradients only.
+fn lit_key(o: &mut String, [x, y, w, h]: [f64; 4], label: &str, colour: &str, on: bool, held: bool) {
+    let id = GLASS.iter().find(|g| g.0 == colour).map_or("gC", |g| g.1);
+    let side = if held { 1.0 } else { 3.0 };
+    let (top, th) = (y + 3.0 - side, h - side);
+    // its shadow on the panel; while lit, its light on the panel round it
+    let _ = write!(o, r##"<rect x="{}" y="{}" width="{}" height="{}" rx="3" fill="#000" opacity=".5"/>"##, x - 0.5, y + 1.5, w + 1.0, h + 1.5);
+    if on {
+        let _ = write!(o, r#"<rect x="{}" y="{}" width="{}" height="{}" rx="4" fill="{colour}" opacity=".28"/>"#, x - 2.0, y - 1.5, w + 4.0, h + 5.0);
+    }
+    // the dark inside the cap, seen through the plastic, and the side; then the top, frosted or lit
+    if on {
+        let _ = write!(o, r#"<rect x="{x}" y="{top}" width="{w}" height="{h}" rx="2.5" fill="url(#{id}Body)"/><rect x="{x}" y="{top}" width="{w}" height="{th}" rx="2.5" fill="url(#{id}On)"/>"#);
+    } else {
+        let _ = write!(o, r##"<rect x="{x}" y="{top}" width="{w}" height="{h}" rx="2.5" fill="#25282a"/><rect x="{x}" y="{top}" width="{w}" height="{h}" rx="2.5" fill="url(#gFrostSide)"/><rect x="{x}" y="{top}" width="{w}" height="{th}" rx="2.5" fill="url(#gFrost)"/><rect x="{x}" y="{top}" width="{w}" height="{th}" rx="2.5" fill="url(#gFrostIn)"/>"##);
+    }
+    // the rim: lit, a paler line of its light
+    let rim = if on { mix(colour, "#ffffff", 0.55) } else { "#ffffff".into() };
+    let _ = write!(o, r##"<rect x="{}" y="{}" width="{}" height="{}" rx="2" fill="none" stroke="{rim}" stroke-opacity="{}"/><rect x="{x}" y="{top}" width="{w}" height="{h}" rx="2.5" fill="none" stroke="#000" stroke-opacity="{}" stroke-width=".8"/>"##, x + 0.5, top + 0.5, w - 1.0, th - 1.0, if on { 0.7 } else { 0.4 }, if on { 0.3 } else { 0.35 });
+    o.push_str(&SMALL.text(x + w / 2.0, top + th / 2.0 + 2.9, "#000", "middle", label));
+}
+
+/// The VOLUME (GAIN) block's keys.
+fn block_keys(o: &mut String, s: &Strip, keys: &[(Hit, [f64; 4])]) {
+    for (h, r) in keys {
+        let held = s.held.as_ref() == Some(h);
+        match h {
+            Hit::Cue(_) => lit_key(o, *r, "CUE", "#5fd4ff", s.cue, held),
+            Hit::Mute(..) => lit_key(o, *r, "MUTE", "#ff4a32", s.mix.is_some_and(|m| m.2), held),
+            _ => lit_key(o, *r, "SPLIT", "#ffb02e", s.chans, held),
+        }
+    }
+}
+
+/// The block's dark meter: `cols` columns of `LEDS`, `h` high at (x, y).
+fn dark_meter(o: &mut String, x: f64, y: f64, cols: usize, h: f64) {
+    let _ = write!(o, r##"<rect x="{x}" y="{y}" width="{}" height="{h}" rx="3" fill="#0b0b0c"/>"##, meter_w(cols));
+    let step = led_step(h);
+    for c in 0..cols {
+        for i in 0..LEDS {
+            let f = i as f64 / LEDS as f64;
+            let ly = y + h - 1.0 - (i as f64 + 1.0) * step;
+            let dark = if f >= 0.9 { "#351612" } else if f >= 0.7 { "#2f2810" } else { "#1c2a1f" };
+            let _ = write!(o, r#"<rect x="{}" y="{ly}" width="{LED_W}" height="{}" rx="1" fill="{dark}"/>"#, x + 3.0 + c as f64 * (LED_W + 2.0), step - 2.0);
+        }
+    }
+}
+
+/// A group's name (OUTPUT, PLAY ON, DEVICE SETUP, VOLUME...) in the middle of a rule from `x0` to
+/// `x1`: a thin line at its left and its right (none where there is no room for one).
+fn ruled(o: &mut String, x0: f64, x1: f64, y: f64, text: &str, print: &str) {
+    let cx = (x0 + x1) / 2.0;
+    let half = SMALL.width(text) / 2.0 + 6.0;
+    o.push_str(&SMALL.text(cx, y, print, "middle", text));
+    for (a, b) in [(x0, cx - half), (cx + half, x1)] {
+        if b - a > 2.0 {
+            let _ = write!(o, r#"<path d="M{a},{} H{b}" stroke="{print}" stroke-opacity=".5"/>"#, y - 2.8);
+        }
+    }
+}
+
+/// The block under the knobs: its name, the knobs' scales (the knobs are pictures over it), BAL's
+/// well, CUE and MUTE, the dark meter.
+fn knob_block(o: &mut String, s: &Strip, g: &KnobGeo, x0: f64, print: &str) {
+    let cx0 = (x0 + 6.0 + g.mx - 5.0) / 2.0;
+    ruled(o, x0 + 6.0, x0 + s.w - 6.0, g.t, &format!("{}{}", block_name(s), if g.bal.is_some() { " · BAL" } else { "" }), print);
+    block_keys(o, s, &g.keys);
+    if s.mix.is_none() {
+        o.push_str(&SMALL.text(cx0, g.t + 24.0, print, "middle", "NO VOLUME"));
+        o.push_str(&SMALL.text(cx0, g.t + 36.0, print, "middle", "IN PIPEWIRE"));
+    } else {
+        // VOLUME: silence to 150%, a long tick at 100% and red past it
+        let (cx, cy) = g.vol;
+        let _ = write!(o, r##"<path d="M{} A19.5,19.5 0 0 1 {}" fill="none" stroke="#d2402f" stroke-width="2.2" opacity=".85"/>"##, polar(cx, cy, vol_angle(1.0), 19.5), polar(cx, cy, vol_angle(VOL_MAX), 19.5));
+        for i in 0..=12 {
+            let a = vol_angle(i as f64 / 12.0 * VOL_MAX);
+            let _ = write!(o, r#"<path d="M{} L{}" stroke="{print}" stroke-width=".9" opacity=".6"/>"#, polar(cx, cy, a, 17.5), polar(cx, cy, a, if i % 4 == 0 { 21.0 } else { 19.5 }));
+        }
+        let _ = write!(o, r#"<path d="M{} L{}" stroke="{print}" stroke-width="1.6"/>"#, polar(cx, cy, vol_angle(1.0), 16.5), polar(cx, cy, vol_angle(1.0), 23.5));
+        // BAL: centre straight up with a long tick, L and R at the ends, and the knob's well
+        if let Some((bx, by)) = g.bal {
+            for i in -4i32..=4 {
+                let a = i as f64 * 33.75;
+                let _ = write!(o, r#"<path d="M{} L{}" stroke="{print}" stroke-width="{}" opacity="{}"/>"#, polar(bx, by, a, 11.5), polar(bx, by, a, if i == 0 { 16.0 } else { 13.5 }), if i == 0 { 1.5 } else { 0.9 }, if i == 0 { 1.0 } else { 0.6 });
+            }
+            let _ = write!(o, r#"<circle cx="{bx}" cy="{by}" r="10.8" fill="url(#gHoleK)" stroke="rgba(255,255,255,.12)" stroke-width=".7"/>{}{}"#, SMALL.text(bx - 12.0, by + 17.0, print, "middle", "L"), SMALL.text(bx + 12.0, by + 17.0, print, "middle", "R"));
+        }
+    }
+    dark_meter(o, g.mx, g.t + KNOB_LEDS_Y, s.cols, KNOB_LEDS_H);
 }
 
 /// A module: its plate's outline, its heading (a card's name and PROFILE side by side), its strips
@@ -1088,19 +1691,44 @@ fn led_key(o: &mut String, r @ [x, y, w, h]: [f64; 4], label: &str, colour: &str
 fn module_svg(m: &Module, print: &str, rows: &Rows) -> String {
     let (w, h) = (m.w, rows.mod_h());
     let (dw, dh) = (w + 2.0 * FACE_PAD, h + 2.0 * FACE_PAD);
-    let mut o = format!(r##"<svg xmlns="http://www.w3.org/2000/svg" width="{dw}" height="{dh}" viewBox="0 0 {dw} {dh}" font-family="Noto Sans" font-weight="bold"><defs>{}</defs><g transform="translate({FACE_PAD},{FACE_PAD})">"##, panel::KEY_DEFS);
+    let master = m.section == Section::Master;
+    let mut o = format!(r##"<svg xmlns="http://www.w3.org/2000/svg" width="{dw}" height="{dh}" viewBox="0 0 {dw} {dh}" font-family="Noto Sans" font-weight="bold"><defs>{}<radialGradient id="gHoleK" cx=".5" cy=".62" r=".6"><stop offset="0" stop-color="#000"/><stop offset=".7" stop-color="#0a0a0b"/><stop offset="1" stop-color="#3c3d40"/></radialGradient><linearGradient id="gLcd" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f7bb62"/><stop offset="1" stop-color="#e58f2c"/></linearGradient>{}</defs><g transform="translate({FACE_PAD},{FACE_PAD})">"##, panel::KEY_DEFS, glass_defs());
     let _ = write!(o, r##"<rect x=".5" y=".5" width="{}" height="{}" rx="{RADIUS}" fill="none" stroke="#000" stroke-opacity=".7"/>"##, w - 1.0, h - 1.0);
-    // the heading: whose it is
-    o.push_str(&SECTION.text(w / 2.0, 22.0, print, "middle", &fit(&m.name, SECTION, w - 20.0)));
-    // DEVICE SETUP, a group of its own under the first: the card's PROFILE and the PORT, each with
-    // what is in use at its right
-    let has_port = m.strips.iter().any(|s| s.port.is_some());
-    if m.profile.is_some() || has_port {
-        o.push_str(&SMALL.text(w / 2.0, HEAD + setup_y() + 8.0, print, "middle", "DEVICE SETUP"));
+    // each strip's frame first, what is in it over it: as a frame on the rack (face.rs), here on the
+    // module's very edge, its corners the module's; its edge and its band in the block kind's
+    // colour, on the band the device's name, then the frame's with GRAPH at its right. A card with
+    // its profile Off has no strip: a plain grey band, OFF on its second line, no GRAPH (no node)
+    let frame = |o: &mut String, fx: f64, fw: f64, band: Option<(&str, &str, &str, Option<u32>)>| {
+        let ink = band.map_or(print, |b| b.1);
+        if let Some((c, _, _, _)) = band {
+            let _ = write!(o, r#"<path d="M{fx},{BAND} V{RADIUS} a{RADIUS},{RADIUS} 0 0 1 {RADIUS},-{RADIUS} H{} a{RADIUS},{RADIUS} 0 0 1 {RADIUS},{RADIUS} V{BAND} Z" fill="{c}"/><path d="M{fx},{} H{}" stroke="rgba(0,0,0,.35)"/>"#, fx + fw - RADIUS, BAND + 0.5, fx + fw);
+        }
+        let _ = write!(o, r#"<rect x="{}" y=".6" width="{}" height="{}" rx="{}" fill="none" stroke="{}" stroke-opacity="{}" stroke-width="1.2"/>"#, fx + 0.6, fw - 1.2, h - 1.2, RADIUS - 0.6, band.map_or(print, |b| b.0), if band.is_some() { 0.9 } else { 0.35 });
+        o.push_str(&SECTION.text(fx + 10.0, 16.0, ink, "start", &fit(&m.name, SECTION, fw - 20.0)));
+        if let Some((_, _, sub, node)) = band {
+            let mut gw = 0.0;
+            if let Some(node) = node {
+                let id = format!("#{node}");
+                gw = 10.0 + SMALL.width(&id);
+                let gx = fx + fw - 8.0 - gw;
+                let _ = write!(o, r##"<rect x="{gx}" y="{GRAPH_Y}" width="{gw}" height="{GRAPH_H}" rx="2.5" fill="#1b1c1e" stroke="rgba(0,0,0,.45)"/>{}"##, SMALL.text(gx + gw / 2.0, GRAPH_Y + 9.4, "#e6e7e8", "middle", &id));
+            }
+            o.push_str(&SMALL.text(fx + 10.0, 30.0, ink, "start", &fit(sub, SMALL, fw - 26.0 - gw)));
+        }
+    };
+    if m.strips.is_empty() {
+        frame(&mut o, 0.0, w, Some(("#6b6e72", "#f3efe6", "OFF", None)));
+        ruled(&mut o, 12.0, w - 12.0, HEAD + ROUTE_Y + 8.0, "SETUP", print);
     }
+    let last = m.strips.len().saturating_sub(1);
+    for (i, s) in m.strips.iter().enumerate() {
+        let l = if i == 0 { 0.0 } else { s.x };
+        let r = if i == last { w } else { s.x + s.w };
+        frame(&mut o, l, r - l, Some((face::kind_colour(s.kind), face::band_ink(s.kind), &s.name, Some(s.node))));
+    }
+    // the card's PROFILE: the first LCD under MAIN
     if let Some(p) = &m.profile {
-        let k = profile_key(w);
-        key(&mut o, k, "PROFILE", None, Some(p), false);
+        lcd(&mut o, profile_key(w), "PROFILE", p, print);
     }
     let below = usize::from(m.profile.is_some());
     let sy = HEAD;
@@ -1110,29 +1738,24 @@ fn module_svg(m: &Module, print: &str, rows: &Rows) -> String {
         if i > 0 {
             let _ = write!(o, r#"<path d="M{x0},{sy} V{}" stroke="{print}" stroke-opacity=".35" stroke-dasharray="2 3"/>"#, h - 8.0);
         }
-        // the band: its block's kind, #id, the name
-        let (kc, ink) = (face::kind_colour(s.kind), face::band_ink(s.kind));
-        let _ = write!(o, r#"<path d="M{},{} V{} a5,5 0 0 1 5,-5 H{} a5,5 0 0 1 5,5 V{} Z" fill="{kc}"/>"#, x0 + 2.0, sy + BAND, sy + 5.0, x0 + s.w - 7.0, sy + BAND);
-        let id = format!("#{}", s.node);
-        let gw = 10.0 + SMALL.width(&id);
-        let _ = write!(o, r#"<rect x="{}" y="{}" width="{gw}" height="14" rx="2.5" fill="none" stroke="{ink}" stroke-width="1.1"/>"#, x0 + 8.0, sy + 5.0);
-        o.push_str(&SMALL.text(x0 + 8.0 + gw / 2.0, sy + 15.0, ink, "middle", &id));
-        o.push_str(&SECTION.text(x0 + 8.0 + gw + 6.0, sy + 16.0, ink, "start", &fit(&s.name, SECTION, s.w - gw - 26.0)));
         // where it goes, or the device's keys
         let (kx, kw) = (x0 + 6.0, s.w - 12.0);
+        let [[lx, lw], [rx, rw]] = halves(kx, kw);
         let ry = sy + ROUTE_Y;
         // every group of keys under its title, its keys in rows: where an app goes, or the
-        // device's own keys; then the channel itself
+        // device's own keys (SETUP); then the channel itself
         let title = match s.role {
             Role::Play => "PLAY ON",
             Role::Rec => "RECORD FROM",
-            Role::Sink => "OUTPUT",
-            Role::Source => "INPUT",
+            Role::Sink | Role::Source => "SETUP",
         };
-        o.push_str(&SMALL.text(x0 + s.w / 2.0, ry + 8.0, print, "middle", title));
+        ruled(&mut o, x0 + 6.0, x0 + s.w - 6.0, ry + 8.0, title, print);
         match s.role {
+            // MASTER: the default output's own keys only, ALL HERE in its place; no MAIN (it is it),
+            // no CUE (it is what CUE plays in), nothing of the device's setup
+            _ if master => action_key(&mut o, [rx, sy + row(0), rw, KEY_H], "ALL HERE", held(|h| matches!(h, Hit::All(..)))),
             Role::Play | Role::Rec => {
-                for (i, t) in s.targets.iter().enumerate().take(6) {
+                for (i, t) in s.targets.iter().enumerate() {
                     let down = s.held.as_ref().is_some_and(|h| matches!(h, Hit::To(_, to) if *to == t.at));
                     push_key(&mut o, [kx, sy + row(i), kw, KEY_H], &t.label, t.lit, down);
                 }
@@ -1142,24 +1765,25 @@ fn module_svg(m: &Module, print: &str, rows: &Rows) -> String {
             }
             Role::Sink | Role::Source => {
                 if s.mix.is_some() && s.node_name.is_some() {
-                    let out = s.role == Role::Sink;
-                    key(&mut o, [kx, sy + row(0), kw, KEY_H], if out { "MASTER" } else { "MAIN IN" }, Some(("#ffb02e", s.main)), None, held(|h| matches!(h, Hit::Main(_))));
-                    key(&mut o, [kx, sy + row(1), kw, KEY_H], if out { "PLAY ALL HERE" } else { "RECORD ALL HERE" }, None, None, false);
+                    // MAIN: a state, lit like CUE and MUTE; ALL HERE: once, a plain key
+                    lit_key(&mut o, [lx, sy + row(0), lw, KEY_H], "MAIN", "#ffb02e", s.main, held(|h| matches!(h, Hit::Main(_))));
+                    action_key(&mut o, [rx, sy + row(0), rw, KEY_H], "ALL HERE", held(|h| matches!(h, Hit::All(..))));
                 }
                 if let Some(p) = &s.port {
-                    key(&mut o, [kx, sy + setup_row(below), kw, KEY_H], "PORT", None, Some(p), false);
+                    lcd(&mut o, [kx, sy + setup_row(below), kw, LCD_H], "PORT", p, print);
                 }
             }
         }
-        o.push_str(&SMALL.text(x0 + s.w / 2.0, sy + rows.keys_y - 9.0, print, "middle", "CHANNEL"));
-        let half = (s.w - 12.0 - 7.0) / 2.0;
-        led_key(&mut o, [kx, sy + rows.keys_y, half, 24.0], "CUE", "#5fd4ff", s.cue, false, held(|h| matches!(h, Hit::Cue(_))));
-        let muted = s.mix.is_some_and(|m| m.2);
-        led_key(&mut o, [kx + half + 7.0, sy + rows.keys_y, half, 24.0], "MUTE", "#ff4a32", muted, s.mix.is_none(), held(|h| matches!(h, Hit::Mute(_))));
-        led_key(&mut o, [kx, sy + rows.chan_y, kw, 24.0], "SPLIT", "#ffb02e", s.chans, !s.stereo || s.mix.is_none(), held(|h| matches!(h, Hit::Chan(_))));
-        // the fader block under SPLIT: the scale's numbers at the left, lines left of each slot
-        // (long at the numbers), the slot red past 100% (the caps, their volume on them, are
-        // pictures over it); the meter's dark LEDs at the right, as tall as the slot and level with it; its name under it all
+        // the VOLUME (GAIN) block, its name on top: the knobs when the window is low
+        if rows.knobs {
+            knob_block(&mut o, s, &knob_geo(s, x0, sy, rows, master), x0, print);
+            continue;
+        }
+        ruled(&mut o, x0 + 6.0, x0 + s.w - 6.0, sy + rows.keys_y - 9.0, block_name(s), print);
+        block_keys(&mut o, s, &row_keys(s, kx, sy + rows.keys_y, kw, master, true));
+        // the faders under the keys: the scale's numbers at the left, lines left of each slot (long
+        // at the numbers), the slot red past 100% (the caps, their volume on them, are pictures
+        // over it); the meter's dark LEDs at the right, as tall as the slot and level with it
         let top = sy + rows.fader_y();
         let slots = slots_x(s);
         if s.mix.is_some() {
@@ -1182,20 +1806,7 @@ fn module_svg(m: &Module, print: &str, rows: &Rows) -> String {
         } else {
             let _ = write!(o, r#"<text transform="translate({},{}) rotate(-90)" font-size="7.5" letter-spacing="1" fill="{print}" fill-opacity=".6" text-anchor="middle">NO VOLUME IN PIPEWIRE</text>"#, x0 + 48.0, top + TRAVEL / 2.0 + 6.0);
         }
-        let (mx, my) = (x0 + meter_x(s), top + cap_y(VOL_MAX));
-        let _ = write!(o, r##"<rect x="{mx}" y="{my}" width="{}" height="{LEDS_H}" rx="3" fill="#0b0b0c"/>"##, s.cols as f64 * (LED_W + 2.0) + 2.0);
-        let step = (LEDS_H - 6.0) / LEDS as f64;
-        for c in 0..s.cols {
-            for i in 0..LEDS {
-                let f = i as f64 / LEDS as f64;
-                let y = my + LEDS_H - 3.0 - (i as f64 + 1.0) * step + 1.0;
-                let dark = if f >= 0.9 { "#351612" } else if f >= 0.7 { "#2f2810" } else { "#1c2a1f" };
-                let _ = write!(o, r#"<rect x="{}" y="{y}" width="{LED_W}" height="{}" rx="1" fill="{dark}"/>"#, mx + 3.0 + c as f64 * (LED_W + 2.0), step - 2.0);
-            }
-        }
-        // named as on the rack: VOLUME on what plays, GAIN on what comes in
-        let name = if matches!(s.role, Role::Source | Role::Rec) { "GAIN" } else { "VOLUME" };
-        o.push_str(&SMALL.text(x0 + s.w / 2.0, sy + rows.level_y(), print, "middle", name));
+        dark_meter(&mut o, x0 + meter_x(s), top + cap_y(VOL_MAX), s.cols, LEDS_H);
     }
     o.push_str("</g></svg>");
     o

@@ -34,9 +34,9 @@ PipeWire ──(pw.rs thread)── Event ──► Graph (graph.rs) ──devic
   and switching between DESK, MIXER, RACK and ENGINE.
 - **`ui/engine.rs`** is ENGINE: the real graph (nodes, ports, links by driver), the inspector,
   and the diagnostics tables.
-- **`ui/mixer.rs`** is MIXER: a module for each device of the scene (`mixer::role_of` says
-  which groups are strips), drawn as one picture each on the painter's threads, the faders' caps,
-  lit LEDs and numbers as small pictures over it. Its keys go through `Scene` (`reroute` for
+- **`ui/mixer.rs`** is MIXER: a module for each strip of the scene (a device's input or output,
+  an app's; `mixer::role_of` says which groups are strips), drawn as one picture each on the
+  painter's threads, the faders' caps, knobs, lit LEDs and numbers as small pictures over it. Its keys go through `Scene` (`reroute` for
   PLAY ON, `set_default`, `set_volume`, `set_channels`, `toggle_mute`).
 - **`ui/panel.rs`** holds the top panel, the status bar and the amber lists.
 - **`ui/cord.rs`** is the cords' physics (Verlet). **`ui/mesh.rs`** draws cords as GPU

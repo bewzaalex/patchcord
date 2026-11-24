@@ -194,7 +194,7 @@ what goes out, after its volume or gain).
 | | |
 | --- | --- |
 | Drag a device | on the desk it stops at other devices and slides along them, and sticks lightly to their edges and centres, with a guide line (G: place freely; ALIGN is off in the rack). In the rack it takes another slot (into the other rack too), the rest making room; near the window's top or bottom the rack scrolls under it |
-| R, or DESK / RACK | devices on a desk, or screwed into a 19" rack (each keeps its desk place); M: MIXER |
+| D, R, or DESK / RACK | devices on a desk, or screwed into a 19" rack (each keeps its desk place). Each LAYOUT key has its own key on the keyboard, D DESK, M MIXER, R RACK, E ENGINE, and shows its screen; pressed again it stays there |
 | The rack | the window is the rack, always at 100%: its rails at the window's sides, units numbered from the top. Every face is as wide as the rack: vents take what its frames don't need (all of it on a card that is off), and frames that don't fit go on to another unit (2U, 3U…): the lower units fill first, the whole width (under the name and screen too), the unit beside the name takes only what is left over; in each unit the frames go from the left (inputs, then outputs), vents after them. A face is at least as wide as its name and screen, or its widest frame (on a unit of its own): only a narrower window scrolls sideways (Shift+wheel, or drag). When the devices don't fit the window's height in one rack, racks stand side by side, as many as it takes (each still as wide as its widest device needs), the devices going down the first and on into the next, split so the racks come out evenest. ARRANGE puts the devices in the order of the signal flow (sources at the top). It goes no higher than its first device; below, as far as its last device or the lowest cord (further while the window is taller) |
 | Wheel in the rack | scrolls it up and down (the rack doesn't zoom); bars at the window's edges show there is more. While it scrolls, a knob passing under the pointer isn't turned. Carrying a plug near the top or bottom edge scrolls the rack that way, to reach a device out of sight, down to one empty unit past the last device |
 | MORE ▾ | in a narrow window the top panel makes room: the logo goes first, then the keys the screen can't use, then groups fold into MORE from the right. MORE drops them below the panel as they are |
@@ -209,20 +209,23 @@ what goes out, after its volume or gain).
 ### MIXER: a console
 
 MIXER (M) shows what the rack shows as a mixing console, for setting volumes and choosing where
-things play without cords. Left to right, as on a hardware console: INPUTS (the microphones, the
-default one first), APPS (each app's INPUT and OUTPUT), OUTPUTS, and MASTER (the default output),
-always at the window's right edge (the rest scrolls under it); each group by name.
+things play without cords. Left to right, as on a hardware console: INPUTS (the microphones),
+APPS (each app's INPUT and OUTPUT), OUTPUTS (the default one too), and MASTER,
+the default output's volume and MUTE as a control of its own, always at the window's right edge
+(the rest scrolls under it); each group by name, A to Z (the defaults too: nothing jumps when
+they change).
 
 | | |
 | --- | --- |
-| Module | one strip: a device's input or output, or an app's, its name on top. The keys are in titled groups: OUTPUT or INPUT (or PLAY ON / RECORD FROM); on a device, DEVICE SETUP with its card's PROFILE (once, on the card's output) and its PORT, each with what is in use at its right; then CHANNEL. Modules are as tall as the window |
-| PLAY ON / RECORD FROM | on an app's strip, a push-push key for each output (input) shown: pushed in, its red LED lit, where the app plays (records). Click to push it in or out: as many in at once as you like. Ctrl+Z undoes it |
-| MASTER / MAIN IN | on an output's (input's) strip: make it the default, where everything plays (new apps record), and MASTER on the console; pushed in, its amber LED lit, on the default |
-| PLAY ALL HERE / RECORD ALL HERE | every app that plays (records) moves here, and it becomes the default |
-| PORT | the card's port list, where it has a choice |
-| CUE · MUTE · SPLIT | listen to it in the default output (CUE mode, as on the rack); mute it; a fader for L and one for R. A key with a LED is pushed in while it is on, and does what it does when you let go over it |
-| VOLUME / GAIN fader | the volume (GAIN on what comes in), as the rack's knob, on its cap (0 to 150%, red past 100%): drag, or the wheel over it (Shift: finer); double-click: 100%. Beside it the meter, after the volume. An app without a volume in PipeWire (a DAW's engine) says so |
-| Drag empty space · wheel | scroll the console |
+| Module | one strip in a frame of its kind's colour: a device's input or output, or an app's. Its band says whose it is and which frame, with GRAPH (#id, opens ENGINE). The keys are in titled groups: PLAY ON / RECORD FROM on an app, SETUP on a device; then VOLUME (GAIN). All modules are as tall as the tallest; in a low window the faders become the rack's knobs. A card that is off has a grey band saying OFF and its PROFILE |
+| PLAY ON / RECORD FROM | on an app's strip, a key for each output (input) shown, its red LED lit where the app plays (records). Click to link it there or not: as many at once as you like. Ctrl+Z undoes it |
+| MAIN | on an output's (input's) strip, lit amber on the default: make it the default, where new apps play (record); the default output is MASTER |
+| ALL HERE | every app that plays (records) moves here, and it becomes the default |
+| PROFILE · PORT | small amber screens with the card's profile and port: click for the list |
+| CUE · MUTE · SPLIT | listen to it in the default output (CUE mode, as on the rack); mute it; a fader for L and one for R. Clear keys that glow in their colour while on. No key stays pushed in: each goes down while you hold it and does what it does when you let go over it. Each key has its own place; a key that would do nothing isn't there |
+| VOLUME / GAIN fader | the volume (GAIN on what comes in), as the rack's knob, on its cap (0 to 150%, red past 100%): drag, or the wheel over it (Shift: finer); double-click: 100%. Beside it the meter, after the volume. An app without a volume in PipeWire (a DAW's engine) says so. In a low window, the rack's VOLUME and BAL knobs instead |
+| MASTER | the default output's volume and MUTE, whichever device it is; the device itself stays among the OUTPUTS with its keys |
+| Drag empty space · wheel · scroll bars | scroll the console; the bars show where it goes on beyond the window, and their thumbs can be dragged |
 
 ### ENGINE: what PipeWire really has
 
@@ -239,7 +242,7 @@ on: what the panels leave out, which clock drives what, and why something crackl
 | The strip | the clock, the quantum, the DSP load with its last 45 seconds, xruns, then (when there is room) drivers, server, session, allowed rates and objects; in a narrow window those are behind **i**. HEALTH counts errors, warnings and notes |
 | DIAGNOSTICS | the tables below: TOP (as `pw-top`: each driver and its nodes, the last half second's timings), ISSUES (what looks wrong, worst first, with what to do), OBJECTS, METADATA, EVENTS. **SAVE REPORT** writes it all to a text file in your home folder for a bug report, without your user and host names, MAC addresses or the titles of what plays |
 | ? or LEGEND | how to read the graph: colours, lights, links, tags, groups |
-| Drag · wheel · F · Esc | pan · zoom · fit · deselect; E or DESK / RACK goes back |
+| Drag · wheel · F · Esc | pan · zoom · fit · deselect; D, M, R or DESK / MIXER / RACK leave it |
 
 Settings and presets are plain text files in `~/.config/patchcord`: `settings.txt` (cords, lock,
 lining up, colours, the cord lights, desk or rack, window size, where devices sit, the rack's order, hidden devices) and `presets.txt` (each preset's links, split jacks, layout, volumes, the

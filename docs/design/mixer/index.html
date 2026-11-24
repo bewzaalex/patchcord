@@ -55,26 +55,62 @@
 <script>
 "use strict";
 // ---------- the code's measures (src/ui/mixer.rs) ----------
-const LEFT = 14, TOP = 26, GAP = 6, HEAD = 34, STRIP_W = 112, BAND = 24;
-const ROUTE_Y = 31, TRAVEL = 160, LEDS = 12, LED_W = 4;
-// the modules are as tall as the window lets them (no shorter than this): what they gain is room
-// under the first group of keys; CHANNEL, the fader and the meter keep their size, at the bottom
-const MIN = { KEYS_Y: 200, CHAN_Y: 231, STRIP_H: 474 }, BOTTOM = 14;
-let KEYS_Y = MIN.KEYS_Y, CHAN_Y = MIN.CHAN_Y, STRIP_H = MIN.STRIP_H;
+// HEAD: over the strip's frame (none: the frame is the module's edge); BAND: the frame's band,
+// two lines on it (the device's name, the frame's)
+const LEFT = 14, TOP = 26, GAP = 3, EDGE = 3, HEAD = 0, STRIP_W = 112, BAND = 38;
+// GRAPH (#id, opens ENGINE): on the band's second line, at its right
+const GRAPH_Y = 20, ROUTE_Y = BAND + 7, TRAVEL = 160, LEDS = 12, LED_W = 4;
+// the modules are all as tall as the tallest (the most keys), not the window: the VOLUME (GAIN)
+// block under the lowest key of any module, the faders (TAIL.faders high) or, when the window is
+// too low for them, the rack's knobs (TAIL.knobs); lower still, the console scrolls
+const TAIL = { faders: 228, knobs: 80 }, BOTTOM = 14;
+let KEYS_Y = 200, CHAN_Y = 231, STRIP_H = 474, KNOBS = false;
 // every group of keys has its title over it, the keys in rows from under it: as tall, as far apart
 const ROW0 = 17, ROW = 23, KEY_H = 17;
 const row = (i) => ROUTE_Y + ROW0 + i * ROW;
-// DEVICE SETUP: a device's second group (its card's PROFILE, its PORT), under the first
-const setupY = () => row(2) + 4;
-const setupRow = (i) => setupY() + 17 + i * 23;
-const profileKey = (m) => [12, HEAD + setupRow(0), m.w - 24, KEY_H];
+// a device's first row: MAIN (it is the default; lit) and ALL HERE (every app here, once), each in
+// its own half
+const halves = (x, w) => [[x, (w - 5) / 2], [x + (w + 5) / 2, (w - 5) / 2]];
+// a device's keys under one title, SETUP: MAIN and ALL HERE in its first row, then its card's
+// PROFILE, its PORT, each a small LCD with its name over it, the value in it at full width (a click
+// opens the list)
+const LCD_H = 16;
+const mainRowY = () => row(0);
+const setupItem = (i) => mainRowY() + KEY_H + 6 + i * 30;
+const setupRow = (i) => setupItem(i) + 9;
+const profileKey = (m) => [12, HEAD + setupRow(0), m.w - 24, LCD_H];
+const setupN = (m) => (m.master ? 0 : (m.card ? 1 : 0) + (m.strips.some((s) => s.ports) ? 1 : 0));
 let MOD_H = HEAD + STRIP_H;
 const RADIUS = 8, VOL_MAX = 1.5;
-// the height the window gives: the room under the first keys grows with it
-function stretch() {
-  const extra = Math.max(0, Math.floor(field.clientHeight - TOP - BOTTOM - (HEAD + MIN.STRIP_H)));
-  [KEYS_Y, CHAN_Y, STRIP_H] = [MIN.KEYS_Y, MIN.CHAN_Y, MIN.STRIP_H].map((v) => v + extra);
+// the modules' height: all as tall as the tallest (`need`: the lowest key's bottom on any module),
+// the block right under it, never stretched to the window (no empty room); the faders while the
+// window has room for them, else the knobs; lower still, the console scrolls
+function stretch(need) {
+  // (the block's name as far under the lowest key as a group's title under the keys over it)
+  const keys = need + 27, room = Math.floor(field.clientHeight - TOP - BOTTOM - HEAD);
+  KNOBS = room < keys + TAIL.faders;
+  const tail = KNOBS ? TAIL.knobs : TAIL.faders;
+  KEYS_Y = keys;
+  CHAN_Y = KEYS_Y + 31;
+  STRIP_H = KEYS_Y + tail;
   MOD_H = HEAD + STRIP_H;
+}
+// the lowest key's bottom on any module: an app's every PLAY ON (RECORD FROM) key, a device's
+// MAIN keys and SETUP
+function lowest(mods, ends) {
+  const n = (role) => Math.max(ends.filter((e) => e.s.role === role).length, 1);
+  let b = row(0) + KEY_H;
+  for (const m of mods) {
+    if (m.master) continue;
+    const setup = setupN(m);
+    if (setup) b = Math.max(b, setupRow(setup - 1) + LCD_H);
+    for (const s of m.strips) {
+      if (s.role === "Play") b = Math.max(b, row(n("Sink") - 1) + KEY_H);
+      if (s.role === "Rec") b = Math.max(b, row(n("Source") - 1) + KEY_H);
+      if ((s.role === "Sink" || s.role === "Source") && s.vol !== null && s.nodeName) b = Math.max(b, mainRowY() + KEY_H);
+    }
+  }
+  return b;
 }
 // the lettering (src/ui/print.rs)
 const SECTION = { size: 9, spacing: 1.2 }, SMALL = { size: 7.5, spacing: 0.8 };
@@ -87,6 +123,14 @@ const FIN = {
   black: { base: "#232427", paint: false, noise: 0.9, print: "#d5d7d9" },
   olive: { base: "#66683f", paint: false, noise: 0.7, print: "#f1f1e6" },
 };
+// MASTER's own paint, dark, a colour no device has (?master=steel|navy|bronze|plum; steel unless asked)
+const MASTER_FIN = {
+  steel: { base: "#34414f", paint: true, noise: 0, print: "#e8edf2" },
+  navy: { base: "#1f2c45", paint: false, noise: 0.7, print: "#e3e9f3" },
+  bronze: { base: "#4e3c27", paint: true, noise: 0, print: "#f3ead9" },
+  plum: { base: "#3d2a3f", paint: false, noise: 0.7, print: "#efe4ee" },
+};
+FIN.master = MASTER_FIN[new URLSearchParams(location.search).get("master")] || MASTER_FIN.steel;
 
 // ---------- the graph (the maintainer's, 2026-11-24) ----------
 const CARDS = {
@@ -159,8 +203,10 @@ function channels(s) {
   return [b > 0 ? v * (1 - b) : v, b < 0 ? v * (1 + b) : v];
 }
 function setChannels(s, l, r) {
+  // each channel to a whole per cent, the balance exactly from them (Scene::set_channels)
+  [l, r] = [l, r].map((x) => Math.round(x * 100) / 100);
   const v = Math.max(l, r);
-  s.vol = Math.round(v * 100) / 100;
+  s.vol = v;
   s.bal = v <= 0 || l === r ? 0 : l > r ? r / l - 1 : 1 - l / r;
 }
 const cols = (s) => s.cols || (s.stereo ? 2 : 1);
@@ -171,10 +217,12 @@ let modules = [], hits = [], size = [0, 0], dividers = [];
 // the gap between two groups (INPUTS, APPS, OUTPUTS, MASTER), a groove down its middle
 const SEP = 22;
 // the console by what things do, as a hardware one (left to right):
-//   INPUTS   the microphones (every source), the default one first
+//   INPUTS   the microphones (every source)
 //   APPS     each program's OUTPUT and INPUT (an INPUT first), side by side
-//   OUTPUTS  every sink but the default one; cards that are off after them
-//   MASTER   the default output (its MASTER key in), at the right edge
+//   OUTPUTS  every sink, the default one too, and the cards that are off
+// each A to Z, whatever is on or off, default or not: nothing jumps when it changes
+//   MASTER   a control of its own at the right edge: the default output's volume and MUTE, whose
+//            it is on its heading; it changes nothing of the device, the device stays in OUTPUTS
 // Every module is one strip, of one width: a device's input and output are apart (a headset's mic
 // left, its headphones right), an app's too; each says whose it is on its heading. A card's PROFILE is once: on its output, else its input.
 const SECTIONS = ["INPUTS", "APPS", "OUTPUTS", "MASTER"];
@@ -187,31 +235,32 @@ function units() {
     const ends = d.strips.filter((s) => s.role === "Sink" || s.role === "Source");
     const profileOn = d.card && (d.strips.find((s) => s.role === "Sink") || d.strips.find((s) => s.role === "Source"));
     for (const s of ends) {
-      const sec = s.role === "Source" ? "INPUTS" : s.id === mainOut ? "MASTER" : "OUTPUTS";
-      out.push({ d, sec, name, strips: [s], card: s === profileOn ? d.card : null, first: s.id === mainIn ? 0 : 1 });
+      const sec = s.role === "Source" ? "INPUTS" : "OUTPUTS";
+      out.push({ d, sec, name, strips: [s], card: s === profileOn ? d.card : null, first: 1 });
+      if (s.id === mainOut) out.push({ d, sec: "MASTER", name, strips: [s], card: null, first: 0, master: true });
     }
     // an app's INPUT and OUTPUT apart too, the INPUT first: every module is one strip
     const apps = d.strips.filter((s) => s.role === "Play" || s.role === "Rec");
     [...apps.filter(takes), ...apps.filter((s) => !takes(s))].forEach((s, i) => out.push({ d, sec: "APPS", name, strips: [s], card: null, first: 1, n: i }));
-    // a card that is off: its heading, among the outputs, last
-    if (!d.strips.length && d.card) out.push({ d, sec: "OUTPUTS", name, strips: [], card: d.card, first: 2 });
+    // a card that is off: its heading, among the outputs in its place by name
+    if (!d.strips.length && d.card) out.push({ d, sec: "OUTPUTS", name, strips: [], card: d.card, first: 1 });
   }
   return out.sort((a, b) => (SECTIONS.indexOf(a.sec) - SECTIONS.indexOf(b.sec)) || (a.first - b.first) || byName(a, b) || ((a.n || 0) - (b.n || 0)));
 }
 function layout() {
-  stretch();
   const mods = units();
-  // an app's keys: every sink (source) shown, in the console's order
-  const ends = mods.flatMap((m) => m.strips.filter((s) => (s.role === "Sink" || s.role === "Source") && s.vol !== null).map((s) => {
+  // an app's keys: every sink (source) shown, in the console's order (MASTER isn't one more)
+  const ends = mods.filter((m) => !m.master).flatMap((m) => m.strips.filter((s) => (s.role === "Sink" || s.role === "Source") && s.vol !== null).map((s) => {
     const several = m.d.strips.filter((o) => o.role === s.role).length > 1;
     return { s, label: (several ? `${m.d.name} · ${s.name}` : m.d.name).toUpperCase(), color: m.d.color };
   }));
+  stretch(lowest(mods, ends));
   hits = [];
   // one gap between every two modules
   let x = LEFT, natural = null, was = null;
   dividers = [];
   for (const m of mods) {
-    m.fin = FIN[m.d.finish];
+    m.fin = m.master ? FIN.master : FIN[m.d.finish];
     // between two groups: wider, a groove down the middle
     if (was && was !== m.sec) {
       dividers.push({ x: x - GAP + SEP / 2, master: m.sec === "MASTER" });
@@ -230,7 +279,8 @@ function layout() {
     // wider than the window); its groove right before it
     if (m.sec === "MASTER") {
       natural = x;
-      m.x = sx + field.clientWidth - LEFT - m.w;
+      // (EDGE: its frame of dark, from the window's edge as from what it covers)
+      m.x = sx + field.clientWidth - EDGE - m.w;
       m.pinned = m.x < x - 0.5;
       const g = dividers.find((d) => d.master);
       if (g) g.x = m.x - SEP / 2;
@@ -243,26 +293,32 @@ function layout() {
     if (m.card) hits.push({ h: "profile", m, r: [m.x + profileKey(m)[0], TOP + profileKey(m)[1], profileKey(m)[2], profileKey(m)[3]] });
     for (const s of m.strips) {
       const x0 = m.x + s.x, gw = 10 + width(SMALL, `#${s.node}`), kx = x0 + 6, kw = s.w - 12;
-      hits.push({ h: "graph", s, r: [x0 + 8, sy + 5, gw, 14] });
+      hits.push({ h: "graph", s, r: [x0 + s.w - 2 - gw, sy + GRAPH_Y, gw, 13] });
+      const [hl, hr] = halves(kx, kw);
+      if (m.master) {
+        hits.push({ h: "all", s, r: [hr[0], sy + mainRowY(), hr[1], KEY_H] });
+        if (KNOBS) { knobHits(s, x0, sy, true); continue; }
+        for (const [h, rr] of rowKeys(s, x0, sy, true)) hits.push({ h, s, master: true, r: rr });
+        slots(s).forEach((cx, i) => hits.push({ h: "fader", s, ch: chans(s) ? i : null, top: faderTop(sy), r: [x0 + cx - 17, faderTop(sy), 34, TRAVEL + 12] }));
+        continue;
+      }
       if (s.role === "Play" || s.role === "Rec") {
-        s.targets.slice(0, 6).forEach((t, i) => hits.push({ h: "to", s, t: t.s, r: [kx, sy + row(i), kw, KEY_H] }));
+        s.targets.forEach((t, i) => hits.push({ h: "to", s, t: t.s, r: [kx, sy + row(i), kw, KEY_H] }));
       } else {
         if (s.vol !== null && s.nodeName) {
-          hits.push({ h: "main", s, r: [kx, sy + row(0), kw, KEY_H] });
-          hits.push({ h: "all", s, r: [kx, sy + row(1), kw, KEY_H] });
+          hits.push({ h: "main", s, r: [hl[0], sy + mainRowY(), hl[1], KEY_H] });
+          hits.push({ h: "all", s, r: [hr[0], sy + mainRowY(), hr[1], KEY_H] });
         }
-        if (s.ports) hits.push({ h: "port", s, m, r: [kx, sy + setupRow(m.card ? 1 : 0), kw, KEY_H] });
+        if (s.ports) hits.push({ h: "port", s, m, r: [kx, sy + setupRow(m.card ? 1 : 0), kw, LCD_H] });
       }
-      const half = (s.w - 12 - 7) / 2;
-      hits.push({ h: "cue", s, r: [kx, sy + KEYS_Y, half, 24] });
+      if (KNOBS) { knobHits(s, x0, sy, false); continue; }
+      for (const [h, rr] of rowKeys(s, x0, sy, false)) hits.push({ h, s, r: rr });
       if (s.vol !== null) {
-        hits.push({ h: "mute", s, r: [kx + half + 7, sy + KEYS_Y, half, 24] });
-        if (s.stereo) hits.push({ h: "chan", s, r: [kx, sy + CHAN_Y, kw, 24] });
         slots(s).forEach((cx, i) => hits.push({ h: "fader", s, ch: chans(s) ? i : null, top: faderTop(sy), r: [x0 + cx - 17, faderTop(sy), 34, TRAVEL + 12] }));
       }
     }
   }
-  size = [x - GAP + LEFT, TOP + MOD_H + BOTTOM];
+  size = [x - GAP + (mods.some((m) => m.master) ? EDGE : LEFT), TOP + MOD_H + BOTTOM];
   modules = mods;
 }
 
@@ -296,10 +352,25 @@ function key(o, [x, y, w, h], label, ledColor, on, value, isHeld) {
 }
 // MASTER (an output's) / MAIN IN (an input's): its amber LED lit while it is the default
 const mainKey = (o, r, label, on, isHeld) => key(o, r, label, "#ffb02e", on, null, isHeld);
-// a push-push key (PLAY ON, RECORD FROM): in, pressed into its hole, its red LED lit, as the
-// panel's keys have it; out, up; held down, deeper
+// a key that does something once (ALL HERE): no light, its name in the middle; down while held
+function actionKey(o, [x, y, w, h], label, isHeld = false) {
+  capKey(o, [x, y, w, h], isHeld, false);
+  o.push(T(SMALL, x + w / 2, y + h / 2 + 3.1, "#e6e7e8", "middle", label));
+}
+// a choice with a list (PROFILE, PORT): its name small over a little amber LCD, as the top panel's,
+// the value in it at full width and ▾ at its right; a click opens the list
+function lcd(o, [x, y, w, h], label, value, print) {
+  o.push(T(SMALL, x + 2, y - 4, print, "start", label));
+  o.push(`<rect x="${x - 2}" y="${y - 2}" width="${w + 4}" height="${h + 4}" rx="4" fill="#121214"/><rect x="${x - 2.5}" y="${y - 2.5}" width="${w + 5}" height="${h + 5}" rx="4.5" fill="none" stroke="#fff" stroke-opacity=".18"/>`);
+  o.push(`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="2.5" fill="url(#gLcd)"/><rect x="${x}" y="${y}" width="${w}" height="${h}" rx="2.5" fill="none" stroke="#783200" stroke-opacity=".35" stroke-width="2"/>`);
+  const chars = Math.floor((w - 20) / 5.75), v = value.length > chars ? value.slice(0, chars - 1) + "…" : value;
+  o.push(`<text x="${x + 6}" y="${y + h / 2 + 3.4}" font-family="Noto Sans Mono" font-weight="400" font-size="9.5" fill="#3a2408" xml:space="preserve">${esc(v)}</text>`);
+  o.push(`<path d="M${x + w - 11},${y + h / 2 - 1.5} l3,3.5 l3,-3.5 z" fill="#3a2408"/>`);
+}
+// a key with a LED (PLAY ON, RECORD FROM): it doesn't latch, down only while held; its red LED
+// says whether it is on
 function pushKey(o, [x, y, w, h], label, isOn, held) {
-  capKey(o, [x, y, w, h], isOn || held, held);
+  capKey(o, [x, y, w, h], held, false);
   led(o, x + 8, y + h / 2, isOn, "#ff4a32");
   o.push(T(SMALL, x + 15, y + h / 2 + 3.1, isOn ? "#f3efe6" : "#c9cbcd", "start", fit(label, SMALL, w - 22)));
 }
@@ -310,6 +381,44 @@ function ledKey(o, [x, y, w, h], label, color, on, off, isHeld) {
   const tw = width(SMALL, label) + 11, lx = x + (w - tw) / 2;
   led(o, lx + 3, y + h / 2, on, color);
   o.push(T(SMALL, lx + 11, y + h / 2 + 3.2, "#e6e7e8", "start", label));
+  o.push("</g>");
+}
+// CUE, MUTE, SPLIT: a clear key lit from inside, as a DJ mixer's CUE. A flat cap of frosted plastic
+// standing on the panel (its side showing under it, its shadow on the panel), no hole round it. It
+// doesn't latch: down only while held, back up either way. Off, milky and unlit, its name printed
+// black; on, the whole cap glows in its colour, paler in the middle, the name black on it.
+// No blur: plain fills and gradients (GLASS in DEFS)
+const GLASS = { "#5fd4ff": "gC", "#ff4a32": "gM", "#ffb02e": "gS" };
+function mix(a, b, t) {
+  const p = (c, i) => parseInt(c.slice(1 + 2 * i, 3 + 2 * i), 16);
+  return "#" + [0, 1, 2].map((i) => Math.round(p(a, i) + (p(b, i) - p(a, i)) * t).toString(16).padStart(2, "0")).join("");
+}
+function glassDefs() {
+  return Object.entries(GLASS).map(([c, id]) =>
+    // lit: the whole cap glows, its side too; a little paler in the middle, never dark at an edge
+    `<radialGradient id="${id}On" cx=".5" cy=".5" r=".75"><stop offset="0" stop-color="${mix(c, "#ffffff", 0.3)}"/><stop offset=".7" stop-color="${mix(c, "#ffffff", 0.08)}"/><stop offset="1" stop-color="${c}"/></radialGradient>` +
+    `<linearGradient id="${id}Body" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${mix(c, "#000000", 0.08)}"/><stop offset="1" stop-color="${mix(c, "#000000", 0.2)}"/></linearGradient>`).join("") +
+    // unlit: frosted, see-through, the dark under it showing more at the middle and the bottom
+    `<linearGradient id="gFrost" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#d9dcdc" stop-opacity=".9"/><stop offset="1" stop-color="#cdd0d1" stop-opacity=".88"/></linearGradient>` +
+    `<radialGradient id="gFrostIn" cx=".5" cy=".5" r=".62"><stop offset="0" stop-color="#5a5f63" stop-opacity=".16"/><stop offset=".75" stop-color="#5a5f63" stop-opacity=".04"/><stop offset="1" stop-color="#fff" stop-opacity=".22"/></radialGradient>` +
+    `<linearGradient id="gFrostSide" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#b9bdbf" stop-opacity=".85"/><stop offset="1" stop-color="#a3a7aa" stop-opacity=".85"/></linearGradient>`;
+}
+function litKey(o, [x, y, w, h], label, color, on, off, isHeld) {
+  const id = GLASS[color], side = isHeld ? 1 : 3, top = y + (3 - side), th = h - side;
+  o.push(`<g${off ? ' opacity=".35"' : ""}>`);
+  // its shadow on the panel; while lit, its light on the panel round it
+  o.push(`<rect x="${x - 0.5}" y="${y + 1.5}" width="${w + 1}" height="${h + 1.5}" rx="3" fill="#000" opacity=".5"/>`);
+  if (on) o.push(`<rect x="${x - 2}" y="${y - 1.5}" width="${w + 4}" height="${h + 5}" rx="4" fill="${color}" opacity=".28"/>`);
+  // the dark inside the cap, seen through the plastic; then the side, see-through too
+  o.push(`<rect x="${x}" y="${top}" width="${w}" height="${h}" rx="2.5" fill="${on ? `url(#${id}Body)` : "#25282a"}"/>`);
+  if (!on) o.push(`<rect x="${x}" y="${top}" width="${w}" height="${h}" rx="2.5" fill="url(#gFrostSide)"/>`);
+  // the top: frosted (the dark through it), or lit
+  o.push(`<rect x="${x}" y="${top}" width="${w}" height="${th}" rx="2.5" fill="${on ? `url(#${id}On)` : "url(#gFrost)"}"/>`);
+  if (!on) o.push(`<rect x="${x}" y="${top}" width="${w}" height="${th}" rx="2.5" fill="url(#gFrostIn)"/>`);
+  // the rim: lit, a paler line of its light
+  o.push(`<rect x="${x + 0.5}" y="${top + 0.5}" width="${w - 1}" height="${th - 1}" rx="2" fill="none" stroke="${on ? mix(color, "#ffffff", 0.55) : "#fff"}" stroke-opacity="${on ? 0.7 : 0.4}"/>`);
+  o.push(`<rect x="${x}" y="${top}" width="${w}" height="${h}" rx="2.5" fill="none" stroke="#000" stroke-opacity="${on ? 0.3 : 0.35}" stroke-width=".8"/>`);
+  o.push(T(SMALL, x + w / 2, top + th / 2 + 2.9, "#000", "middle", label));
   o.push("</g>");
 }
 // a module's plate: its paint, the paint's texture or noise, the sheen (face::raster)
@@ -324,50 +433,72 @@ function moduleSvg(m) {
   const o = [], w = m.w, h = MOD_H, print = m.fin.print;
   plate(o, m);
   o.push(`<rect x=".5" y=".5" width="${w - 1}" height="${h - 1}" rx="${RADIUS}" fill="none" stroke="#000" stroke-opacity=".7"/>`);
-  o.push(T(SECTION, w / 2, 22, print, "middle", fit(m.name, SECTION, w - 20)));
-  if (m.card || m.strips.some((s) => s.ports)) o.push(T(SMALL, w / 2, HEAD + setupY() + 8, print, "middle", "DEVICE SETUP"));
+  // each strip's frame first, what is in it over it: as a frame on the rack (face.rs), here on the
+  // module's very edge, its corners the module's; its edge and its band in the block kind's colour,
+  // on the band the device's name, then the frame's
+  const frame = (fx, fw, c, ink, sub, node) => {
+    if (c) o.push(`<path d="M${fx},${BAND} V${RADIUS} a${RADIUS},${RADIUS} 0 0 1 ${RADIUS},-${RADIUS} H${fx + fw - RADIUS} a${RADIUS},${RADIUS} 0 0 1 ${RADIUS},${RADIUS} V${BAND} Z" fill="${c}"/><path d="M${fx},${BAND + 0.5} H${fx + fw}" stroke="rgba(0,0,0,.35)"/>`);
+    o.push(`<rect x="${fx + 0.6}" y=".6" width="${fw - 1.2}" height="${h - 1.2}" rx="${RADIUS - 0.6}" fill="none" stroke="${c || print}" stroke-opacity="${c ? 0.9 : 0.35}" stroke-width="1.2"/>`);
+    o.push(T(SECTION, fx + 10, 16, ink, "start", fit(m.name, SECTION, fw - 20)));
+    // GRAPH at the second line's right, a dark key as on the rack's band; the frame's name before it
+    const gw = node == null ? 0 : 10 + width(SMALL, `#${node}`), gx = fx + fw - 8 - gw;
+    if (node != null) o.push(`<rect x="${gx}" y="${GRAPH_Y}" width="${gw}" height="13" rx="2.5" fill="#1b1c1e" stroke="rgba(0,0,0,.45)"/>`, T(SMALL, gx + gw / 2, GRAPH_Y + 9.4, "#e6e7e8", "middle", `#${node}`));
+    if (sub) o.push(T(SMALL, fx + 10, 30, ink, "start", fit(sub, SMALL, fw - 26 - gw)));
+  };
+  // a card that is off: a band like every frame's, a plain grey one, OFF on its second line; its
+  // PROFILE under SETUP, where an on card has it
+  if (!m.strips.length) {
+    frame(0, w, "#6b6e72", "#f3efe6", "OFF");
+    ruled(o, 12, w - 12, HEAD + ROUTE_Y + 8, "SETUP", print);
+  }
+  m.strips.forEach((s, i) => {
+    const l = i ? s.x : 0, rr = i < m.strips.length - 1 ? s.x + s.w : w;
+    frame(l, rr - l, kindColour(s.kind), bandInk(s.kind), s.name, s.node);
+  });
   if (m.card) {
-    const c = CARDS[m.card], [px, py, pw, ph] = profileKey(m);
-    key(o, [px, py, pw, ph], "PROFILE", null, false, c.profiles[c.profile]);
+    const c = CARDS[m.card];
+    lcd(o, profileKey(m), "PROFILE", c.profiles[c.profile], print);
   }
   const sy = HEAD;
   m.strips.forEach((s, i) => {
     const x0 = s.x;
     if (i > 0) o.push(`<path d="M${x0},${sy} V${h - 8}" stroke="${print}" stroke-opacity=".35" stroke-dasharray="2 3"/>`);
-    const kc = kindColour(s.kind), ink = bandInk(s.kind);
-    o.push(`<path d="M${x0 + 2},${sy + BAND} V${sy + 5} a5,5 0 0 1 5,-5 H${x0 + s.w - 7} a5,5 0 0 1 5,5 V${sy + BAND} Z" fill="${kc}"/>`);
-    const id = `#${s.node}`, gw = 10 + width(SMALL, id);
-    o.push(`<rect x="${x0 + 8}" y="${sy + 5}" width="${gw}" height="14" rx="2.5" fill="none" stroke="${ink}" stroke-width="1.1"/>`);
-    o.push(T(SMALL, x0 + 8 + gw / 2, sy + 15, ink, "middle", id));
-    o.push(T(SECTION, x0 + 8 + gw + 6, sy + 16, ink, "start", fit(s.name, SECTION, s.w - gw - 26)));
-    const kx = x0 + 6, kw = s.w - 12, ry = sy + ROUTE_Y;
-    // the first group's title: where an app goes (PLAY ON, RECORD FROM), or the device's own keys
-    const title = { Play: "PLAY ON", Rec: "RECORD FROM", Sink: "OUTPUT", Source: "INPUT" }[s.role];
-    o.push(T(SMALL, x0 + s.w / 2, ry + 8, print, "middle", title));
+    const kx = x0 + 6, kw = s.w - 12, ry = sy + ROUTE_Y, [hl, hr] = halves(kx, kw);
+    // an app's first group under its title (PLAY ON, RECORD FROM); a device's first row needs none
+    // (the band says what it is)
+    ruled(o, x0 + 6, x0 + s.w - 6, ry + 8, { Play: "PLAY ON", Rec: "RECORD FROM" }[s.role] || "SETUP", print);
     const at = (i) => sy + row(i);
+    if (m.master) {
+      // MASTER: the default output's own keys only, ALL HERE in its place; no MAIN (it is it), no
+      // CUE (it is what CUE plays in), nothing of the device's setup
+      actionKey(o, [hr[0], sy + mainRowY(), hr[1], KEY_H], "ALL HERE");
+      if (KNOBS) return knobs(o, s, x0, sy, print, true);
+      ruled(o, x0 + 6, x0 + s.w - 6, sy + KEYS_Y - 9, blockName(s), print);
+      rowDraw(o, s, x0, sy, true);
+      fader(o, s, x0, sy, print);
+      return;
+    }
     if (s.role === "Play" || s.role === "Rec") {
-      s.targets.slice(0, 6).forEach((t, i) => pushKey(o, [kx, at(i), kw, KEY_H], t.label, s.to.includes(t.s.id), held && held.s === s && held.t === t.s));
+      s.targets.forEach((t, i) => pushKey(o, [kx, at(i), kw, KEY_H], t.label, s.to.includes(t.s.id), held && held.s === s && held.t === t.s));
       if (!s.targets.length) o.push(T(SMALL, x0 + s.w / 2, at(0) + 12, print, "middle", "NOWHERE"));
     } else {
       if (s.vol !== null && s.nodeName) {
-        const out = s.role === "Sink";
-        mainKey(o, [kx, at(0), kw, KEY_H], out ? "MASTER" : "MAIN IN", s.main, holds("main", s));
-        key(o, [kx, at(1), kw, KEY_H], out ? "PLAY ALL HERE" : "RECORD ALL HERE");
+        // MAIN: a state, lit like CUE and MUTE; ALL HERE: once, a plain key
+        litKey(o, [hl[0], sy + mainRowY(), hl[1], KEY_H], "MAIN", "#ffb02e", s.main, false, holds("main", s));
+        actionKey(o, [hr[0], sy + mainRowY(), hr[1], KEY_H], "ALL HERE");
       }
-      if (s.ports) key(o, [kx, sy + setupRow(m.card ? 1 : 0), kw, KEY_H], "PORT", null, false, s.ports[s.port]);
+      if (s.ports) lcd(o, [kx, sy + setupRow(m.card ? 1 : 0), kw, LCD_H], "PORT", s.ports[s.port], print);
     }
-    // the second's: the channel itself
-    o.push(T(SMALL, x0 + s.w / 2, sy + KEYS_Y - 9, print, "middle", "CHANNEL"));
-    const half = (s.w - 12 - 7) / 2;
-    ledKey(o, [kx, sy + KEYS_Y, half, 24], "CUE", "#5fd4ff", !!s.cue, false, holds("cue", s));
-    ledKey(o, [kx + half + 7, sy + KEYS_Y, half, 24], "MUTE", "#ff4a32", s.vol !== null && s.mute, s.vol === null, holds("mute", s));
-    ledKey(o, [kx, sy + CHAN_Y, kw, 24], "SPLIT", "#ffb02e", chans(s), !s.stereo || s.vol === null, holds("chan", s));
+    // the second: VOLUME (GAIN), one block, its name on top: the knobs and small keys when low
+    if (KNOBS) return knobs(o, s, x0, sy, print, false);
+    ruled(o, x0 + 6, x0 + s.w - 6, sy + KEYS_Y - 9, blockName(s), print);
+    rowDraw(o, s, x0, sy, false);
     fader(o, s, x0, sy, print);
   });
   return `<g transform="translate(${m.x},${TOP})">${o.join("")}</g>`;
 }
 
-const DEFS = `<defs>
+const DEFS = `<defs>${glassDefs()}<linearGradient id="gLcd" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f7bb62"/><stop offset="1" stop-color="#e58f2c"/></linearGradient>
   <pattern id="paint" width="80" height="80" patternUnits="userSpaceOnUse"><image href="../../../assets/paint.png" width="80" height="80"/></pattern>
   <pattern id="noise" width="128" height="128" patternUnits="userSpaceOnUse"><image href="../../../assets/noise.png" width="128" height="128"/></pattern>
   <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".16"/><stop offset=".35" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".24"/></linearGradient>
@@ -377,6 +508,8 @@ const DEFS = `<defs>
   <linearGradient id="capEdge" x1="0" y1="0" x2="0.3" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.28"/><stop offset="0.45" stop-color="#fff" stop-opacity="0.04"/><stop offset="1" stop-color="#000" stop-opacity="0.5"/></linearGradient>
   <linearGradient id="capTop" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.13"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
   <linearGradient id="kUp" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#46474b"/><stop offset="1" stop-color="#26272a"/></linearGradient>
+  <radialGradient id="gVol" cx=".38" cy=".3" r=".8"><stop offset="0" stop-color="#5a5b5f"/><stop offset="1" stop-color="#151618"/></radialGradient>
+  <radialGradient id="gHole" cx=".5" cy=".62" r=".6"><stop offset="0" stop-color="#000"/><stop offset=".7" stop-color="#0a0a0b"/><stop offset="1" stop-color="#3c3d40"/></radialGradient>
   <linearGradient id="cap" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5a5b5f"/><stop offset=".45" stop-color="#2b2c2f"/><stop offset=".55" stop-color="#1b1c1e"/><stop offset="1" stop-color="#3c3d41"/></linearGradient>
 </defs>`;
 
@@ -388,7 +521,7 @@ function render() {
   const o = [DEFS];
   // what scrolls goes under MASTER: the field's dark behind it, a shadow at its left
   const master = modules.find((m) => m.sec === "MASTER");
-  const back = (m) => `<defs><linearGradient id="mShade" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".45"/></linearGradient></defs><rect x="${m.x - GAP - 14}" y="0" width="14" height="${size[1]}" fill="url(#mShade)"/><rect x="${m.x - GAP}" y="0" width="${m.w + GAP + LEFT}" height="${size[1]}" fill="#1b1c1e"/>`;
+  const back = (m) => `<defs><linearGradient id="mShade" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".45"/></linearGradient></defs><rect x="${m.x - EDGE - 14}" y="0" width="14" height="${size[1]}" fill="url(#mShade)"/><rect x="${m.x - EDGE}" y="0" width="${m.w + 2 * EDGE}" height="${size[1]}" fill="#1b1c1e"/>`;
   for (const name of SECTIONS.filter((n) => n !== "MASTER")) {
     const m = modules.find((m) => m.sec === name);
     if (m) o.push(T(SECTION, m.x + 6, 17, "#8a8d91", "start", name));
@@ -433,11 +566,35 @@ function level(s, t, depth = 0) {
 // with it; VOLUME (GAIN) under it all
 const slots = (s) => (chans(s) ? [38, 74] : [50]);
 // under SPLIT, clear of its key's hole (mixer.rs: Rows::fader_y); the slot from top + 6
-const faderTop = (sy) => sy + CHAN_Y + 44;
+const faderTop = (sy) => sy + KEYS_Y + 37;
+// the block's keys over the faders, small, in one row, their names lit (as under the knobs): CUE,
+// MUTE, SPLIT (MASTER: no CUE); a key that would do nothing (no volume in PipeWire: no MUTE; mono:
+// no SPLIT) isn't there
+// every key at its own place, always the same: CUE, MUTE, SPLIT (under the knobs CUE, MUTE) share
+// the row in equal places; a key that would do nothing isn't there, its place stays empty
+function spread(names, x, y, w, split) {
+  const all = split ? ["cue", "mute", "chan"] : ["cue", "mute"], n = all.length, kw = (w - (n - 1) * 5) / n;
+  return names.map((h) => [h, [x + all.indexOf(h) * (kw + 5), y, kw, KEY_H]]);
+}
+function rowNames(s, master, split) {
+  const out = [];
+  // (no CUE on what CUE plays in, the default output: it would feed back, it can't go on)
+  if (!master && !(s.role === "Sink" && s.id === mainOut)) out.push("cue");
+  if (s.vol !== null) out.push("mute");
+  if (split && s.stereo && s.vol !== null) out.push("chan");
+  return out;
+}
+const rowKeys = (s, x0, sy, master) => spread(rowNames(s, master, true), x0 + 6, sy + KEYS_Y, s.w - 12, true);
+function rowDraw(o, s, x0, sy, master) {
+  for (const [h, r] of rowKeys(s, x0, sy, master)) {
+    if (h === "cue") litKey(o, r, "CUE", "#5fd4ff", !!s.cue, false, holds("cue", s));
+    else if (h === "mute") litKey(o, r, "MUTE", "#ff4a32", s.mute, false, holds("mute", s, master));
+    else litKey(o, r, "SPLIT", "#ffb02e", chans(s), false, holds("chan", s, master));
+  }
+}
 function fader(o, s, x0, sy, print) {
   const top = faderTop(sy), split = chans(s);
   // its name under it all, as on the rack: VOLUME on what plays, GAIN on what comes in
-  o.push(T(SMALL, x0 + s.w / 2, sy + CHAN_Y + 230, print, "middle", s.role === "Source" || s.role === "Rec" ? "GAIN" : "VOLUME"));
   if (s.vol !== null) {
     for (const v of [150, 100, 75, 50, 25, 0]) o.push(T(SMALL, x0 + (split ? 17 : 30), top + capY(v / 100) + 2.6, print, "end", String(v)));
     const lr = channels(s);
@@ -457,12 +614,90 @@ function fader(o, s, x0, sy, print) {
   }
   // the meter: its LEDs thin, split or not
   const n = cols(s), lw = LED_W, count = LEDS;
-  const mx = x0 + (split ? 93 : 84), my = top + capY(VOL_MAX), mh = TRAVEL, step = (mh - 6) / count;
-  o.push(`<rect x="${mx}" y="${my}" width="${n * (lw + 2) + 2}" height="${mh}" rx="3" fill="#0b0b0c"/>`);
+  const mx = x0 + (split ? 93 : 84), my = top + capY(VOL_MAX), mh = TRAVEL, step = (mh - 4) / count;
+  // (3 of dark round the LEDs on every side, 2 between them)
+  o.push(`<rect x="${mx}" y="${my}" width="${n * (lw + 2) + 4}" height="${mh}" rx="3" fill="#0b0b0c"/>`);
   for (let c = 0; c < n; c++) for (let i = 0; i < count; i++) {
     const f = i / count, dark = f >= 0.9 ? "#351612" : f >= 0.7 ? "#2f2810" : "#1c2a1f";
-    const lx = mx + 3 + c * (lw + 2), ly = my + mh - 3 - (i + 1) * step + 1;
+    const lx = mx + 3 + c * (lw + 2), ly = my + mh - 1 - (i + 1) * step;
     o.push(`<rect class="led" data-s="${s.id}" data-c="${c}" data-i="${i}" data-dark="${dark}" fill="${dark}" x="${lx}" y="${ly}" width="${lw}" height="${step - 2}" rx="1"/>`);
+  }
+}
+
+// the block's name, as on the rack: VOLUME on what plays, GAIN on what comes in
+const blockName = (s) => (s.role === "Source" || s.role === "Rec" ? "GAIN" : "VOLUME");
+// ---------- the knobs, when the window is too low for the faders (face.rs: mix_panel, mix_pic) ----------
+// the same block, its name on top (· BAL on a stereo strip): the rack's VOLUME (GAIN) knob, its
+// BAL knob (push-push: in, flush and still; out, it turns), CUE and MUTE small under them, their
+// names lit instead of a LED (MASTER: MUTE), the meter at the right under the name; no SPLIT (BAL instead)
+const volAngle = (v) => -135 + (270 * Math.min(Math.max(v, 0), VOL_MAX)) / VOL_MAX;
+function polar(x, y, a, r) { a = (a * Math.PI) / 180; return `${(x + r * Math.sin(a)).toFixed(2)},${(y - r * Math.cos(a)).toFixed(2)}`; }
+function knobGeo(s, x0, sy, master) {
+  const mw = cols(s) * (LED_W + 2) + 4, mx = x0 + s.w - 8 - mw, t = sy + KEYS_Y - 9;
+  const bal = s.stereo && s.vol !== null, kx = x0 + 6, aw = mx - 5 - kx, ky = t + 57;
+  const keys = spread(rowNames(s, master, false), kx, ky, aw, false);
+  return { mx, mw, t, keys, vol: [bal ? x0 + 30 : (kx + mx - 5) / 2, t + 29], bal: bal ? [x0 + 68, t + 25] : null };
+}
+function knobHits(s, x0, sy, master) {
+  const g = knobGeo(s, x0, sy, master);
+  for (const [h, r] of g.keys) if (h === "cue" || s.vol !== null) hits.push({ h, s, master, r });
+  if (s.vol === null) return;
+  hits.push({ h: "vol", s, r: [g.vol[0] - 21, g.vol[1] - 21, 42, 42] });
+  if (g.bal) hits.push({ h: "bal", s, r: [g.bal[0] - 15, g.bal[1] - 15, 30, 30] });
+}
+// a group's name (PLAY ON, SETUP, VOLUME...) in the middle of a rule from `x0` to `x1`: a thin line at its left and its right
+function ruled(o, x0, x1, y, text, print) {
+  const cx = (x0 + x1) / 2, half = width(SMALL, text) / 2 + 6, ly = y - 2.8;
+  o.push(T(SMALL, cx, y, print, "middle", text));
+  for (const [a, b] of [[x0, cx - half], [cx + half, x1]]) if (b - a > 2) o.push(`<path d="M${a},${ly} H${b}" stroke="${print}" stroke-opacity=".5"/>`);
+}
+function knob(o, x, y, r, a) {
+  o.push(`<circle cx="${x}" cy="${y + 1.5}" r="${r + 0.5}" fill="#111" opacity=".5"/><circle cx="${x}" cy="${y}" r="${r}" fill="url(#gVol)" stroke="#0c0c0d"/><circle cx="${x}" cy="${y}" r="${r * 0.75}" fill="none" stroke="rgba(255,255,255,.08)"/><path d="M${polar(x, y, a, r * 0.29)} L${polar(x, y, a, r * 0.86)}" stroke="#ffb02e" stroke-width="${r > 12 ? 2.4 : 2}" stroke-linecap="round"/>`);
+}
+function knobs(o, s, x0, sy, print, master) {
+  const g = knobGeo(s, x0, sy, master), cx0 = (x0 + 6 + g.mx - 5) / 2;
+  ruled(o, x0 + 6, x0 + s.w - 6, g.t, blockName(s) + (g.bal ? " · BAL" : ""), print);
+  for (const [h, r] of g.keys) {
+    if (h === "cue") litKey(o, r, "CUE", "#5fd4ff", !!s.cue, false, holds("cue", s));
+    // (no volume in PipeWire, nothing to mute: no MUTE key at all)
+    else if (s.vol !== null) litKey(o, r, "MUTE", "#ff4a32", s.mute, false, holds("mute", s, master));
+  }
+  if (s.vol === null) {
+    o.push(T(SMALL, cx0, g.t + 24, print, "middle", "NO VOLUME"));
+    o.push(T(SMALL, cx0, g.t + 36, print, "middle", "IN PIPEWIRE"));
+  } else {
+    // VOLUME: silence to 150%, a long tick at 100% and red past it
+    const [cx, cy] = g.vol;
+    o.push(`<path d="M${polar(cx, cy, volAngle(1), 19.5)} A19.5,19.5 0 0 1 ${polar(cx, cy, volAngle(VOL_MAX), 19.5)}" fill="none" stroke="#d2402f" stroke-width="2.2" opacity=".85"/>`);
+    for (let i = 0; i <= 12; i++) {
+      const a = volAngle((i / 12) * VOL_MAX);
+      o.push(`<path d="M${polar(cx, cy, a, 17.5)} L${polar(cx, cy, a, i % 4 === 0 ? 21 : 19.5)}" stroke="${print}" stroke-width=".9" opacity=".6"/>`);
+    }
+    o.push(`<path d="M${polar(cx, cy, volAngle(1), 16.5)} L${polar(cx, cy, volAngle(1), 23.5)}" stroke="${print}" stroke-width="1.6"/>`);
+    knob(o, cx, cy, 14, volAngle(s.vol));
+    // BAL: centre straight up with a long tick, L and R at the ends, the knob in its well
+    if (g.bal) {
+      const [bx, by] = g.bal, a = (s.bal || 0) * 135, st = holds("bal", s) ? "held" : s.balOut ? "out" : "in";
+      for (let i = -4; i <= 4; i++) {
+        const t = i * 33.75;
+        o.push(`<path d="M${polar(bx, by, t, 11.5)} L${polar(bx, by, t, i === 0 ? 16 : 13.5)}" stroke="${print}" stroke-width="${i === 0 ? 1.5 : 0.9}" opacity="${i === 0 ? 1 : 0.6}"/>`);
+      }
+      o.push(`<circle cx="${bx}" cy="${by}" r="10.8" fill="url(#gHole)" stroke="rgba(255,255,255,.12)" stroke-width=".7"/>`);
+      o.push(T(SMALL, bx - 12, by + 17, print, "middle", "L"), T(SMALL, bx + 12, by + 17, print, "middle", "R"));
+      const pointer = (dy, c, w, r0, r1) => `<path d="M${polar(bx, by + dy, a, r0)} L${polar(bx, by + dy, a, r1)}" stroke="${c}" stroke-width="${w}" stroke-linecap="round"/>`;
+      if (st === "held") o.push(`<circle cx="${bx}" cy="${by + 0.6}" r="8.3" fill="#151618" stroke="#050506"/><circle cx="${bx}" cy="${by - 0.4}" r="8.6" fill="none" stroke="rgba(0,0,0,.7)" stroke-width="1.6"/>` + pointer(0.6, "#6a5028", 1.7, 2.4, 6.6));
+      else if (st === "out") { o.push(`<circle cx="${bx + 1.6}" cy="${by + 3.2}" r="10.4" fill="#000" opacity=".55"/><circle cx="${bx}" cy="${by + 2}" r="9.6" fill="#0d0e0f"/>`); knob(o, bx, by, 9.6, a); }
+      else o.push(`<circle cx="${bx}" cy="${by}" r="9" fill="#202124" stroke="#0c0c0d"/>` + pointer(0, "#8a6a32", 1.8, 2.6, 7.4));
+    }
+  }
+  // the meter, under the name down to the keys' bottom
+  // (under the block's name, its rule across the whole strip over it; its bottom level with the
+  // keys' shadow)
+  const my = g.t + 6, mh = 57 + KEY_H + 3 - 6, step = (mh - 4) / LEDS;
+  o.push(`<rect x="${g.mx}" y="${my}" width="${g.mw}" height="${mh}" rx="3" fill="#0b0b0c"/>`);
+  for (let c = 0; c < cols(s); c++) for (let i = 0; i < LEDS; i++) {
+    const f = i / LEDS, dark = f >= 0.9 ? "#351612" : f >= 0.7 ? "#2f2810" : "#1c2a1f";
+    o.push(`<rect class="led" data-s="${s.id}" data-c="${c}" data-i="${i}" data-dark="${dark}" fill="${dark}" x="${g.mx + 3 + c * (LED_W + 2)}" y="${my + mh - 1 - (i + 1) * step}" width="${LED_W}" height="${step - 2}" rx="1"/>`);
   }
 }
 
@@ -483,7 +718,12 @@ function tick(ms) {
 
 // ---------- what the pointer does (mixer.rs: press, drag, wheel, hover) ----------
 const at = (e) => { const b = field.getBoundingClientRect(); return [e.clientX - b.left + sx, e.clientY - b.top + sy]; };
-const hitAt = ([x, y]) => hits.find(({ r }) => x >= r[0] && x <= r[0] + r[2] && y >= r[1] && y <= r[1] + r[3]);
+// what is drawn last is on top: MASTER over what goes under it; a press where it covers the
+// console (held at the edge) is its or nothing's
+const hitAt = ([x, y]) => {
+  const m = modules.find((m) => m.master && m.pinned), cover = m ? m.x - EDGE : Infinity;
+  return [...hits].reverse().filter(({ r }) => x < cover || r[0] >= cover).find(({ r }) => x >= r[0] && x <= r[0] + r[2] && y >= r[1] && y <= r[1] + r[3]);
+};
 const fname = (s) => `${s.dev.name} · ${s.name}`;
 const sr = document.getElementById("sr");
 function hover(h) {
@@ -493,12 +733,13 @@ function hover(h) {
     case "profile": return "The card's profile: which of its outputs and inputs it has";
     case "port": return "The card's port: where it plays or records from";
     case "to": { const l = h.s.to.includes(h.t.id); return `${fname(h.s)} ${l ? "goes to" : "doesn't go to"} ${fname(h.t)}. Click: ${l ? "not there any more" : "there too"}`; }
-    case "main": return h.s.role === "Sink" ? `Make ${fname(h.s)} the master: everything plays here, new apps too` : `Make ${fname(h.s)} the default input: new apps record from here`;
-    case "all": return `Every app to ${fname(h.s)}, and it becomes the default`;
+    case "main": return h.s.role === "Sink" ? `MAIN: make ${fname(h.s)} the default output (MASTER): new apps play here` : `MAIN: make ${fname(h.s)} the default input: new apps record from here`;
+    case "all": return h.s.role === "Source" ? `ALL HERE: every app records from ${fname(h.s)}, and it becomes the default` : `ALL HERE: every app plays on ${fname(h.s)}, and it becomes the default`;
     case "cue": return `Listen to ${fname(h.s)} in the default output; nothing else changes`;
-    case "mute": return `Mute ${fname(h.s)}`;
+    case "mute": return h.master ? `Mute the master (${fname(h.s)})` : `Mute ${fname(h.s)}`;
     case "chan": return "SPLIT: a fader for L and one for R (JOIN: one for both)";
-    case "fader": return `${fname(h.s)}: drag or wheel; double-click 100%`;
+    case "fader": case "vol": return `${fname(h.s)}: drag or wheel; double-click 100%`;
+    case "bal": return h.s.balOut ? "BAL: drag or wheel turns it; a click pushes it in" : "BAL: a click and it comes out, to turn";
   }
   return "";
 }
@@ -516,7 +757,7 @@ function setFader(h, v) {
 }
 let drag = null, last = null, held = null;
 // the key held down now, of a strip
-const holds = (what, s) => !!held && held.h === what && held.s === s;
+const holds = (what, s, master = false) => !!held && held.h === what && held.s === s && !!held.master === master;
 field.addEventListener("pointerdown", (e) => {
   closeMenu();
   const p = at(e), h = hitAt(p);
@@ -539,21 +780,38 @@ field.addEventListener("pointerdown", (e) => {
     case "fader":
       if (dbl) setFader(h, 1); else { drag = { h }; setFader(h, volAt(p[1] - h.top)); }
       break;
+    // a knob turns as the pointer goes up and down; double-click: 100%
+    case "vol":
+      if (dbl) h.s.vol = 1; else drag = { knob: h, y0: e.clientY, v0: h.s.vol };
+      break;
+    // BAL out: it turns, and a click without turning pushes it in; in: held down, out when let go
+    case "bal":
+      if (h.s.balOut) drag = { knob: h, y0: e.clientY, v0: h.s.bal || 0, moved: false };
+      else held = h;
+      break;
   }
   render();
 });
 field.addEventListener("pointermove", (e) => {
   if (drag && drag.pan) { sx = drag.pan[2] - (e.clientX - drag.pan[0]); sy = drag.pan[3] - (e.clientY - drag.pan[1]); clamp(); render(); return; }
+  if (drag && drag.knob) {
+    const s = drag.knob.s, d = drag.y0 - e.clientY;
+    if (drag.knob.h === "vol") s.vol = Math.round(Math.min(Math.max(drag.v0 + d * 0.01, 0), VOL_MAX) * 100) / 100;
+    else if (Math.abs(d) > 2 || drag.moved) { drag.moved = true; const b = Math.min(Math.max(drag.v0 + d / 100, -1), 1); s.bal = Math.abs(b) < 0.03 ? 0 : b; }
+    render();
+    return;
+  }
   if (drag && drag.h) { setFader(drag.h, volAt(at(e)[1] - drag.h.top)); render(); sr.textContent = `${fname(drag.h.s)}: ${Math.round(drag.h.s.vol * 100)}%`; return; }
   const h = hitAt(at(e));
   sr.textContent = hover(h);
   field.style.cursor = h ? "pointer" : "default";
 });
 field.addEventListener("pointerup", (e) => {
+  if (drag && drag.knob && drag.knob.h === "bal" && !drag.moved) { drag.knob.s.balOut = false; render(); }
   drag = null;
   if (held) {
     const h = hitAt(at(e));
-    if (h && h.h === held.h && h.s === held.s && h.t === held.t) {
+    if (h && h.h === held.h && h.s === held.s && h.t === held.t && !!h.master === !!held.master) {
       const s = held.s;
       switch (h.h) {
         case "to": { const i = s.to.indexOf(h.t.id); if (i >= 0) s.to.splice(i, 1); else s.to.push(h.t.id); break; }
@@ -561,6 +819,7 @@ field.addEventListener("pointerup", (e) => {
         case "cue": s.cue = !s.cue; break;
         case "mute": s.mute = !s.mute; break;
         case "chan": s.chans = !s.chans; break;
+        case "bal": s.balOut = true; break;
       }
     }
     held = null;
@@ -570,6 +829,13 @@ field.addEventListener("pointerup", (e) => {
 field.addEventListener("wheel", (e) => {
   e.preventDefault();
   const h = hitAt(at(e));
+  if (h && (h.h === "vol" || (h.h === "bal" && h.s.balOut))) {
+    const st = (e.deltaY < 0 ? 1 : -1) * (e.shiftKey ? 0.01 : 0.05);
+    if (h.h === "vol") h.s.vol = Math.round(Math.min(Math.max(h.s.vol + st, 0), VOL_MAX) * 100) / 100;
+    else h.s.bal = Math.min(Math.max((h.s.bal || 0) + st, -1), 1);
+    render();
+    return;
+  }
   if (h && h.h === "fader") {
     const now = h.ch === null ? h.s.vol : channels(h.s)[h.ch];
     setFader(h, Math.min(Math.max(now + (e.deltaY < 0 ? 1 : -1) * (e.shiftKey ? 0.01 : 0.05), 0), VOL_MAX));

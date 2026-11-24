@@ -59,7 +59,7 @@ impl Key {
             Key::Undo => "Undo (Ctrl+Z)",
             Key::Redo => "Redo (Ctrl+Shift+Z)",
             Key::Save => "Save as a new preset (Ctrl+S)",
-            Key::Desk => "Devices anywhere on a desk",
+            Key::Desk => "Devices anywhere on a desk (D)",
             Key::Mixer => "Every device and app as a mixing console: volumes, where each app plays, the defaults (M)",
             Key::Rack => "Devices in a 19\" rack (R)",
             Key::Engine => "What PipeWire really has: every node, port and link, drivers, timings, issues (E)",

@@ -660,15 +660,12 @@ impl App {
             }
             Key::Fit if self.engine.on => self.engine.fit(self.size, self.dpi()),
             Key::Fit => self.fit(true),
-            Key::Engine => {
-                let on = !self.engine.on;
-                self.set_engine(on);
-            }
+            // LAYOUT: each key shows its own screen, pressed again it stays there (nothing goes
+            // back and forth); each has its own key on the keyboard (D, M, R, E)
+            Key::Engine => self.set_engine(true),
             Key::Mixer => {
-                // from ENGINE back to MIXER; else MIXER on or off
-                let on = self.engine.on || !self.mixer.on;
                 self.set_engine(false);
-                self.set_mixer(on);
+                self.set_mixer(true);
             }
             Key::Desk | Key::Rack => {
                 self.set_engine(false);
@@ -708,8 +705,11 @@ impl App {
         if matches!(self.drag, Some(Drag::Plug { .. } | Drag::Device { .. } | Drag::Cord { .. } | Drag::Engine)) {
             self.release();
         }
-        self.drag = None;
-        self.panel.state.pressed = None;
+        // (the panel's key that switched it stays down until it is let go)
+        if !matches!(self.drag, Some(Drag::Key)) {
+            self.drag = None;
+            self.panel.state.pressed = None;
+        }
         self.engine.set_on(on);
         // what was under the pointer is on the other screen now (and Alt doesn't probe in ENGINE)
         self.cue.hover = None;
@@ -743,10 +743,13 @@ impl App {
         if matches!(self.drag, Some(Drag::Plug { .. } | Drag::Device { .. } | Drag::Cord { .. } | Drag::Engine | Drag::Mixer)) {
             self.release();
         }
-        self.drag = None;
-        self.panel.state.pressed = None;
+        // (the panel's key that switched it stays down until it is let go)
+        if !matches!(self.drag, Some(Drag::Key)) {
+            self.drag = None;
+            self.panel.state.pressed = None;
+        }
         self.mixer.on = on;
-        self.mixer.let_go();
+        self.mixer.let_go(&mut self.scene);
         self.cue.hover = None;
         self.cue.in_hole = false;
         if on {
@@ -1191,7 +1194,7 @@ impl App {
         }
         let version = self.scene.version.clone().unwrap_or_else(|| "?".into());
         let field = self.field();
-        let bars = if mixer_on { Vec::new() } else { self.rack_bars() };
+        let bars = if mixer_on { self.mixer.bars(self.size, dpi) } else { self.rack_bars() };
         let pins = self.cue.pins.clone();
         // (the GPU keeps MIXER's modules while another screen shows)
         let mixer_ids: Vec<u64> = self.mixer.ids().collect();
@@ -1875,7 +1878,7 @@ impl App {
                     let hint = if let Some(h) = self.mixer.hover(&self.scene, self.cursor, dpi) {
                         h
                     } else if self.cursor.1 <= bottom {
-                        "drag: scroll · wheel over a fader: volume · M: back · E: ENGINE".to_owned()
+                        "drag: scroll · wheel over a fader: volume · D: desk · R: rack · E: ENGINE".to_owned()
                     } else {
                         String::new()
                     };
@@ -1926,7 +1929,7 @@ impl App {
                     {
                         // ENGINE shows the cue; it is played with on the desk
                         format!("{what}  ·  the CUE key stops it")
-                    } else if self.cursor.1 <= bottom { "click: inspect · drag: pan · wheel: zoom (scroll over the lists) · F: fit · ?: legend · E: back to the desk".to_owned() } else { String::new() };
+                    } else if self.cursor.1 <= bottom { "click: inspect · drag: pan · wheel: zoom (scroll over the lists) · F: fit · ?: legend · D: desk · M: mixer · R: rack".to_owned() } else { String::new() };
                     if hint != self.hint {
                         self.hint = hint;
                         self.redraw();
@@ -2139,10 +2142,10 @@ impl App {
         // ENGINE has keys of its own; the desk's don't reach the desk behind it
         if self.engine.on && !self.mods.control_key() && !self.mods.alt_key() {
             match code {
-                KeyCode::KeyE => self.panel_key(Key::Engine),
+                KeyCode::KeyD => self.panel_key(Key::Desk),
                 KeyCode::KeyM => self.panel_key(Key::Mixer),
-                KeyCode::KeyF | KeyCode::Digit0 => self.panel_key(Key::Fit),
                 KeyCode::KeyR => self.panel_key(Key::Rack),
+                KeyCode::KeyF | KeyCode::Digit0 => self.panel_key(Key::Fit),
                 // ? (and / without Shift): the legend
                 KeyCode::Slash => {
                     self.engine.toggle_legend();
@@ -2164,9 +2167,9 @@ impl App {
         // MIXER too: the desk's keys don't reach the desk behind it
         if self.mixer_shown() && !self.mods.control_key() && !self.mods.alt_key() {
             match code {
-                KeyCode::KeyM => self.panel_key(Key::Mixer),
-                KeyCode::KeyE => self.panel_key(Key::Engine),
+                KeyCode::KeyD => self.panel_key(Key::Desk),
                 KeyCode::KeyR => self.panel_key(Key::Rack),
+                KeyCode::KeyE => self.panel_key(Key::Engine),
                 KeyCode::Escape => {
                     self.panel.menu = None;
                     self.panel.state.more = false;
@@ -2215,9 +2218,10 @@ impl App {
                 self.redraw();
             }
             KeyCode::KeyC => self.panel_key(Key::Cables),
-            KeyCode::KeyE => self.panel_key(Key::Engine),
+            KeyCode::KeyD => self.panel_key(Key::Desk),
             KeyCode::KeyM => self.panel_key(Key::Mixer),
-            KeyCode::KeyR => self.panel_key(if self.scene.rack { Key::Desk } else { Key::Rack }),
+            KeyCode::KeyR => self.panel_key(Key::Rack),
+            KeyCode::KeyE => self.panel_key(Key::Engine),
             KeyCode::Escape => {
                 self.panel.menu = None;
                 self.panel.state.more = false;
