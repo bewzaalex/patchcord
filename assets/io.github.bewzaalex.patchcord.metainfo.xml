@@ -32,15 +32,15 @@
   <screenshots>
     <screenshot type="default">
       <caption>Devices on the desk, patched with cords</caption>
-      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.6.0/docs/screenshots/desk.png</image>
+      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.0/docs/screenshots/desk.png</image>
     </screenshot>
     <screenshot>
       <caption>The same devices in a rack</caption>
-      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.6.0/docs/screenshots/rack.png</image>
+      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.0/docs/screenshots/rack.png</image>
     </screenshot>
     <screenshot>
       <caption>ENGINE: PipeWire's real graph, with an app's details and timings</caption>
-      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.6.0/docs/screenshots/engine.png</image>
+      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.0/docs/screenshots/engine.png</image>
     </screenshot>
   </screenshots>
   <description>
@@ -65,6 +65,21 @@
     </ul>
   </description>
   <releases>
+    <release version="0.7.0" date="2026-11-26">
+      <url type="details">https://github.com/bewzaalex/patchcord/releases/tag/v0.7.0</url>
+      <description>
+        <p>MIXER, every device and app as a mixing console; links made in ENGINE; reports that keep the whole state.</p>
+        <ul>
+          <li>MIXER (M): every device and app as a module of a console, by what it does: faders, MUTE, CUE, where each app plays or records from, the defaults, a card's profile and port</li>
+          <li>DESK is now one of RACK's two views, on a switch in VIEW; a key a screen can't use is left off the panel</li>
+          <li>ENGINE links ports: drag from a port to another, or pick from a port's LINK FROM / LINK TO lists in its new CONN tab; undo works</li>
+          <li>SAVE REPORT keeps volumes, mute, cards' profiles and ports, still without your user and host names, MAC addresses or the titles of what plays</li>
+          <li>A sound card's frames are named so they can be told apart: a laptop's three HDMI outputs are HDMI 1, HDMI 2, HDMI 3, its microphones by their names</li>
+          <li>Video (a camera, a shared screen) is shown in ENGINE only, for now</li>
+          <li>Fixes: MIDI bridges shown as apps on newer PipeWire (1.6.11), names lost from reports</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.6.0" date="2026-11-21">
       <url type="details">https://github.com/bewzaalex/patchcord/releases/tag/v0.6.0</url>
       <description>
