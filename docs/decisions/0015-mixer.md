@@ -10,12 +10,13 @@ graph the rack shows. The mockup is `docs/design/mixer/index.html`; it went thro
 rounds (channels and buses, masters, KDE's lists) before this shape.
 
 ## Decision
-**MIXER is a screen beside DESK, RACK and ENGINE.**
-- Its key is on the top panel right of DESK; the keyboard key is M.
+**MIXER is a screen beside RACK and ENGINE** (DESK was a screen too, until it became one of
+RACK's views: ADR 0016).
+- Its key is the first of LAYOUT's on the top panel (2026-11-25; it was right of DESK); the
+  keyboard key is M.
 - It is remembered across restarts (`mixer = on` in settings.txt).
-- Every LAYOUT key shows its own screen and has its own keyboard key: D DESK, M MIXER, R RACK,
-  E ENGINE. Pressed again it stays there: no key goes back and forth between two screens.
-- DESK stays for now.
+- Every LAYOUT key shows its own screen and has its own keyboard key: M MIXER, R RACK, E ENGINE.
+  Pressed again it stays there: no key goes back and forth between two screens.
 
 **A console, by what things do** (2026-11-24, as a hardware one; it was a module a device, which
 put a headset's mic and headphones together and the master anywhere). Left to right:

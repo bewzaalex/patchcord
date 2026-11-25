@@ -36,7 +36,7 @@ sink is a sink). The frame's outline and band on the rack, the block's outline a
 | PLAYBACK STREAM | `Stream/Output/Audio` | `#7E5A42` |
 | RECORDING STREAM | `Stream/Input/Audio` | `#427935` |
 | MIDI | `Midi/*` | `#934C7E` |
-| VIDEO | `Video/*`, `Stream/*/Video` | `#876200` |
+| VIDEO | `Video/*`, `Stream/*/Video` (in ENGINE only: ADR 0019) | `#876200` |
 | DUPLEX | `Audio/Duplex` | `#73348D` |
 | NO CLASS | none | `#CBA553`, lettered dark (`#1D1E20`) |
 

@@ -5,6 +5,7 @@ mod dirs;
 mod graph;
 mod mem;
 mod pw;
+mod report;
 mod shot;
 mod ui;
 
@@ -21,6 +22,7 @@ fn main() {
     let shot = match args.first().map(String::as_str) {
         Some("--render") if args.len() >= 2 => Some(shot::render(&args[1], &args[2..])),
         Some("--record") if args.len() >= 2 => Some(shot::record(&args[1])),
+        Some("--report") if args.len() >= 2 => Some(shot::from_report(&args[1])),
         _ => None,
     };
     if let Some(r) = shot {

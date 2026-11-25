@@ -45,6 +45,8 @@ pub enum Tab {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum ITab {
     Info,
+    /// a port's LINK TO (LINK FROM): every port it may go to
+    Conn,
     Props,
     Params,
     Timing,
@@ -74,6 +76,8 @@ enum Hit {
     Info,
     /// the scrollbar of the details (0) or the tables (1)
     Bar(usize),
+    /// a port's LINK TO (LINK FROM) row: the link (output, input) it makes or takes away
+    LinkTo(u32, u32),
 }
 
 /// A picture to draw: (layer, x, y, w, h) in window pixels, where it may draw (if not
@@ -143,6 +147,8 @@ pub enum Action {
     Desk(String),
     /// save a report (`Engine::report`) for a bug ticket
     Report,
+    /// links to make and to take away (output port, input port), as one step to undo
+    Link { add: Vec<(u32, u32)>, del: Vec<(u32, u32)> },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -243,6 +249,53 @@ impl Model {
     }
     fn group(&self, node: u32) -> Option<&Group> {
         self.group_of.get(&node).map(|&g| &self.groups[g])
+    }
+
+    /// Whether ports `a` and `b` may be linked: one gives out, the other takes in, both of one
+    /// kind (audio, MIDI, video), on two blocks, neither Patchcord's own (its meters, the cue).
+    fn fits(&self, a: u32, b: u32) -> bool {
+        let (Some((na, pa, ia)), Some((nb, pb, ib))) = (self.port(a), self.port(b)) else { return false };
+        let kind = |p: &EPort| if p.midi { 1 } else if p.video { 2 } else { 0 };
+        let own = |n: &ENode| matches!(n.kind, NKind::Meter | NKind::Cue);
+        ia != ib && kind(pa) == kind(pb) && na.id != nb.id && !own(na) && !own(nb)
+    }
+
+    /// Ports `a` and `b` as a link: (output, input).
+    fn pair(&self, a: u32, b: u32) -> (u32, u32) {
+        if self.port(a).is_some_and(|(_, _, input)| input) { (b, a) } else { (a, b) }
+    }
+
+    fn linked(&self, (o, i): (u32, u32)) -> bool {
+        self.links.iter().any(|l| l.out_port == o && l.in_port == i)
+    }
+
+    /// Whether a link carried from port `a` can go to port `b`: it fits and isn't there yet.
+    fn takes(&self, a: u32, b: u32) -> bool {
+        self.fits(a, b) && !self.linked(self.pair(a, b))
+    }
+
+    /// The links from block `from`'s head to block `to`, those not there yet: its outputs (an
+    /// input-only block, its inputs) to the other's ports the other way, channel to channel (FL
+    /// to FL, FR to FR), mono to all and all to mono; with no channel in common, in order.
+    fn pairs(&self, from: u32, to: u32) -> Vec<(u32, u32)> {
+        let (Some(f), Some(t)) = (self.node(from), self.node(to)) else { return Vec::new() };
+        let src = if f.outs.is_empty() { &f.ins } else { &f.outs };
+        let dst: Vec<&EPort> = (if f.outs.is_empty() { &t.outs } else { &t.ins }).iter().filter(|d| src.first().is_some_and(|s| self.fits(s.id, d.id))).collect();
+        let ch = |p: &EPort| if p.channel.is_empty() { p.name.clone() } else { p.channel.clone() };
+        let mut out = Vec::new();
+        for s in src {
+            for d in &dst {
+                let (a, b) = (ch(s), ch(d));
+                if a == b || a == "MONO" || b == "MONO" || src.len() == 1 || dst.len() == 1 {
+                    out.push(self.pair(s.id, d.id));
+                }
+            }
+        }
+        if out.is_empty() {
+            out = src.iter().zip(&dst).map(|(s, d)| self.pair(s.id, d.id)).collect();
+        }
+        out.retain(|&p| self.fits(p.0, p.1) && !self.linked(p));
+        out
     }
 }
 
@@ -456,6 +509,9 @@ pub struct Engine {
     hits: Vec<(Hit, [f64; 4])>,
     /// a press in the graph: where, the view then, what was under it, whether it moved
     press: Option<Press>,
+    /// a link in the hand, from the port or block head the press was on (carried once it moves)
+    carry: Option<Carried>,
+
     zoomed: Option<Instant>,
     /// where FIT takes the view, gliding there as the desk's does; and when it last stepped
     view_to: Option<(View, Instant)>,
@@ -495,6 +551,25 @@ pub struct Engine {
 type Seen = (HashMap<u32, String>, HashMap<u32, (String, &'static str)>);
 /// A press in the graph: where, the view then, what was under it, whether it moved since.
 type Press = ((f64, f64), View, Option<Sel>, bool);
+
+/// A link in the hand: from a port, or from a block's head (all its channels at once).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum Carry {
+    Port(u32),
+    Node(u32),
+}
+
+/// A link being carried: what from, where the pointer is (graph units), and what it would go to
+/// if let go now: a port (from a port), a block (from a head).
+#[derive(Clone, Copy, Debug)]
+struct Carried {
+    from: Carry,
+    at: (f64, f64),
+    snap: Option<u32>,
+}
+
+/// A block's head: the band of its kind's colour, as a frame's on the rack, its name on it.
+const HEAD_H: f64 = 24.0;
 /// Where a node is on the desk: its device's key and name, its frames, and whether it is hidden.
 type DeskPlace = (String, String, Vec<String>, bool);
 
@@ -560,6 +635,7 @@ impl Engine {
             nums: HashMap::new(),
             hits: Vec::new(),
             press: None,
+            carry: None,
             zoomed: None,
             view_to: None,
             reveal: false,
@@ -1483,7 +1559,19 @@ impl Engine {
             );
         }
         let (focus, near) = self.focus();
-        let any = self.sel.is_some() && (!focus.is_empty() || matches!(self.sel, Some(Sel::Link(_))));
+        // a link in the hand: the ports (blocks) that take it stand out, the rest fade; the port
+        // it comes from and the one it is on are lit, as chosen ones
+        let carry = self.carry_hint();
+        let (cands, cand_nodes) = self.carry_sets();
+        let carry_lit: HashSet<u32> = match carry {
+            Some((Carry::Port(a), snap)) => std::iter::once(a).chain(snap).collect(),
+            _ => HashSet::new(),
+        };
+        let carry_target = match carry {
+            Some((Carry::Node(_), snap)) => snap,
+            _ => None,
+        };
+        let any = carry.is_none() && self.sel.is_some() && (!focus.is_empty() || matches!(self.sel, Some(Sel::Link(_))));
         // what is chosen turns the LCD's amber: a node where it shows its colour (frame, header,
         // ports, the links out of it), a port as a whole, a link and the ports at its ends
         let chosen_node = |id: u32| focus.contains(&id) && matches!(self.sel, Some(Sel::Node(_) | Sel::Obj(_)));
@@ -1511,7 +1599,7 @@ impl Engine {
             } else {
                 (from, 1.6, r#" stroke-opacity=".45""#)
             };
-            let op = if any && !hl { 0.2 } else { 1.0 };
+            let op = if carry.is_some() { 0.35 } else if any && !hl { 0.2 } else { 1.0 };
             let (stroke, width) = if self.sel == Some(Sel::Link(l.id)) {
                 (SEL.to_owned(), 2.6)
             } else if chosen_node(l.out_node) && l.state != "error" {
@@ -1525,9 +1613,9 @@ impl Engine {
             let Some(&(x, y)) = lay.pos.get(&n.id) else { continue };
             let nh = node_h(n);
             let on = focus.contains(&n.id);
-            let dim = any && !on && !near.contains(&n.id);
+            let dim = (any && !on && !near.contains(&n.id)) || (carry.is_some() && !cand_nodes.contains(&n.id));
             let running = m.group_of.contains_key(&n.id);
-            let op = if dim { 0.35 } else if running { 1.0 } else { 0.72 };
+            let op = if dim { if carry.is_some() { 0.3 } else { 0.35 } } else if running { 1.0 } else { 0.72 };
             let xr = self.xruns.get(&n.id).is_some_and(|x| x.0 > 0);
             let g = m.group(n.id);
             let t = m.timing.get(&n.id);
@@ -1555,25 +1643,39 @@ impl Engine {
             let tag_s = cut(&tags.join(" · "), 26);
             let tag_w = if tags.is_empty() { 0.0 } else { text::width(text::BOLD, &tag_s, 8.5, 0.5) + 8.0 };
             let class_n = (((NW - 22.0 - tag_w) / 6.05) as usize).saturating_sub(n.id.to_string().len() + 3).max(4);
+            let timed = t.is_some() && running;
             let busy = if numbers { t.filter(|_| running).map_or(String::new(), |t| format!("{:.0}µs", t.busy_ns as f64 / 1000.0)) } else { String::new() };
-            let picked = chosen_node(n.id);
+            let picked = chosen_node(n.id) || carry_target == Some(n.id);
             let c = if picked { SEL.to_owned() } else { hex(n.color) };
-            // the header strip, then the body over it (rounded as the frame's inside), then the frame
+            // the head as a frame's band on the rack and in MIXER: the kind's colour across the
+            // block's top, the name on it in the band's lettering, the light at its left, the
+            // time at its right on a dark key (as GRAPH's on a band); under it, on the block,
+            // the id and class and the tags. Then the frame
+            let ink = if picked { SEL_TEXT } else if hex(n.color) == face::kind_colour("NO CLASS") { "#1d1e20" } else { "#f3efe6" };
+            let room = NW - 32.0 - if timed { 56.0 } else { 0.0 };
+            let name = cut(&n.desc.to_uppercase(), (room / 8.4) as usize);
             let _ = write!(
                 o,
-                r##"<g transform="translate({x},{y})" opacity="{op}"><path d="M0,6 A6,6 0 0 1 6,0 H{} A6,6 0 0 1 {NW},6 V12 H0 Z" fill="{c}"/><rect x=".75" y="4" width="{}" height="{}" rx="5.25" fill="#1d1e21"/><rect width="{NW}" height="{nh}" rx="6" fill="none" stroke="{c}" stroke-width="{}"/><circle cx="12" cy="17" r="4" fill="{}"/><text x="22" y="21" font-size="12" font-weight="bold" fill="#e6e7e8">{}</text><text x="12" y="34" font-family="Noto Sans Mono" font-size="10" fill="#7d8085">{} · {}</text><text x="{}" y="21" text-anchor="end" font-family="Noto Sans Mono" font-size="10" fill="#5cff7a">{busy}</text>"##,
-                NW - 6.0,
+                r##"<g transform="translate({x},{y})" opacity="{op}"><rect x=".75" y=".75" width="{}" height="{}" rx="5.25" fill="#1d1e21"/><path d="M0,{HEAD_H} V6 A6,6 0 0 1 6,0 H{} A6,6 0 0 1 {NW},6 V{HEAD_H} Z" fill="{c}"/><path d="M0,{} H{NW}" stroke="#000" stroke-opacity=".35"/><rect width="{NW}" height="{nh}" rx="6" fill="none" stroke="{c}" stroke-width="{}"/><circle cx="12" cy="12" r="4" fill="{}" stroke="#0f1011" stroke-width="1.2"/><text x="22" y="16" font-size="11" font-weight="bold" letter-spacing="1" fill="{ink}">{}</text><text x="12" y="36" font-family="Noto Sans Mono" font-size="10" fill="#7d8085">{} · {}</text>"##,
                 NW - 1.5,
-                nh - 4.75,
+                nh - 1.5,
+                NW - 6.0,
+                HEAD_H + 0.5,
                 if picked { 2.5 } else { 1.5 },
                 led_color(if running { "running" } else { n.state }, xr),
-                esc(&cut(&n.desc, 26)),
+                esc(&name),
                 n.id,
                 esc(&cut(&n.class, class_n)),
-                NW - 10.0
             );
+            if timed {
+                // the dark key the time goes on (the time itself a picture of its own: `numbers`)
+                let _ = write!(o, r##"<rect x="{}" y="5" width="48" height="14" rx="2.5" fill="#1b1c1e" stroke="#000" stroke-opacity=".45"/>"##, NW - 56.0);
+                if !busy.is_empty() {
+                    let _ = write!(o, r##"<text x="{}" y="16" text-anchor="end" font-family="Noto Sans Mono" font-size="10" fill="#5cff7a">{busy}</text>"##, NW - 13.0);
+                }
+            }
             if !tags.is_empty() {
-                let _ = write!(o, r##"<text x="{}" y="34" text-anchor="end" font-size="8.5" font-weight="bold" letter-spacing=".5" fill="{}">{}</text>"##, NW - 10.0, if xr { "#ff6a52" } else { "#e58f2c" }, esc(&tag_s));
+                let _ = write!(o, r##"<text x="{}" y="36" text-anchor="end" font-size="8.5" font-weight="bold" letter-spacing=".5" fill="{}">{}</text>"##, NW - 10.0, if xr { "#ff6a52" } else { "#e58f2c" }, esc(&tag_s));
             }
             // ports: ears from the edge in the block's colour (square there, round inside), the
             // whole ear the port; inputs on the left, outputs on the right
@@ -1587,7 +1689,7 @@ impl Engine {
                     } else {
                         (0.0, 10.0, "", format!("M0.75,{} H{} A6.5,6.5 0 0 1 {},{} H0.75 Z", py - 6.5, w - 6.5, w - 6.5, py + 6.5))
                     };
-                    let _ = if lit_ports.contains(&p.id) {
+                    let _ = if lit_ports.contains(&p.id) || carry_lit.contains(&p.id) {
                         write!(o, r##"<path d="{d}" fill="{SEL}"/><circle cx="{px}" cy="{py}" r="4" fill="{SEL}" stroke="#0f1011" stroke-width="1.5"/><text x="{tx}" y="{}"{anchor} font-family="Noto Sans Mono" font-size="10" font-weight="bold" fill="{SEL_TEXT}">{}</text>"##, py + 3.5, esc(&label))
                     } else if heard.contains(&p.id) || self.cue_kept.contains(&p.id) {
                         // kept on in the cue: the whole port in its colour, and the headphones of
@@ -1601,6 +1703,10 @@ impl Engine {
                             ix - 5.5,
                             py - 6.3
                         )
+                    } else if cands.contains(&p.id) {
+                        // one that takes the link in the hand: its ear stronger, a ring round its dot
+                        let c = face::role_colour(p.role);
+                        write!(o, r##"<path d="{d}" fill="{c}" fill-opacity=".35"/><circle cx="{px}" cy="{py}" r="7.5" fill="none" stroke="{c}" stroke-width="1.6"/><circle cx="{px}" cy="{py}" r="4" fill="{c}" stroke="#0f1011" stroke-width="1.5"/><text x="{tx}" y="{}"{anchor} font-family="Noto Sans Mono" font-size="10" fill="#e6e7e8">{}</text>"##, py + 3.5, esc(&label))
                     } else {
                         // a port in its group's colour (the block's own when it is chosen)
                         let c = if picked { c.as_str() } else { face::role_colour(p.role) };
@@ -1629,14 +1735,16 @@ impl Engine {
             out.push(Num { key: format!("g{}", g.driver), x, y: y + 22.0, end: false, text: band_load(g), size: 12.0, fill: "#7d8085", alpha: 1.0 });
         }
         let (focus, near) = self.focus();
-        let any = self.sel.is_some() && (!focus.is_empty() || matches!(self.sel, Some(Sel::Link(_))));
+        let carrying = self.carry_hint().is_some();
+        let (_, cand_nodes) = self.carry_sets();
+        let any = !carrying && self.sel.is_some() && (!focus.is_empty() || matches!(self.sel, Some(Sel::Link(_))));
         for n in &m.nodes {
             let (Some(&(x, y)), Some(t)) = (lay.pos.get(&n.id), m.timing.get(&n.id)) else { continue };
             if !m.group_of.contains_key(&n.id) {
                 continue;
             }
-            let dim = any && !focus.contains(&n.id) && !near.contains(&n.id);
-            out.push(Num { key: format!("n{}", n.id), x: x + NW - 10.0, y: y + 21.0, end: true, text: format!("{:.0}µs", t.busy_ns as f64 / 1000.0), size: 10.0, fill: "#5cff7a", alpha: if dim { 0.35 } else { 1.0 } });
+            let dim = (any && !focus.contains(&n.id) && !near.contains(&n.id)) || (carrying && !cand_nodes.contains(&n.id));
+            out.push(Num { key: format!("n{}", n.id), x: x + NW - 13.0, y: y + 16.0, end: true, text: format!("{:.0}µs", t.busy_ns as f64 / 1000.0), size: 10.0, fill: "#5cff7a", alpha: if dim { 0.35 } else { 1.0 } });
         }
         out
     }
@@ -1662,8 +1770,9 @@ impl Engine {
     }
 
     /// Brings every part up to date and returns the pictures to draw, in order (see `Pic`: a
-    /// body cut to its view, the gliding blocks cut out of the old graph and fading).
-    pub fn sprites(&mut self, size: (u32, u32), dpi: f64, version: &str) -> Vec<Pic<'_>> {
+    /// body cut to its view, the gliding blocks cut out of the old graph and fading), and how
+    /// many of them are the graph's (the link in the hand goes over those, under the panels).
+    pub fn sprites(&mut self, size: (u32, u32), dpi: f64, version: &str) -> (Vec<Pic<'_>>, usize) {
         let (fw, fh) = (size.0 as f64 / dpi, size.1 as f64 / dpi);
         let [strip_a, graph_a, insp_a, bottom_a] = self.areas(fw, fh);
         self.spent.clear();
@@ -1675,7 +1784,7 @@ impl Engine {
         };
         // the graph: drawn again when what it shows changes, or sharp again after zooming
         let mut hsh = std::hash::DefaultHasher::new();
-        std::hash::Hash::hash(&(&self.model.links, self.sel, self.show, &self.cue_kept), &mut hsh);
+        std::hash::Hash::hash(&(&self.model.links, self.sel, self.show, &self.cue_kept, self.carry_hint()), &mut hsh);
         for n in &self.model.nodes {
             // (all that graph_svg draws of a node: its tags too)
             std::hash::Hash::hash(&(n.id, n.state, &n.ins, &n.outs, &n.desc, self.model.group_of.get(&n.id), self.xruns.get(&n.id).map(|x| x.0)), &mut hsh);
@@ -1924,6 +2033,7 @@ impl Engine {
         if let Some((_, l)) = &self.hover_pic {
             out.push((l, l.x * v.s + v.x, l.y * v.s + v.y, l.w * v.s, l.h * v.s, None, 1.0));
         }
+        let graph_end = out.len();
         for l in [&self.overlay, &self.overlay_b, &self.legend, &self.strip].into_iter().flatten().map(|(_, l)| l) {
             out.push((l, l.x * dpi, l.y * dpi, l.w * dpi, l.h * dpi, None, 1.0));
         }
@@ -1946,7 +2056,7 @@ impl Engine {
         if let Some((_, l)) = &self.info {
             out.push((l, l.x * dpi, l.y * dpi, l.w * dpi, l.h * dpi, None, 1.0));
         }
-        out
+        (out, graph_end)
     }
 
     /// Brings body `i`'s slice up to date: kept while it shows what the body has and covers the
@@ -2235,6 +2345,8 @@ impl Engine {
         };
         // rows that select something: (y, h) in body units, made hits once scrolled
         let mut rows: Vec<(Sel, f64)> = Vec::new();
+        // a port's LINK TO (LINK FROM) rows: the link each makes or takes away, its y
+        let mut link_rows: Vec<((u32, u32), f64)> = Vec::new();
         let mut desk_button: Option<(String, f64)> = None;
         let tabs: Vec<ITab>;
         let m = &self.model;
@@ -2256,7 +2368,7 @@ impl Engine {
                 let xr = self.xruns.get(&id).map_or(0, |x| x.0);
                 let running = g.is_some();
                 match self.itab {
-                    ITab::Info => {
+                    ITab::Info | ITab::Conn => {
                         let p = self.props.get(&id);
                         let pget = |k: &str| p.and_then(|p| p.get(k)).cloned();
                         let client = pget("client.id").and_then(|c| c.parse::<u32>().ok());
@@ -2438,7 +2550,7 @@ impl Engine {
                 (n.desc.clone(), format!("node {id} · {}", n.class), led_color(if running { "running" } else { n.state }, xr > 0))
             }
             Some(Sel::Port(id)) => {
-                tabs = vec![ITab::Info, ITab::Props];
+                tabs = vec![ITab::Info, ITab::Conn, ITab::Props];
                 if !tabs.contains(&self.itab) {
                     self.itab = ITab::Info;
                 }
@@ -2448,6 +2560,45 @@ impl Engine {
                 };
                 if self.itab == ITab::Props {
                     kv(&mut body, &mut y, &props_of(id).iter().map(|(k, v)| (k.as_str(), v.clone())).collect::<Vec<_>>());
+                } else if self.itab == ITab::Conn {
+                    // where it can go: every port it fits, block by block, a row each; one linked
+                    // in the amber of what is chosen (a click links, or unlinks)
+                    let fit: Vec<(&ENode, Vec<&EPort>)> = m.nodes.iter().map(|o| (o, o.ins.iter().chain(&o.outs).filter(|q| m.fits(id, q.id)).collect::<Vec<_>>())).filter(|(_, ps)| !ps.is_empty()).collect();
+                    heading(&mut body, &mut y, if input { "LINK FROM" } else { "LINK TO" });
+                    if fit.is_empty() {
+                        line(&mut body, &mut y, "No port takes it: a link goes from an output to an input of one kind (audio, MIDI, video), on another block, not Patchcord's own.", "#7d8085", 0.0);
+                    } else {
+                        for (o, ps) in fit {
+                            let _ = write!(body, r##"<text x="12" y="{}" font-family="Noto Sans" font-size="11" font-weight="bold" fill="#c9cbcd" xml:space="preserve">{} <tspan font-family="Noto Sans Mono" font-weight="normal" font-size="10" fill="#7d8085">#{}</tspan></text>"##, y + 12.0, esc(&cut(&o.desc, chars.saturating_sub(8))), o.id);
+                            y += 18.0;
+                            for q in ps {
+                                let pair = m.pair(id, q.id);
+                                let on = m.linked(pair);
+                                let (kx, kw) = (24.0, w - 36.0);
+                                let _ = write!(
+                                    body,
+                                    r##"<rect x="{kx}" y="{y}" width="{kw}" height="20" rx="4" fill="{}" stroke="#0b0b0c"/><circle cx="{}" cy="{}" r="4" fill="{}" stroke="#0f1011" stroke-width="1.5"/><text x="{}" y="{}" font-size="10"{} fill="{}" xml:space="preserve">{}</text>"##,
+                                    if on { SEL } else { "#1d1e21" },
+                                    kx + 12.0,
+                                    y + 10.0,
+                                    face::role_colour(q.role),
+                                    kx + 22.0,
+                                    y + 14.0,
+                                    if on { r#" font-weight="bold""# } else { "" },
+                                    if on { SEL_TEXT } else { "#a8abae" },
+                                    esc(&cut(&q.name, chars.saturating_sub(16)))
+                                );
+                                if on {
+                                    let _ = write!(body, r##"<text x="{}" y="{}" text-anchor="end" font-size="9" font-weight="bold" fill="{SEL_TEXT}">LINKED</text>"##, kx + kw - 10.0, y + 14.0);
+                                }
+                                link_rows.push((pair, y));
+                                y += 24.0;
+                            }
+                            y += 4.0;
+                        }
+                        y += 2.0;
+                        line(&mut body, &mut y, "Click: link it · again: unlink it · or drag from the port on the graph.", "#7d8085", 0.0);
+                    }
                 } else {
                     rows.push((Sel::Node(n.id), y));
                     kv(
@@ -2555,6 +2706,7 @@ impl Engine {
             for t in &tabs {
                 let name = match t {
                     ITab::Info => "INFO",
+                    ITab::Conn => "CONN",
                     ITab::Props => "PROPS",
                     ITab::Params => "PARAMS",
                     ITab::Timing => "TIMING",
@@ -2583,6 +2735,12 @@ impl Engine {
             let (yy, hh) = (by + ry, 19.0);
             if yy + hh > top && yy < h {
                 hits.push((Hit::Sel(s), [a[0], a[1] + yy, w, hh]));
+            }
+        }
+        for ((o, i), ry) in link_rows {
+            let yy = by + ry;
+            if yy + 20.0 > top && yy < h {
+                hits.push((Hit::LinkTo(o, i), [a[0] + 24.0, a[1] + yy, w - 36.0, 20.0]));
             }
         }
         if let Some((key, ry)) = &desk_button {
@@ -2924,6 +3082,11 @@ impl Engine {
                 Hit::Legend => self.legend_open = !self.legend_open,
                 Hit::LegendWin => {}
                 Hit::Info => self.info_open = !self.info_open,
+                // a port's LINK TO row: links it there, or takes the link away
+                Hit::LinkTo(o, i) => {
+                    let l = vec![(o, i)];
+                    return Some(if self.model.linked((o, i)) { Action::Link { add: Vec::new(), del: l } } else { Action::Link { add: l, del: Vec::new() } });
+                }
                 Hit::Bar(i) => {
                     if let Some(bar) = self.bars[i] {
                         let [_, ty, _, th] = bar.thumb;
@@ -2943,7 +3106,16 @@ impl Engine {
         if self.in_graph(p, (size.0 as f64, size.1 as f64), dpi) {
             self.view_to = None;
             let w = ((p.0 - self.view.x) / self.view.s, (p.1 - self.view.y) / self.view.s);
-            self.press = Some((p, self.view, self.graph_hit(w), false));
+            let hit = self.graph_hit(w);
+            // on a port, or a block's head: a link may be carried from it (once it moves)
+            let own = |id: u32| self.model.node(id).is_some_and(|n| matches!(n.kind, NKind::Meter | NKind::Cue));
+            let from = match hit {
+                Some(Sel::Port(id)) if !self.model.port_node.get(&id).is_some_and(|&n| own(n)) => Some(Carry::Port(id)),
+                Some(Sel::Node(id)) if !own(id) && self.lay.pos.get(&id).is_some_and(|&(_, ny)| w.1 - ny <= HEAD_H) => Some(Carry::Node(id)),
+                _ => None,
+            };
+            self.carry = from.map(|from| Carried { from, at: w, snap: None });
+            self.press = Some((p, self.view, hit, false));
         }
         None
     }
@@ -2963,20 +3135,187 @@ impl Engine {
         if !*moved && ((p.0 - from.0).abs() > 4.0 || (p.1 - from.1).abs() > 4.0) {
             *moved = true;
         }
-        if *moved {
+        if !*moved {
+            return false;
+        }
+        let (from, v) = (*from, *v);
+        // a link in the hand follows the pointer; else the graph pans
+        if self.carry.is_some() {
+            self.carry_to(((p.0 - self.view.x) / self.view.s, (p.1 - self.view.y) / self.view.s));
+        } else {
             self.view.x = v.x + p.0 - from.0;
             self.view.y = v.y + p.1 - from.1;
         }
-        *moved
+        true
     }
 
-    pub fn release(&mut self) {
-        self.bar_drag = None;
-        if let Some((_, _, hit, moved)) = self.press.take()
-            && !moved
-        {
-            self.select(hit);
+    /// The link in the hand at graph point `w`: what it would go to there, the nearest port that
+    /// takes it near enough (from a port), or the block under it that takes some (from a head).
+    fn carry_to(&mut self, w: (f64, f64)) {
+        let Some(c) = self.carry else { return };
+        let m = &self.model;
+        let snap = match c.from {
+            Carry::Port(a) => match self.graph_hit(w) {
+                Some(Sel::Port(b)) if m.takes(a, b) => Some(b),
+                _ => {
+                    let near = |b: u32| m.port_node.get(&b).and_then(|&n| self.port_xy(&self.lay, n, b)).map(|(x, y)| (x - w.0).hypot(y - w.1));
+                    m.nodes.iter().flat_map(|n| n.ins.iter().chain(&n.outs)).filter(|b| m.takes(a, b.id)).filter_map(|b| near(b.id).map(|d| (d, b.id))).filter(|(d, _)| *d < 22.0).min_by(|x, y| x.0.total_cmp(&y.0)).map(|(_, b)| b)
+                }
+            },
+            Carry::Node(a) => m.nodes.iter().find(|n| self.lay.pos.get(&n.id).is_some_and(|&(x, y)| w.0 >= x - 8.0 && w.0 <= x + NW + 8.0 && w.1 >= y && w.1 <= y + node_h(n))).map(|n| n.id).filter(|&b| b != a && !m.pairs(a, b).is_empty()),
+        };
+        self.carry = Some(Carried { from: c.from, at: w, snap });
+    }
+
+    /// The links letting go now would make: to the port (block) the link in the hand is on.
+    fn carry_pairs(&self) -> Vec<(u32, u32)> {
+        let Some(Carried { from, snap: Some(b), .. }) = self.carry else { return Vec::new() };
+        match from {
+            Carry::Port(a) if self.model.takes(a, b) => vec![self.model.pair(a, b)],
+            Carry::Port(_) => Vec::new(),
+            Carry::Node(a) => self.model.pairs(a, b),
         }
+    }
+
+    /// While a link is carried: the ports that take it, and the blocks that take some (with the
+    /// one it comes from).
+    fn carry_sets(&self) -> (HashSet<u32>, HashSet<u32>) {
+        let m = &self.model;
+        match self.carry_hint() {
+            Some((Carry::Port(a), _)) => {
+                let c: HashSet<u32> = m.nodes.iter().flat_map(|n| n.ins.iter().chain(&n.outs)).filter(|b| m.takes(a, b.id)).map(|b| b.id).collect();
+                let ns = c.iter().filter_map(|b| m.port_node.get(b).copied()).chain(m.port_node.get(&a).copied()).collect();
+                (c, ns)
+            }
+            Some((Carry::Node(a), _)) => (HashSet::new(), m.nodes.iter().filter(|n| n.id == a || !m.pairs(a, n.id).is_empty()).map(|n| n.id).collect()),
+            None => (HashSet::new(), HashSet::new()),
+        }
+    }
+
+    /// A link is in the hand and moving (not just pressed).
+    pub fn carrying(&self) -> bool {
+        self.carry.is_some() && self.press.is_some_and(|p| p.3)
+    }
+
+    /// The link in the hand as the graph shows it: what from, and what it is on now.
+    fn carry_hint(&self) -> Option<(Carry, Option<u32>)> {
+        self.carrying().then(|| self.carry.map(|c| (c.from, c.snap))).flatten()
+    }
+
+    /// While a link is carried near the graph's edge (window pixel `p`), the graph scrolls that
+    /// way, as the desk does under a plug: the other end may be out of sight. Whether it moved.
+    pub fn edge_scroll(&mut self, p: (f64, f64), size: (u32, u32), dpi: f64) -> bool {
+        if !self.carrying() {
+            return false;
+        }
+        let [_, g, _, _] = self.areas(size.0 as f64 / dpi, size.1 as f64 / dpi);
+        let (x0, y0, x1, y1) = (g[0] * dpi, g[1] * dpi, (g[0] + g[2]) * dpi, (g[1] + g[3]) * dpi);
+        let edge = 48.0 * dpi;
+        let push = |v: f64, lo: f64, hi: f64| if v < lo + edge { ((lo + edge - v) / edge).min(1.0) } else if v > hi - edge { -((v - (hi - edge)) / edge).min(1.0) } else { 0.0 };
+        let (dx, dy) = (push(p.0, x0, x1) * 14.0 * dpi, push(p.1, y0, y1) * 14.0 * dpi);
+        if dx == 0.0 && dy == 0.0 {
+            return false;
+        }
+        self.view.x += dx;
+        self.view.y += dy;
+        self.view_to = None;
+        self.carry_to(((p.0 - self.view.x) / self.view.s, (p.1 - self.view.y) / self.view.s));
+        true
+    }
+
+    /// The link in the hand, for the GPU (window pixels): from its port to the pointer, dashed,
+    /// or, on a port (block) that takes it, the links letting go would make.
+    pub fn carried(&self, dpi: f64) -> Option<super::mesh::Mesh> {
+        let c = self.carry.filter(|_| self.carrying())?;
+        let v = self.view;
+        let px = |(x, y): (f64, f64)| ((x * v.s + v.x) as f32, (y * v.s + v.y) as f32);
+        let sample = |a: (f64, f64), b: (f64, f64)| -> Vec<(f32, f32)> { let cv = link_curve(a, b); (0..=48).map(|k| px(bezier(&cv, k as f64 / 48.0))).collect() };
+        let colour = |port: u32| rgb(self.model.port(port).map_or(face::kind_colour("NO CLASS"), |(_, p, _)| face::role_colour(p.role)));
+        let mut lines: Vec<super::mesh::Line> = Vec::new();
+        let mut dot = None;
+        let pairs = self.carry_pairs();
+        if !pairs.is_empty() {
+            for (o, i) in pairs {
+                let (Some(a), Some(b)) = (self.model.port_node.get(&o).and_then(|&n| self.port_xy(&self.lay, n, o)), self.model.port_node.get(&i).and_then(|&n| self.port_xy(&self.lay, n, i))) else { continue };
+                lines.push((sample(a, b), colour(o), 0.9));
+            }
+        } else {
+            // from its port (a block's head: its side the links go from) to the pointer, dashed
+            let (start, out, col) = match c.from {
+                Carry::Port(a) => {
+                    let n = *self.model.port_node.get(&a)?;
+                    let input = self.model.port(a).is_some_and(|(_, _, i)| i);
+                    (self.port_xy(&self.lay, n, a)?, !input, colour(a))
+                }
+                Carry::Node(a) => {
+                    let n = self.model.node(a)?;
+                    let &(x, y) = self.lay.pos.get(&a)?;
+                    let out = !n.outs.is_empty();
+                    ((if out { x + NW } else { x }, y + HEAD_H / 2.0), out, rgb(&hex(n.color)))
+                }
+            };
+            let pts = if out { sample(start, c.at) } else { sample(c.at, start) };
+            // dashes 6 long, 4 apart (in window pixels)
+            let (dash, gap) = (6.0 * dpi as f32, 4.0 * dpi as f32);
+            let mut seg = vec![pts[0]];
+            let (mut run, mut on) = (0.0f32, true);
+            for w in pts.windows(2) {
+                let ((x0, y0), (x1, y1)) = (w[0], w[1]);
+                let (mut fx, mut fy) = (x0, y0);
+                let mut left = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt();
+                while left > 0.0 {
+                    let room = (if on { dash } else { gap }) - run;
+                    let step = room.min(left);
+                    let t = step / left;
+                    let (nx, ny) = (fx + (x1 - fx) * t, fy + (y1 - fy) * t);
+                    if on {
+                        seg.push((nx, ny));
+                    }
+                    run += step;
+                    left -= step;
+                    (fx, fy) = (nx, ny);
+                    if run >= (if on { dash } else { gap }) - 1e-3 {
+                        if on && seg.len() > 1 {
+                            lines.push((std::mem::take(&mut seg), col, 1.0));
+                        }
+                        on = !on;
+                        run = 0.0;
+                        seg = vec![(fx, fy)];
+                    }
+                }
+            }
+            if on && seg.len() > 1 {
+                lines.push((seg, col, 1.0));
+            }
+            dot = Some((px(c.at), col));
+        }
+        let mut m = super::mesh::lines(&lines, dpi as f32);
+        // the end in the hand: a dot where the pointer holds it
+        if let Some((e, col)) = dot {
+            m.normal.extend(super::mesh::lines(&[(vec![e, (e.0 + 0.01, e.1)], col, 1.0)], 3.0 * dpi as f32).normal);
+        }
+        Some(m)
+    }
+
+    /// The chosen link, as (output port, input port): what Delete takes away.
+    pub fn chosen_link(&self) -> Option<(u32, u32)> {
+        let Some(Sel::Link(id)) = self.sel else { return None };
+        self.model.links.iter().find(|l| l.id == id).map(|l| (l.out_port, l.in_port))
+    }
+
+    /// What a press in the graph does, letting go: a click chooses what was under it; a link
+    /// carried onto what takes it makes those links (to send, as one step to undo).
+    pub fn release(&mut self) -> Option<Action> {
+        self.bar_drag = None;
+        let add = self.carry_pairs();
+        let carried = self.carrying();
+        self.carry = None;
+        let (_, _, hit, moved) = self.press.take()?;
+        if !moved {
+            self.select(hit);
+            return None;
+        }
+        (carried && !add.is_empty()).then_some(Action::Link { add, del: Vec::new() })
     }
 
     fn select(&mut self, s: Option<Sel>) {
@@ -3277,6 +3616,7 @@ impl Engine {
             _ => Tab::Top,
         };
         self.itab = match itab {
+            Some("conn") => ITab::Conn,
             Some("props") => ITab::Props,
             Some("params") => ITab::Params,
             Some("timing") => ITab::Timing,
@@ -3306,6 +3646,30 @@ impl Engine {
         })
     }
 
+    /// What the pointer over the graph may do with a link: carry one (from a port, or a block's
+    /// head), let one go, take one away.
+    pub fn graph_hint(&self, p: (f64, f64), size: (u32, u32), dpi: f64) -> Option<String> {
+        if let Some(c) = self.carry.filter(|_| self.carrying()) {
+            let n = self.carry_pairs().len();
+            return Some(match (c.from, n) {
+                (Carry::Port(_), 0) => "carry it to a port with a ring: an input for an output, an output for an input (near the edge the graph follows)".into(),
+                (Carry::Node(_), 0) => "carry it onto a block that can take it: all its channels at once".into(),
+                (_, 1) => "let go: link them".into(),
+                (_, n) => format!("let go: {n} links, channel to channel"),
+            });
+        }
+        if !self.over_graph(p, size, dpi) {
+            return None;
+        }
+        let w = ((p.0 - self.view.x) / self.view.s, (p.1 - self.view.y) / self.view.s);
+        match self.graph_hit(w)? {
+            Sel::Port(_) => Some("drag: link it to another port · click: its details, where it can go".into()),
+            Sel::Node(id) if self.lay.pos.get(&id).is_some_and(|&(_, ny)| w.1 - ny <= HEAD_H) => Some("drag the head onto another block: all its channels, FL to FL, FR to FR · click: its details".into()),
+            Sel::Link(_) => Some("click: choose it · Delete: take it away".into()),
+            _ => None,
+        }
+    }
+
     /// The line about a tab of the diagnostics, while the pointer is over it: it takes the
     /// status bar's left.
     pub fn tab_hint_at(&self, p: (f64, f64), dpi: f64) -> Option<&'static str> {
@@ -3318,7 +3682,7 @@ impl Engine {
 
     pub fn summary(&self) -> String {
         let ports: usize = self.model.nodes.iter().map(|n| n.ins.len() + n.outs.len()).sum();
-        format!("ENGINE · what PipeWire really has · {} nodes · {ports} ports · {} links · read-only", self.model.nodes.len(), self.model.links.len())
+        format!("ENGINE · what PipeWire really has · {} nodes · {ports} ports · {} links", self.model.nodes.len(), self.model.links.len())
     }
 }
 
@@ -3540,7 +3904,7 @@ impl Engine {
     /// clock, the drivers and their timings, what looks wrong, the graph, what happened, and every
     /// object with all its properties, the metadata and the params read. Without what is
     /// personal (see `Redact`).
-    pub fn report(&self, pipewire: &str) -> String {
+    pub fn report(&self, pipewire: &str, state: &str) -> String {
         let r = Redact::new();
         let m = &self.model;
         let mut o = String::new();
@@ -3643,6 +4007,8 @@ impl Engine {
                 let _ = writeln!(o, "    {dir} {} {}{}", p.id, p.name, if ls.is_empty() { String::new() } else { format!("  {}", ls.join(", ")) });
             }
         }
+        rule(&mut o, "STATE (volumes and mute; cards' profiles and ports, * in use)");
+        o.push_str(if state.is_empty() { "nothing yet\n" } else { state });
         rule(&mut o, "EVENTS (while ENGINE was open)");
         for (t, kind, text, _) in self.events.iter().rev() {
             let secs = t.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
@@ -3718,6 +4084,29 @@ mod tests {
         e.build(&g, &[], &HashSet::new(), &HashMap::new());
         let lay = e.layout();
         (e, lay, g)
+    }
+
+    /// Links made in ENGINE: a port takes one only from the other way, of its kind, on another
+    /// block, and not one it has; a block's head links all its channels, in order where no
+    /// channel names match, mono to both, leaving out what is there.
+    #[test]
+    fn a_link_goes_out_to_in_once_and_a_head_links_every_channel() {
+        let app: &[(u32, &str, &str)] = &[(11, "out", "output_FL"), (12, "out", "output_FR")];
+        let sink: &[(u32, &str, &str)] = &[(21, "in", "playback_FL"), (22, "in", "playback_FR"), (23, "out", "monitor_FL"), (24, "out", "monitor_FR")];
+        let mic: &[(u32, &str, &str)] = &[(31, "out", "capture_MONO")];
+        let rec: &[(u32, &str, &str)] = &[(41, "in", "input_FL"), (42, "in", "input_FR")];
+        let (e, _) = laid(&[(10, "app", "Stream/Output/Audio", app), (20, "sink", "Audio/Sink", sink), (30, "mic", "Audio/Source", mic), (40, "rec", "Stream/Input/Audio", rec)], &[(90, 10, 11, 20, 21, false)]);
+        let m = &e.model;
+        // out to in, either way round; not to itself, not out to out, not one it has
+        assert!(m.takes(12, 22) && m.takes(22, 12) && m.takes(23, 41));
+        assert!(!m.takes(11, 12) && !m.takes(11, 23) && !m.takes(11, 21));
+        assert_eq!(m.pair(22, 12), (12, 22));
+        // the app's head onto the sink: FR only, FL is linked already
+        assert_eq!(m.pairs(10, 20), vec![(12, 22)]);
+        // the mic's head onto the recorder: mono to both
+        assert_eq!(m.pairs(30, 40), vec![(31, 41), (31, 42)]);
+        // an input-only block's head: its inputs from the other's outputs
+        assert_eq!(m.pairs(40, 10), vec![(11, 41), (12, 42)]);
     }
 
     /// An app into the headphones, measured, and the headphones' monitor measured: the app's

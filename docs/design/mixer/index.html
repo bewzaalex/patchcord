@@ -653,7 +653,7 @@ const hitAt = ([x, y]) => hits.find(({ r }) => x >= r[0] && x <= r[0] + r[2] && 
 const fname = (s) => `${s.dev.name} · ${s.name}`;
 const sr = document.getElementById("sr");
 function hover(h) {
-  if (!h) return "drag: scroll · wheel over a fader: volume · D: desk · R: rack · E: ENGINE";
+  if (!h) return "drag: scroll · wheel over a fader: volume · R: rack · E: ENGINE";
   switch (h.h) {
     case "graph": return `#${h.s.node}: its block in ENGINE`;
     case "profile": return "The card's profile: which of its outputs and inputs it has";

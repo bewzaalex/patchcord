@@ -19,9 +19,9 @@ pub enum Key {
     Undo,
     Redo,
     Save,
-    Desk,
     /// every device and app as a mixing console
     Mixer,
+    /// the devices, in one of the rack's two views (`Views`)
     Rack,
     /// the real PipeWire graph
     Engine,
@@ -30,6 +30,9 @@ pub enum Key {
     /// the cords switch: the knob, or one of its printed positions
     Cables,
     CablesAt(u8),
+    /// the rack's view switch: the knob, or one of its printed positions (RAILS, DESK)
+    Views,
+    ViewsAt(u8),
     Arrange,
     Fit,
     /// the list of hidden devices
@@ -50,7 +53,7 @@ impl Key {
     /// A key for the desk and the rack only, off in ENGINE. (CUE and its LEVEL work there too:
     /// ENGINE shows the cue, and its key turns it off.)
     pub fn desk_only(self) -> bool {
-        matches!(self, Key::Lock | Key::Align | Key::Cables | Key::CablesAt(_) | Key::Arrange | Key::Flow | Key::Hidden)
+        matches!(self, Key::Lock | Key::Align | Key::Cables | Key::CablesAt(_) | Key::Views | Key::ViewsAt(_) | Key::Arrange | Key::Flow | Key::Hidden)
     }
 
     /// What it does, for the status bar.
@@ -59,9 +62,8 @@ impl Key {
             Key::Undo => "Undo (Ctrl+Z)",
             Key::Redo => "Redo (Ctrl+Shift+Z)",
             Key::Save => "Save as a new preset (Ctrl+S)",
-            Key::Desk => "Devices anywhere on a desk (D)",
             Key::Mixer => "Every device and app as a mixing console: volumes, where each app plays, the defaults (M)",
-            Key::Rack => "Devices in a 19\" rack (R)",
+            Key::Rack => "The devices: screwed into a 19\" rack, or anywhere on a desk (R)",
             Key::Engine => "What PipeWire really has: every node, port and link, drivers, timings, issues (E)",
             Key::Lock => "Lock devices in place (L)",
             Key::Align => "Line devices up while dragging them on the desk; off: place them freely (G)",
@@ -69,6 +71,9 @@ impl Key {
             Key::CablesAt(0) => "Show the cords",
             Key::CablesAt(1) => "Fade the cords",
             Key::CablesAt(_) => "Hide the cords",
+            Key::Views => "The rack's view: the devices in its rails, or anywhere on a desk: click or turn (V)",
+            Key::ViewsAt(0) => "The devices screwed into the rack's rails",
+            Key::ViewsAt(_) => "The devices anywhere on a desk",
             Key::Arrange => "Arrange devices by signal flow (A)",
             Key::Fit => "Fit everything in the window; in the rack: back to its top (F)",
             Key::Flow => "Show which way the cords go: a light runs along each from its output to its input (W)",
@@ -112,7 +117,8 @@ pub struct State {
 }
 
 impl State {
-    /// A key this screen can't use, greyed: the desk's keys in ENGINE, ALIGN in the rack.
+    /// A key this screen can't use, left off the panel: the desk's keys in ENGINE and MIXER, ALIGN
+    /// in the rack.
     pub fn off(&self, k: Key) -> bool {
         ((self.engine || self.mixer) && k.desk_only()) || (self.rack && !self.engine && !self.mixer && k == Key::Align)
     }
@@ -124,7 +130,7 @@ impl State {
 pub enum Part {
     Logo,
     Edit,
-    /// DESK · MIXER · RACK · ENGINE, and LOCK · ALIGN while they are in its group
+    /// MIXER · RACK · ENGINE, and LOCK · ALIGN while they are in its group
     Layout,
     LockAlign,
     Cables,
@@ -547,14 +553,14 @@ impl Panel {
 
     /// The panel's SVG `w` wide, where its keys are, and the groups folded into MORE.
     fn svg(&self, w: f64) -> (String, Keys, Vec<Part>) {
-        let (parts, attached, bare, folded, lcd_w) = self.plan(w);
+        let (parts, attached, folded, lcd_w) = self.plan(w);
         let mut o = String::new();
         let mut rects = Vec::new();
         let mut x = 18.0;
         for p in parts {
             // the screen against the right edge, as wide as there is room for
             let at = if p == Part::Lcd { w - 18.0 - lcd_w } else { x };
-            let (s, r, pw) = self.part(p, at, attached, bare, lcd_w);
+            let (s, r, pw) = self.part(p, at, attached, lcd_w);
             o += &s;
             rects.extend(r);
             if p != Part::Lcd {
@@ -582,32 +588,32 @@ impl Panel {
     }
 
     /// What the panel holds when `w` wide: its parts in order, whether LOCK and ALIGN stay in
-    /// LAYOUT's group, whether the grey keys are left out, what folds into MORE (in the panel's
-    /// order), and the screen's width. When the panel is too wide, first the logo goes, then the
-    /// grey keys (what this screen can't use), then groups fold into MORE from the right: the
-    /// screen, CUE · LEVEL, VIEW, CABLES, LOCK · ALIGN, EDIT. DESK · RACK · ENGINE stay.
+    /// LAYOUT's group, what folds into MORE (in the panel's order), and the screen's width. A key
+    /// this screen can't use isn't there at all (it was greyed). When the panel is too wide, first the logo goes, then groups
+    /// fold into MORE from the right: the screen, CUE · LEVEL, VIEW, CABLES, LOCK · ALIGN, EDIT.
+    /// MIXER · RACK · ENGINE stay.
     /// The narrowest the window may be: the panel folded all it can, DESK · RACK · ENGINE and MORE.
     pub fn min_w(&self) -> f64 {
-        18.0 + self.part(Part::Layout, 0.0, false, true, 0.0).2 + 12.0 + MORE_W + 10.0
+        18.0 + self.part(Part::Layout, 0.0, false, 0.0).2 + 12.0 + MORE_W + 10.0
     }
 
-    fn plan(&self, w: f64) -> (Vec<Part>, bool, bool, Vec<Part>, f64) {
-        let width = |p: Part, attached: bool, bare: bool| self.part(p, 0.0, attached, bare, 0.0).2;
+    fn plan(&self, w: f64) -> (Vec<Part>, bool, Vec<Part>, f64) {
+        let width = |p: Part, attached: bool| self.part(p, 0.0, attached, 0.0).2;
         let main = [Part::Edit, Part::Layout, Part::Cables, Part::View, Part::Cue];
-        for (logo, bare) in [(true, false), (false, false), (false, true)] {
+        for logo in [true, false] {
             let mut parts: Vec<Part> = if logo { vec![Part::Logo] } else { Vec::new() };
-            parts.extend(main.iter().copied().filter(|p| width(*p, true, bare) > 0.0));
-            let used = 18.0 + parts.iter().map(|p| width(*p, true, bare) + if *p == Part::Logo { 26.0 } else { GAP }).sum::<f64>();
+            parts.extend(main.iter().copied().filter(|p| width(*p, true) > 0.0));
+            let used = 18.0 + parts.iter().map(|p| width(*p, true) + if *p == Part::Logo { 26.0 } else { GAP }).sum::<f64>();
             let room = w - 18.0 - used;
             if room >= LCD_MIN {
                 parts.push(Part::Lcd);
-                return (parts, true, bare, Vec::new(), room.min(600.0));
+                return (parts, true, Vec::new(), room.min(600.0));
             }
         }
         let used = |parts: &[Part], attached: bool| {
             18.0 + parts
                 .iter()
-                .map(|p| match width(*p, attached, true) {
+                .map(|p| match width(*p, attached) {
                     0.0 => 0.0,
                     pw => pw + GAP,
                 })
@@ -626,23 +632,23 @@ impl Panel {
             } else {
                 parts.retain(|p| *p != f);
             }
-            if width(f, false, true) > 0.0 {
+            if width(f, false) > 0.0 {
                 folded.push(f);
             }
         }
-        parts.retain(|p| width(*p, attached, true) > 0.0);
+        parts.retain(|p| width(*p, attached) > 0.0);
         folded.sort_by_key(|p| *p as u8);
-        (parts, attached, true, folded, 0.0)
+        (parts, attached, folded, 0.0)
     }
 
     /// A part of the panel drawn from `x`, on the panel's row: its SVG, where its keys are and its
-    /// width (none when all its keys are grey and `bare` leaves those out). `attached`: LOCK and
+    /// width (none when this screen can use none of its keys). `attached`: LOCK and
     /// ALIGN are in LAYOUT's group; `lcd_w`: a screen's width.
-    fn part(&self, p: Part, x: f64, attached: bool, bare: bool, lcd_w: f64) -> (String, Keys, f64) {
+    fn part(&self, p: Part, x: f64, attached: bool, lcd_w: f64) -> (String, Keys, f64) {
         let st = &self.state;
         let mut o = String::new();
         let mut rects = Vec::new();
-        let keep = |k: &(Key, Option<&str>, Option<bool>)| !(bare && st.off(k.0));
+        let keep = |k: &(Key, Option<&str>, Option<bool>)| !st.off(k.0);
         let lock_align = [(Key::Lock, None, Some(st.locked)), (Key::Align, None, Some(st.align))];
         let pw = match p {
             Part::Logo => {
@@ -656,13 +662,9 @@ impl Panel {
             }
             Part::Edit => group(st, &mut o, &mut rects, x, &[(Key::Undo, None, None), (Key::Redo, None, None), (Key::Save, None, None)], "EDIT"),
             Part::Layout => {
-                let desk = !st.engine && !st.mixer;
-                let mut keys = vec![
-                    (Key::Desk, Some("DESK"), Some(desk && !st.rack)),
-                    (Key::Mixer, Some("MIXER"), Some(st.mixer && !st.engine)),
-                    (Key::Rack, Some("RACK"), Some(desk && st.rack)),
-                    (Key::Engine, Some("ENGINE"), Some(st.engine)),
-                ];
+                // RACK is the devices in either of its views (the switch in VIEW): DESK is one of them
+                let rack = !st.engine && !st.mixer;
+                let mut keys = vec![(Key::Mixer, Some("MIXER"), Some(st.mixer && !st.engine)), (Key::Rack, Some("RACK"), Some(rack)), (Key::Engine, Some("ENGINE"), Some(st.engine))];
                 if attached {
                     keys.extend(lock_align.into_iter().filter(keep));
                 }
@@ -670,7 +672,7 @@ impl Panel {
             }
             Part::LockAlign if attached => 0.0,
             Part::LockAlign => group(st, &mut o, &mut rects, x, &lock_align.into_iter().filter(keep).collect::<Vec<_>>(), ""),
-            Part::Cables if bare && st.off(Key::Cables) => 0.0,
+            Part::Cables if st.off(Key::Cables) => 0.0,
             Part::Cables => {
                 // the cords switch: three click positions with their names printed around it
                 let (kx, ky) = (x + 44.0, KNOB_Y);
@@ -694,7 +696,28 @@ impl Panel {
             }
             Part::View => {
                 let keys: Vec<_> = [(Key::Arrange, None, None), (Key::Fit, None, None), (Key::Flow, None, Some(st.flow)), (Key::Hidden, None, None)].into_iter().filter(keep).collect();
-                let pw = group(st, &mut o, &mut rects, x, &keys, "VIEW");
+                let mut pw = group(st, &mut o, &mut rects, x, &keys, "");
+                // the rack's view switch after the keys: two click positions, RAILS and DESK,
+                // printed at its sides as CABLES' are
+                if !st.off(Key::Views) {
+                    let (lw, rw) = (SMALL.width("RAILS"), SMALL.width("DESK"));
+                    let kx = x + pw + if pw > 0.0 { 13.0 } else { 0.0 } + lw + 26.0;
+                    let ky = KNOB_Y;
+                    for (i, (name, anchor, dx)) in [("RAILS", "end", -19.0), ("DESK", "start", 19.0)].into_iter().enumerate() {
+                        let a = SWITCH[i * 2].to_radians();
+                        let _ = write!(o, r#"<path d="M{},{} L{},{}" stroke="{LABEL}" stroke-width="1.4"/>"#, kx + 15.0 * a.sin(), ky - 15.0 * a.cos(), kx + 16.8 * a.sin(), ky - 16.8 * a.cos());
+                        o.push_str(&SMALL.text(kx + dx * 1.15, ky + 2.5, LABEL, anchor, name));
+                        let w = SMALL.width(name) + 4.0;
+                        let lx = if anchor == "end" { kx + dx * 1.15 - w } else { kx + dx * 1.15 - 2.0 };
+                        rects.push((Key::ViewsAt(i as u8), [lx, ky - 6.0, w, 11.0]));
+                    }
+                    o.push_str(&knob_svg(kx, ky, SWITCH[if st.rack { 0 } else { 2 }], ""));
+                    rects.push((Key::Views, [kx - 16.0, ky - 16.0, 32.0, 32.0]));
+                    pw = kx + 19.0 * 1.15 + rw + 2.0 - x;
+                }
+                if pw > 0.0 {
+                    o.push_str(&SECTION.text(x + pw / 2.0, 54.0, LABEL, "middle", "VIEW"));
+                }
                 // how many are hidden, small in the HIDDEN key's corner
                 if st.hidden > 0
                     && let Some((_, [hx, hy, hw, _])) = rects.iter().find(|(k, _)| *k == Key::Hidden)
@@ -703,7 +726,7 @@ impl Panel {
                 }
                 pw
             }
-            Part::Cue if bare && st.off(Key::Cue) => 0.0,
+            Part::Cue if st.off(Key::Cue) => 0.0,
             Part::Cue => {
                 // CUE: its key (a cyan LED) and, as big as the CABLES knob, the cue's LEVEL
                 let kw = 38.0;
@@ -737,12 +760,6 @@ impl Panel {
             Part::LcdDefaults => screen(&mut o, &mut rects, x, lcd_w, &[(self.defaults_lines(), true, Key::Defaults)]),
             Part::LcdPreset => screen(&mut o, &mut rects, x, lcd_w, &[(st.lcd.clone(), false, Key::Lcd)]),
         };
-        // what this screen can't use is greyed over with the panel's paint
-        for (k, [rx, ry, rw, rh]) in &rects {
-            if st.off(*k) {
-                let _ = write!(o, r##"<rect x="{rx}" y="{ry}" width="{rw}" height="{rh}" rx="5" fill="#8c8e91" opacity=".7"/>"##);
-            }
-        }
         (o, rects, pw)
     }
 
@@ -774,7 +791,7 @@ impl Panel {
         let mut placed = Vec::new();
         let (mut x, mut row, mut dw) = (PAD, 0usize, 0.0f64);
         for (p, lw) in items {
-            let pw = self.part(p, 0.0, false, true, lw).2;
+            let pw = self.part(p, 0.0, false, lw).2;
             if x > PAD && x + pw + PAD > maxw {
                 row += 1;
                 x = PAD;
@@ -789,7 +806,7 @@ impl Panel {
         let mut rects = Vec::new();
         for (p, px, r, lw) in placed {
             let dy = r as f64 * ROW;
-            let (s, rs, _) = self.part(p, px, false, true, lw);
+            let (s, rs, _) = self.part(p, px, false, lw);
             let _ = write!(o, r#"<g transform="translate(0,{dy})">{s}</g>"#);
             rects.extend(rs.into_iter().map(|(k, [rx, ry, rw, rh])| (k, [x0 + rx, H + dy + ry, rw, rh])));
         }
@@ -1235,7 +1252,7 @@ mod tests {
     fn folded(rack: bool, engine: bool, w: f64) -> (Vec<Part>, Vec<Part>) {
         let p = Panel::new(state(rack, engine));
         let (parts, ..) = p.plan(w);
-        (parts, p.plan(w).3)
+        (parts, p.plan(w).2)
     }
 
     #[test]
@@ -1246,21 +1263,21 @@ mod tests {
         // the logo goes first
         let (parts, more) = folded(false, false, 1350.0);
         assert!(!parts.contains(&Part::Logo) && parts.contains(&Part::Lcd) && more.is_empty(), "{parts:?} {more:?}");
-        // a rack's width: DESK · RACK · ENGINE stay, EDIT too; the rest in MORE in the panel's order
-        let (parts, more) = folded(false, false, 615.0);
+        // a narrow width: MIXER · RACK · ENGINE stay, EDIT too; the rest in MORE in the panel's order
+        let (parts, more) = folded(false, false, 540.0);
         assert_eq!(parts, vec![Part::Edit, Part::Layout]);
         assert_eq!(more, vec![Part::LockAlign, Part::Cables, Part::View, Part::Cue, Part::LcdDefaults, Part::LcdPreset]);
-        // ENGINE's grey keys go first; CUE · LEVEL works there and folds as on the desk
-        let (parts, more) = folded(false, true, 728.0);
+        // ENGINE has none of the desk's keys; CUE · LEVEL works there and folds as on the desk
+        let (parts, more) = folded(false, true, 653.0);
         assert!(parts.contains(&Part::View) && !parts.contains(&Part::Cables), "{parts:?}");
         assert_eq!(more, vec![Part::Cue, Part::LcdDefaults, Part::LcdPreset]);
-        // in the rack ALIGN is off: grey, then gone
-        let (_, more) = folded(true, false, 575.0);
+        // in the rack ALIGN isn't there
+        let (_, more) = folded(true, false, 500.0);
         assert_eq!(more[0], Part::LockAlign);
         let mut p = Panel::new(state(true, false));
-        let _ = p.layer(540.0, 1.0);
+        let _ = p.layer(465.0, 1.0);
         p.state.more = true;
-        let _ = p.layer(540.0, 1.0);
+        let _ = p.layer(465.0, 1.0);
         assert!(p.rect(Key::Lock).is_some() && p.rect(Key::Align).is_none());
     }
 
@@ -1271,8 +1288,10 @@ mod tests {
     fn mixer_panel() {
         let Ok(out) = std::env::var("PATCHCORD_MIXER_PANEL") else { return };
         let w: f64 = std::env::var("PATCHCORD_MIXER_PANEL_W").ok().and_then(|v| v.parse().ok()).unwrap_or(1440.0);
-        let mut st = state(false, false);
-        st.mixer = true;
+        // (PATCHCORD_MIXER_PANEL_SCREEN=rails|desk|engine: the panel as that screen shows it)
+        let screen = std::env::var("PATCHCORD_MIXER_PANEL_SCREEN").unwrap_or_default();
+        let mut st = state(screen == "rails", screen == "engine");
+        st.mixer = !matches!(screen.as_str(), "rails" | "desk" | "engine");
         st.lcd = ["PRESET 01 · DEFAULT *".into(), "48 kHz · 1024 · 21.3 ms".into()];
         st.defaults = ["easyeffects".into(), "JLab GO Work 2".into()];
         st.cue_led = true;

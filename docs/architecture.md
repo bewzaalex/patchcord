@@ -31,7 +31,7 @@ PipeWire ──(pw.rs thread)── Event ──► Graph (graph.rs) ──devic
   It computes the face's `Geometry` (where jacks, keys, knobs and each frame's GRAPH key are)
   for hit-testing.
 - **`ui/app.rs`** is the window: input, the top panel, drop-down lists (PROFILE, PORT),
-  and switching between DESK, MIXER, RACK and ENGINE.
+  and switching between MIXER, RACK (its two views, rails and desk) and ENGINE.
 - **`ui/engine.rs`** is ENGINE: the real graph (nodes, ports, links by driver), the inspector,
   and the diagnostics tables.
 - **`ui/mixer.rs`** is MIXER: a module for each strip of the scene (a device's input or output,
@@ -45,6 +45,9 @@ PipeWire ──(pw.rs thread)── Event ──► Graph (graph.rs) ──devic
   textures and meshes on screen.
 - **`config.rs`** holds settings and presets as text files in `~/.config/patchcord`.
 - **`shot.rs`** makes pictures without a window (`--render`, `--record`).
+- **`report.rs`** reads a SAVE REPORT file back as PipeWire's events; `shot::from_report` draws
+  its rack and MIXER (`--report`). **`tools/report_graph.py`** draws one as a schematic (ADR
+  0018). Both read only the report.
 
 ## Checking a change
 
@@ -54,6 +57,7 @@ PipeWire ──(pw.rs thread)── Event ──► Graph (graph.rs) ──devic
 | Tests | `cargo test` |
 | The rack offline, no PipeWire | `PATCHCORD_PIC=out.png [PATCHCORD_PIC_SIZE=WxH] cargo test rack_picture -- --ignored` |
 | The live graph as a picture | `patchcord --render out.png [rack] …` (see `shot.rs`). It starts level meters in PipeWire. |
+| A user's report as pictures | `patchcord --report REPORT.txt` (rack and MIXER), `python3 tools/report_graph.py REPORT.txt [OUT.svg\|OUT.png] [--meters]` (the graph) |
 | Slow frames | `PATCHCORD_FRAMES=1 target/release/patchcord` |
 
 Releases: see [RELEASING.md](RELEASING.md).

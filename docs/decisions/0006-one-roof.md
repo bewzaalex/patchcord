@@ -11,9 +11,12 @@ showed as a VIRTUAL DEVICE named after its engine. A DAW would make a mess.
   `application.process.id`, each from the node, else from its client. The pid alone is not
   enough: every Flatpak is pid 2 inside its sandbox, and an app using PulseAudio comes through
   pipewire-pulse's `pipewire.sec.pid`.
-- **Not a program.** A node with `device.id` (hardware), and PipeWire's own processes: the
-  daemon, pipewire-pulse and filter-chain (binary `pipewire`), and WirePlumber
-  (`wireplumber.daemon`). Their nodes are the system's and keep their own rules.
+- **Not a program.** A node with `device.id` (hardware); a node a SPA plugin made inside
+  PipeWire or WirePlumber (`factory.name` `api.*`: the MIDI bridge, BLE MIDI; 2026-11-25, as
+  PipeWire 1.6.11 gives WirePlumber's client only its name, and its MIDI bridge came out as a
+  program "WirePlumber"); and PipeWire's own processes: the daemon, pipewire-pulse and
+  filter-chain (binary `pipewire`), and WirePlumber (`wireplumber.daemon`), as far as their
+  clients say so. Their nodes are the system's and keep their own rules.
 - **All its nodes, one device**, whatever their `media.class`: streams, its own sinks and
   sources, effects with no class, a JACK-style `Audio/Duplex` node. The kind is APP, the name is
   `application.name`, and the finish is black (the paints: [0014](0014-a-frame-is-a-block.md)).

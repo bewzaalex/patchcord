@@ -365,6 +365,59 @@ impl Graph {
     }
 
     /// Every object PipeWire listed, for ENGINE: (id, kind, properties).
+    /// What a report keeps of the state PipeWire gives as params, not properties: every node's
+    /// volume and mute, each card's profiles (`*` the one it is in) and ports (`*` the ones in
+    /// use, with the card's volume, mute and latency offset). Plain text, by id.
+    pub fn state_text(&self) -> String {
+        use std::fmt::Write;
+        let pct = |vs: &[f32]| vs.iter().map(|v| volume_text(if *v <= VOL_FLOOR * 1.01 { 0.0 } else { (*v as f64).cbrt() }).0).collect::<Vec<_>>().join(" ");
+        let yes = |b: bool| if b { "yes" } else { "no" };
+        let avail = |a: Avail| match a {
+            Avail::Yes => "yes",
+            Avail::No => "no",
+            Avail::Unknown => "?",
+        };
+        let mut o = String::new();
+        let mut nodes: Vec<u32> = self.mix.keys().copied().collect();
+        nodes.sort_unstable();
+        for id in nodes {
+            let (vs, mute) = &self.mix[&id];
+            let _ = writeln!(o, "node {id} volume {} · mute {}", pct(vs), yes(*mute));
+        }
+        let mut cards: Vec<u32> = self.profiles.keys().chain(self.routes.keys()).copied().collect::<HashSet<_>>().into_iter().collect();
+        cards.sort_unstable();
+        for id in cards {
+            let _ = writeln!(o, "device {id}");
+            if let Some((list, current)) = self.profiles.get(&id) {
+                for p in list {
+                    let _ = writeln!(o, "    profile {}{} {} \"{}\" · available {} · priority {}", if Some(p.index) == *current { "*" } else { " " }, p.index, p.name, p.description, avail(p.available), p.priority);
+                }
+            }
+            if let Some((all, active)) = self.routes.get(&id) {
+                for r in all {
+                    let used = active.iter().find(|a| a.index == r.index && a.output == r.output);
+                    let _ = write!(
+                        o,
+                        "    port {}{} {} {} \"{}\" · available {} · profiles {:?} · devices {:?}",
+                        if used.is_some() { "*" } else { " " },
+                        r.index,
+                        if r.output { "out" } else { "in " },
+                        r.name,
+                        r.description,
+                        avail(r.available),
+                        r.profiles,
+                        r.devices
+                    );
+                    if let Some(a) = used {
+                        let _ = write!(o, " · in use for device {} · volume {} · mute {} · latency {} ms", a.device.unwrap_or(-1), a.volumes.as_deref().map_or("?".into(), pct), yes(a.mute), a.latency_ns as f64 / 1e6);
+                    }
+                    o.push('\n');
+                }
+            }
+        }
+        o
+    }
+
     pub fn objects(&self) -> impl Iterator<Item = (u32, Kind, &Props)> {
         self.objects.iter().map(|(id, (k, p))| (*id, *k, p))
     }
@@ -791,10 +844,12 @@ impl Graph {
     /// its `application.name`, `application.process.binary` and `application.process.id` (the
     /// node's, else its client's), not the process alone: every Flatpak is process 2 in its
     /// sandbox, and an app talking PulseAudio comes through pipewire-pulse's (`pipewire.sec.pid`).
-    /// Not a program: hardware (a node with a Device), and PipeWire's own processes (the daemon,
-    /// pipewire-pulse, a filter-chain: `pipewire`; WirePlumber): their nodes are the system's.
+    /// Not a program: hardware (a node with a Device), a node a SPA plugin made inside PipeWire or
+    /// WirePlumber (`factory.name` `api.*`: the MIDI bridge, BLE MIDI, a card's PCM, a camera),
+    /// and PipeWire's own processes (the daemon, pipewire-pulse, a filter-chain: `pipewire`;
+    /// WirePlumber): their nodes are the system's.
     fn program(&self, p: &Props) -> Option<(String, String)> {
-        if p.contains_key("device.id") {
+        if p.contains_key("device.id") || p.get("factory.name").is_some_and(|f| f.starts_with("api.")) {
             return None;
         }
         let client = p.get("client.id").and_then(|c| c.parse::<u32>().ok()).and_then(|c| self.objects.get(&c)).filter(|(k, _)| *k == Kind::Client).map(|(_, cp)| cp);
@@ -806,8 +861,9 @@ impl Graph {
         (!name.trim().is_empty()).then(|| (format!("{name}|{}|{}", get("application.process.binary"), get("application.process.id")), name))
     }
 
-    /// Nodes Patchcord doesn't show: other programs' peak meters (`stream.monitor`), its own
-    /// meters, and streams whose full properties haven't arrived yet (to know which they are).
+    /// Nodes Patchcord doesn't show on the desk, in the rack or in MIXER (ENGINE shows them all):
+    /// other programs' peak meters (`stream.monitor`), its own meters, video, and streams whose
+    /// full properties haven't arrived yet (to know which they are).
     fn hidden(&self, node: u32, p: &Props) -> bool {
         let class = p.get("media.class").map_or("", |s| s.as_str());
         p.get("stream.monitor").is_some_and(|m| m == "true")
@@ -816,6 +872,8 @@ impl Graph {
             // inside its loopback the sound reaches the microphone apps see (MIC) without a link,
             // so a cord to them would lead nowhere
             || class.ends_with("/Internal")
+            // video (a camera, a screen being shared): only in ENGINE for now (ADR 0019)
+            || block_kind(class) == "VIDEO"
             || (class.starts_with("Stream/") && (!self.info.contains(&node) || self.born.get(&node).is_some_and(|t| t.elapsed() < YOUNG)))
     }
 
@@ -1104,6 +1162,23 @@ pub fn port_role(class: &str, dir: Dir, monitor: bool, media: Media) -> &'static
 mod tests {
     use super::*;
 
+    /// A report keeps the state that comes as params: a stream's volume and mute, a card's
+    /// profiles and ports, the ones in use marked, the port's volume with it.
+    #[test]
+    fn the_report_keeps_volumes_profiles_and_ports() {
+        let mut g = Graph::default();
+        g.apply(&Event::Mix { id: 70, volumes: vec![0.5f32.powi(3), 0.5f32.powi(3)], mute: true });
+        let profile = |index, name: &str| Profile { index, name: name.into(), description: name.to_uppercase(), available: Avail::Yes, priority: 1 };
+        g.apply(&Event::Profiles { id: 45, list: vec![profile(0, "off"), profile(1, "hifi")], current: Some(1) });
+        let route = |index, name: &str, device| Route { index, output: true, device, name: name.into(), description: name.into(), available: Avail::No, devices: vec![1], profiles: vec![1], volumes: device.map(|_| vec![1.0, 1.0]), mute: false, latency_ns: 0 };
+        g.apply(&Event::Routes { id: 45, all: vec![route(2, "headphones", None), route(3, "speaker", None)], active: vec![route(3, "speaker", Some(1))] });
+        let t = g.state_text();
+        assert!(t.contains("node 70 volume 50% 50% · mute yes"), "{t}");
+        assert!(t.contains("profile *1 hifi \"HIFI\"") && t.contains("profile  0 off"), "{t}");
+        assert!(t.contains("port  2 out headphones"), "{t}");
+        assert!(t.contains("port *3 out speaker \"speaker\" · available no · profiles [1] · devices [1] · in use for device 1 · volume 100% 100% · mute no"), "{t}");
+    }
+
     #[test]
     fn volume_and_balance_read_as_in_pavucontrol() {
         let m = Mix { node: 1, volumes: vec![0.85f32.powi(3), (0.85f32 * 0.6).powi(3)], mute: false, gain: false, route: None };
@@ -1128,6 +1203,30 @@ mod tests {
         assert_eq!(volume_text(down.volume()).0, "0%");
         // set to a true 0 elsewhere: also 0
         assert_eq!(Mix { volumes: vec![0.0], ..m }.volume(), 0.0);
+    }
+
+    /// Video (a camera, a screen shared by the compositor, an app watching it) is in ENGINE only:
+    /// no device on the desk, in the rack or in MIXER, not even an empty camera.
+    #[test]
+    fn video_is_left_to_engine() {
+        let mut g = Graph::default();
+        let props = |kv: &[(&str, &str)]| kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Props>();
+        g.apply(&Event::Added { id: 1, kind: Kind::Device, props: props(&[("device.api", "v4l2"), ("media.class", "Video/Device"), ("device.description", "Camera")]) });
+        for (node, class, dir) in [(10, "Video/Source", "out"), (20, "Stream/Output/Video", "out"), (30, "Stream/Input/Video", "in"), (40, "Stream/Output/Audio", "out")] {
+            let mut p = vec![("media.class", class), ("node.name", "n"), ("application.name", "app")];
+            if node == 10 {
+                p.push(("device.id", "1"));
+            }
+            g.apply(&Event::Added { id: node, kind: Kind::Node, props: props(&p) });
+            g.apply(&Event::Info { id: node, props: props(&p), state: Some("running") });
+            let fmt = if class.ends_with("Audio") { "32 bit float mono audio" } else { "" };
+            g.apply(&Event::Added { id: node + 1, kind: Kind::Port, props: props(&[("node.id", &node.to_string()), ("port.direction", dir), ("port.name", "p"), ("format.dsp", fmt)]) });
+        }
+        g.apply(&Event::Synced);
+        let devs = g.devices();
+        assert_eq!(devs.iter().flat_map(|d| d.groups.iter().map(|x| x.kind)).collect::<Vec<_>>(), ["PLAYBACK STREAM"], "{:?}", devs.iter().map(|d| &d.name).collect::<Vec<_>>());
+        // ENGINE still has them all
+        assert_eq!(g.objects().filter(|(_, k, _)| *k == Kind::Node).count(), 4);
     }
 
     #[test]
@@ -1295,6 +1394,29 @@ mod tests {
         fn devices(&self) -> Vec<Device> {
             self.0.devices()
         }
+    }
+
+    /// A node a SPA plugin made (`factory.name` `api.*`) is the system's, whatever its client
+    /// says: PipeWire 1.6.11 (Fedora) gives WirePlumber's client only its name, no
+    /// `wireplumber.daemon`, and the MIDI bridge and BLE MIDI came out as a program "WirePlumber".
+    #[test]
+    fn a_node_from_a_spa_plugin_is_never_a_program() {
+        let mut g = Programs::new();
+        // clients as 1.6.11 gives them: a name, nothing to tell WirePlumber by
+        g.client(34, &[("application.name", "WirePlumber"), ("pipewire.access", "unrestricted")]);
+        g.client(43, &[("application.name", "WirePlumber [client]"), ("pipewire.access", "unrestricted")]);
+        g.client(173, &[("application.name", "Telegram"), ("pipewire.access", "unrestricted")]);
+        g.node(46, 34, &[("media.class", "Midi/Bridge"), ("node.name", "Midi-Bridge"), ("factory.name", "api.alsa.seq.bridge"), ("device.api", "alsa")], &[("in", false)]);
+        g.node(50, 43, &[("media.class", "Midi/Bridge"), ("node.name", "bluez_midi.server"), ("node.description", "BLE MIDI 1"), ("factory.name", "api.bluez5.midi.node"), ("device.api", "bluez5")], &[("in", false)]);
+        g.node(60, 173, &[("media.class", "Stream/Output/Audio"), ("node.name", "Telegram"), ("factory.name", "adapter")], &[("out", false)]);
+        g.0.apply(&Event::Synced);
+        let devs = g.devices();
+        let finish = |name: &str| devs.iter().find(|d| d.name == name).map(|d| (d.kind, d.finish));
+        assert_eq!(finish("Midi-Bridge"), Some(("MIDI", Finish::Olive)), "{:?}", devs.iter().map(|d| &d.name).collect::<Vec<_>>());
+        assert_eq!(finish("BLE MIDI 1"), Some(("MIDI", Finish::Olive)));
+        assert!(!devs.iter().any(|d| d.name.starts_with("WirePlumber")));
+        // a program made by a SPA-less factory stays a program
+        assert_eq!(finish("Telegram"), Some(("APP", Finish::Black)));
     }
 
     /// A frame is a block (ADR 0014): a node's every port in its one frame, whatever ways they go,

@@ -2401,6 +2401,17 @@ impl Scene {
         self.record(a, d);
     }
 
+    /// Links ports (`add`, output → input) and takes links away (`del`), as one step to undo:
+    /// what ENGINE's links do. One already there (or not there) is left out.
+    pub fn link_ports(&mut self, add: &[(u32, u32)], del: &[(u32, u32)]) {
+        let links = self.graph.links();
+        let there = |&(o, i): &(u32, u32)| links.iter().any(|l| l.out_port == o && l.in_port == i);
+        let a: Vec<(u32, u32)> = add.iter().copied().filter(|p| !there(p)).collect();
+        let d: Vec<(u32, u32)> = del.iter().copied().filter(there).collect();
+        self.link(&a, &d);
+        self.record(a, d);
+    }
+
     fn record(&mut self, add: Vec<(u32, u32)>, del: Vec<(u32, u32)>) {
         if !add.is_empty() || !del.is_empty() {
             self.undo.push((add, del));

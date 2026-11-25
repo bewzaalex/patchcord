@@ -543,13 +543,13 @@ impl Rec {
         self.panel.state.pressed = None;
         self.down = false;
         match key {
-            Key::Rack => self.scene.set_rack(true),
-            Key::Desk => self.scene.set_rack(false),
+            Key::ViewsAt(0) => self.scene.set_rack(true),
+            Key::ViewsAt(_) => self.scene.set_rack(false),
             _ => {}
         }
-        // ENGINE on its key, off on the desk's and the rack's
+        // ENGINE on its key, off on RACK's and the view switch's
         let on = key == Key::Engine;
-        if matches!(key, Key::Engine | Key::Desk | Key::Rack) && self.eng.on != on {
+        if matches!(key, Key::Engine | Key::Rack | Key::ViewsAt(_)) && self.eng.on != on {
             self.eng.set_on(on);
             self.panel.state.engine = on;
             self.pump();
@@ -633,10 +633,10 @@ pub fn record(dir: &str) -> Result<(), String> {
     if let Some(key) = rec.scene.devs.iter().find(|d| d.dev.name.starts_with("BLE MIDI")).or(rec.scene.devs.last()).map(|d| d.dev.key.clone()) {
         rec.drag(&key, (260.0, -60.0), 1.6)?;
     }
-    // into the rack and back
-    rec.click(Key::Rack)?;
+    // into the rack's rails and back to the desk
+    rec.click(Key::ViewsAt(0))?;
     rec.wait(2.6)?;
-    rec.click(Key::Desk)?;
+    rec.click(Key::ViewsAt(1))?;
     rec.wait(1.6)?;
     // ENGINE: the real graph; a device chosen shows its details
     rec.click(Key::Engine)?;
@@ -646,7 +646,7 @@ pub fn record(dir: &str) -> Result<(), String> {
         rec.choose(&name)?;
         rec.wait(2.8)?;
     }
-    rec.click(Key::Desk)?;
+    rec.click(Key::Rack)?;
     rec.wait(1.2)?;
     rec.conn.send(Cmd::Profile(false));
     eprintln!("{dir}: {} frames, {FPS} a second", rec.frame);
@@ -658,7 +658,7 @@ pub fn record(dir: &str) -> Result<(), String> {
 fn compose_engine(eng: &mut ui::engine::Engine, (w, h): (u32, u32), dpi: f64, version: &str, panel: &mut Panel) -> Pixmap {
     let mut out = ui::app::background(w, h);
     eng.finish((w, h), dpi, version);
-    for (l, x, y, lw, lh, clip, alpha) in eng.sprites((w, h), dpi, version) {
+    for (l, x, y, lw, lh, clip, alpha) in eng.sprites((w, h), dpi, version).0 {
         let Some(pm) = &l.pm else { continue };
         let (sx, sy) = (lw as f32 / pm.width() as f32, lh as f32 / pm.height() as f32);
         let paint = PixmapPaint { quality: FilterQuality::Bilinear, opacity: alpha, ..Default::default() };
@@ -685,7 +685,7 @@ fn compose_engine(eng: &mut ui::engine::Engine, (w, h): (u32, u32), dpi: f64, ve
 }
 
 /// `patchcord --render out.png engine [select=NODE] [tab=top|issues|objects|metadata|events]
-/// [itab=info|props|params|timing] [shut=bottom] [legend] [info] [size=WxH]`: the ENGINE screen of the live graph, after the
+/// [itab=info|conn|props|params|timing] [shut=bottom] [legend] [info] [size=WxH]`: the ENGINE screen of the live graph, after the
 /// profiler has run for two seconds (it only reads: nothing in PipeWire changes).
 fn render_engine(path: &str, opts: &[String]) -> Result<(), String> {
     use crate::ui::engine::Engine;
@@ -737,7 +737,7 @@ fn render_engine(path: &str, opts: &[String]) -> Result<(), String> {
     let out = compose_engine(&mut eng, (w, h), s, &version, &mut panel);
     conn.send(Cmd::Profile(false));
     if let Some(r) = opt("report") {
-        std::fs::write(r, eng.report(&version)).map_err(|e| e.to_string())?;
+        std::fs::write(r, eng.report(&version, &scene.graph.state_text())).map_err(|e| e.to_string())?;
     }
     out.save_png(path).map_err(|e| e.to_string())
 }
@@ -774,7 +774,7 @@ pub fn compose_mixer(mixer: &mut ui::mixer::Mixer, scene: &Scene, (w, h): (u32, 
             out.draw_pixmap((l.x * dpi).round() as i32, (l.y * dpi).round() as i32, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
         }
     }
-    let st = panel::status(w as f64 / dpi, &format!("PipeWire {} · {} devices", scene.version.as_deref().unwrap_or("?"), scene.devs.len()), "drag: scroll · wheel over a fader: volume · D: desk · R: rack · E: ENGINE", dpi);
+    let st = panel::status(w as f64 / dpi, &format!("PipeWire {} · {} devices", scene.version.as_deref().unwrap_or("?"), scene.devs.len()), "drag: scroll · wheel over a fader: volume · R: rack · E: ENGINE", dpi);
     if let Some(pm) = &st.pm {
         out.draw_pixmap(0, (h as f64 - panel::STATUS_H * dpi).round() as i32, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
     }
@@ -794,6 +794,66 @@ fn render_mixer(path: &str, opts: &[String]) -> Result<(), String> {
     let mut panel = new_panel(&scene);
     let out = compose_mixer(&mut mixer, &scene, (w, h), s, &mut panel);
     out.save_png(path).map_err(|e| e.to_string())
+}
+
+/// `patchcord --report REPORT.txt`: the rack and MIXER of a report saved by SAVE REPORT, as the
+/// reporter's Patchcord drew them (all devices shown: their own choices aren't in a report), to
+/// `REPORT-rack.png` and `REPORT-mixer.png` beside it. Only the file is read: no PipeWire.
+pub fn from_report(src: &str) -> Result<(), String> {
+    let text = std::fs::read_to_string(src).map_err(|e| format!("{src}: {e}"))?;
+    let when = text.lines().next().and_then(|l| l.strip_prefix("Patchcord report · ")).ok_or(format!("{src}: not a Patchcord report"))?.to_owned();
+    let scene_of = || {
+        let mut scene = Scene::new();
+        scene.apply(crate::report::events(&text));
+        scene
+    };
+    let stem = src.strip_suffix(".txt").unwrap_or(src);
+    let s: f64 = std::env::var("PATCHCORD_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.5);
+    // the LCD says what this is: a report, and its clock
+    let panel_of = |scene: &Scene| {
+        let mut p = new_panel(scene);
+        let num = |k: &str| scene.settings.get(k).and_then(|v| v.parse::<u32>().ok()).filter(|v| *v > 0);
+        let clock = match (num("clock.force-rate").or(num("clock.rate")), num("clock.force-quantum").or(num("clock.quantum"))) {
+            (Some(r), Some(q)) => format!("{} kHz · {q} · {:.1} ms", r as f64 / 1000.0, q as f64 * 1000.0 / r as f64),
+            _ => "PIPEWIRE".to_owned(),
+        };
+        p.state.lcd = [format!("REPORT {}", when.split(' ').next().unwrap_or("")), clock];
+        p
+    };
+    let status_of = |scene: &Scene, width: f64| panel::status(width, &format!("REPORT {when} · PipeWire {} · {} devices", scene.version.as_deref().unwrap_or("?"), scene.devs.len()), "", s);
+
+    // the rack, the cords at rest
+    let mut scene = scene_of();
+    scene.set_rack(true);
+    for _ in 0..400 {
+        scene.tick(1.0 / 60.0, None, None, false);
+    }
+    let (x0, y0, x1, y1) = scene.bounds().ok_or("no devices in the report")?;
+    let y1 = scene.cords.iter().flat_map(|c| c.pts.iter()).map(|p| p.y as f64 + 10.0).fold(y1, f64::max);
+    let m = 60.0;
+    let top = panel::H * s;
+    let (w, h) = (((x1 - x0 + 2.0 * m) * s).max(1520.0 * s) as u32, ((y1 - y0 + 2.0 * m + 80.0 + panel::H + panel::STATUS_H) * s) as u32);
+    let view = View { s, x: -(x0 - m) * s + ((1520.0 - (x1 - x0 + 2.0 * m)) * s / 2.0).max(0.0), y: top - (y0 - m) * s };
+    scene.prepare(view.s, 0);
+    scene.rail_numbers((h as f64 - view.y) / view.s);
+    scene.finish();
+    let mut panel = panel_of(&scene);
+    let status = status_of(&scene, w as f64 / s);
+    let rack = format!("{stem}-rack.png");
+    compose(&scene, view, (w, h), s, None, &mut panel, &status).save_png(&rack).map_err(|e| e.to_string())?;
+    println!("{rack}");
+
+    // MIXER, wide and tall enough for all of it
+    let scene = scene_of();
+    let mut mixer = ui::mixer::Mixer::new(true);
+    let (cw, ch) = mixer.content(&scene, (1700, 900), s);
+    let (w, h) = (((cw + 2.0) * s).max(1520.0 * s) as u32, ((ch + panel::H + panel::STATUS_H + 2.0) * s).max(640.0 * s) as u32);
+    let mut panel = panel_of(&scene);
+    let out = compose_mixer(&mut mixer, &scene, (w, h), s, &mut panel);
+    let mix = format!("{stem}-mixer.png");
+    out.save_png(&mix).map_err(|e| e.to_string())?;
+    println!("{mix}");
+    Ok(())
 }
 
 /// `--render out.png engine specimen`: every kind of block, link and band ENGINE draws, from a made

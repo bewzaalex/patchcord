@@ -88,6 +88,18 @@ fn stroke(out: &mut Vec<f32>, pts: &[(f32, f32)], half: f32, soft: f32, c: Rgba)
     }
 }
 
+/// A plain line: its points (window pixels), its colour and opacity.
+pub type Line = (Vec<(f32, f32)>, [u8; 3], f32);
+
+/// Plain lines, each `half` px wide each side: ENGINE's link in the hand (`Engine::carried`).
+pub fn lines(lines: &[Line], half: f32) -> Mesh {
+    let mut m = Mesh::default();
+    for (pts, c, a) in lines {
+        stroke(&mut m.normal, pts, half, 1.0, rgba(*c, *a));
+    }
+    m
+}
+
 /// A round spot of light at `at` (px), `r` across, fading from the middle out.
 fn spot(out: &mut Vec<f32>, at: (f32, f32), r: f32, c: Rgba) {
     for (x, y) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {

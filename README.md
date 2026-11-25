@@ -146,7 +146,7 @@ what goes out, after its volume or gain).
 | MONITOR | beside the input it copies, after a dotted rule (a sound card's, a virtual sink's, an app's recording stream's): to record or listen to it (PipeWire's monitor) |
 | OUTPUT 1, OUTPUT 2… | an app with several streams of a kind (Teams in a call records on two and plays on six) is one device with a numbered frame for each, each with its own controls and meter |
 | Units | up to four frames side by side; more make the device two or three units high, the frames spread evenly (eight: two units of four), inputs first and outputs last, vents where a unit has nothing to show |
-| Colours (K) | a frame's band and outline in its block's kind, as in ENGINE: a sink teal, a source blue, a playback stream brown, a recording stream green, MIDI plum, video ochre, a duplex block magenta, a node without a class sand; or plain frames. A jack's ring is what its port is for, either way: a sink's input teal, a source's output blue, a monitor violet, any other input green and output brown, MIDI plum, video ochre, a port of a format Patchcord doesn't know sand |
+| Colours (K) | a frame's band and outline in its block's kind, as in ENGINE: a sink teal, a source blue, a playback stream brown, a recording stream green, MIDI plum, a duplex block magenta, a node without a class sand; or plain frames. A jack's ring is what its port is for, either way: a sink's input teal, a source's output blue, a monitor violet, any other input green and output brown, MIDI plum, a port of a format Patchcord doesn't know sand |
 | Paint | who owns the device: hardware the top panel's painted metal, a program black, a node of PipeWire's or WirePlumber's own (a MIDI bridge) olive |
 | HIDE key | the struck-through eye at the left of the keys under a device's screen, on every device (or H over it), hides a device without cords; with cords it is dimmed. Hidden devices stay hidden after a restart and come back by themselves when something connects to them |
 | HIDDEN key | the eye on the top panel (or H over the desk), with how many are hidden: click one to show it again. It also lists, dimmed and marked SYSTEM, what Patchcord always leaves out: other programs' level meters and its own, and the plumbing behind a Bluetooth headset's MIC |
@@ -194,10 +194,10 @@ what goes out, after its volume or gain).
 | | |
 | --- | --- |
 | Drag a device | on the desk it stops at other devices and slides along them, and sticks lightly to their edges and centres, with a guide line (G: place freely; ALIGN is off in the rack). In the rack it takes another slot (into the other rack too), the rest making room; near the window's top or bottom the rack scrolls under it |
-| D, R, or DESK / RACK | devices on a desk, or screwed into a 19" rack (each keeps its desk place). Each LAYOUT key has its own key on the keyboard, D DESK, M MIXER, R RACK, E ENGINE, and shows its screen; pressed again it stays there |
+| RACK · V, or RAILS / DESK | RACK (R) shows the devices, screwed into a 19" rack or anywhere on a desk: the switch in VIEW (V) takes the other view; each keeps its desk place. Each LAYOUT key has its own key on the keyboard, M MIXER, R RACK, E ENGINE, and shows its screen; pressed again it stays there |
 | The rack | the window is the rack, always at 100%: its rails at the window's sides, units numbered from the top. Every face is as wide as the rack: vents take what its frames don't need (all of it on a card that is off), and frames that don't fit go on to another unit (2U, 3U…): the lower units fill first, the whole width (under the name and screen too), the unit beside the name takes only what is left over; in each unit the frames go from the left (inputs, then outputs), vents after them. A face is at least as wide as its name and screen, or its widest frame (on a unit of its own): only a narrower window scrolls sideways (Shift+wheel, or drag). When the devices don't fit the window's height in one rack, racks stand side by side, as many as it takes (each still as wide as its widest device needs), the devices going down the first and on into the next, split so the racks come out evenest. ARRANGE puts the devices in the order of the signal flow (sources at the top). It goes no higher than its first device; below, as far as its last device or the lowest cord (further while the window is taller) |
 | Wheel in the rack | scrolls it up and down (the rack doesn't zoom); bars at the window's edges show there is more. While it scrolls, a knob passing under the pointer isn't turned. Carrying a plug near the top or bottom edge scrolls the rack that way, to reach a device out of sight, down to one empty unit past the last device |
-| MORE ▾ | in a narrow window the top panel makes room: the logo goes first, then the keys the screen can't use, then groups fold into MORE from the right. MORE drops them below the panel as they are |
+| MORE ▾ | in a narrow window the top panel makes room: the logo goes first, then groups fold into MORE from the right. Keys the screen can't use aren't on it at all. MORE drops them below the panel as they are |
 | A, or ARRANGE | devices with cords in columns by signal flow (sources left), ordered so cords cross less; the unused ones after them, kind by kind (sound cards, apps, MIDI), in rows shaped to the window so the faces come out as big as they can |
 | F | fit everything in the window; in the rack, back to its top |
 | L | lock devices in place |
@@ -226,20 +226,22 @@ group by name, A to Z (the defaults too: nothing jumps when they change).
 
 ### ENGINE: what PipeWire really has
 
-ENGINE (E) shows PipeWire's own graph, read-only, for when you want to know what is really going
-on: what the panels leave out, which clock drives what, and why something crackles.
+ENGINE (E) shows PipeWire's own graph, for when you want to know what is really going on: what
+the panels leave out, which clock drives what, and why something crackles. Links can be made and
+taken away there too.
 
 | | |
 | --- | --- |
-| Blocks | a block per node, grouped under the driver that clocks it (NOT RUNNING: nothing clocks it now, no CPU used). Coloured by its kind, as its frame on the rack (sink, source, playback, recording, MIDI, video, duplex, no class), Patchcord's own meters and cue too (tagged PATCHCORD). Its ports are ears on its edges, inputs left, outputs right, each in its group's colour, as its jack's ring; a light shows if it runs, idles, sleeps or had xruns |
+| Blocks | a block per node, grouped under the driver that clocks it (NOT RUNNING: nothing clocks it now, no CPU used). Coloured by its kind, as its frame on the rack (sink, source, playback, recording, MIDI, duplex, no class; video, a camera or a shared screen, is only here: ADR 0019), Patchcord's own meters and cue too (tagged PATCHCORD): its head is a band of that colour with its name, as a frame's. Its ports are ears on its edges, inputs left, outputs right, each in its group's colour, as its jack's ring; a light shows if it runs, idles, sleeps or had xruns |
 | Where they go | by their links as they are now, left to right: no links; only links out; links in and out, a column further for each step along; only links in, then Patchcord's meters and cue. Each group takes as many columns as fit a wide view, and no link runs through another block's port. When the graph changes, the blocks glide to their new places |
 | Links | one curve each, in the colour of the port they come out of; faded when paused, dashed when they only listen (meters, the cue), red when the ends share no format |
 | Click | a node, port or link turns amber with what belongs to it, and its details open on the right: INFO, PROPS, PARAMS, TIMING, where it is on the desk (SHOW ON DESK goes there), its ports and links |
+| Making links | drag from a port to another (the ones that take it get a ring; near the edge the graph follows), or a block's head onto another block (all its channels, FL to FL, FR to FR, mono to both); or click a port: its details' CONN tab lists every port it can go to, a click on one links it or unlinks it (LINKED, in amber). A chosen link goes with Delete. Ctrl+Z undoes it, as a cord |
 | ALSO SHOW | Patchcord's meters, MIDI, what isn't running, PipeWire's internal drivers, on and off |
 | The strip | the clock, the quantum, the DSP load with its last 45 seconds, xruns, then (when there is room) drivers, server, session, allowed rates and objects; in a narrow window those are behind **i**. HEALTH counts errors, warnings and notes |
-| DIAGNOSTICS | the tables below: TOP (as `pw-top`: each driver and its nodes, the last half second's timings), ISSUES (what looks wrong, worst first, with what to do), OBJECTS, METADATA, EVENTS. **SAVE REPORT** writes it all to a text file in your home folder for a bug report, without your user and host names, MAC addresses or the titles of what plays |
+| DIAGNOSTICS | the tables below: TOP (as `pw-top`: each driver and its nodes, the last half second's timings), ISSUES (what looks wrong, worst first, with what to do), OBJECTS, METADATA, EVENTS. **SAVE REPORT** writes it all to a text file in your home folder for a bug report, volumes, cards' profiles and ports too, without your user and host names, MAC addresses or the titles of what plays |
 | ? or LEGEND | how to read the graph: colours, lights, links, tags, groups |
-| Drag · wheel · F · Esc | pan · zoom · fit · deselect; D, M, R or DESK / MIXER / RACK leave it |
+| Drag · wheel · F · Esc | pan · zoom · fit · deselect; R, M or RACK / MIXER leave it |
 
 Settings and presets are plain text files in `~/.config/patchcord`: `settings.txt` (cords, lock,
 lining up, colours, the cord lights, desk or rack, window size, where devices sit, the rack's order, hidden devices) and `presets.txt` (each preset's links, split jacks, layout, volumes, the
@@ -254,7 +256,7 @@ rack, with a few cords added to the picture only (`demo`, for screenshots), ever
 split, the pointer on a jack, a cord's end in the hand, a drop-down or a card's list open, only
 some devices, or at a given size (`PATCHCORD_SCALE` sets the scale, 1.5 by default).
 `patchcord --render out.png engine [select=NODE] [tab=top|issues|objects|metadata|events]
-[itab=info|props|params|timing] [shut=bottom] [legend] [info] [size=WxH]` draws ENGINE the same
+[itab=info|conn|props|params|timing] [shut=bottom] [legend] [info] [size=WxH]` draws ENGINE the same
 way, after letting PipeWire's profiler run for two seconds; MAC addresses in names are masked.
 `patchcord --render out.png mixer [size=WxH]` draws MIXER, its meters measuring for a second.
 `patchcord --record DIR` plays a short scripted session on the current graph and saves it as
@@ -262,6 +264,11 @@ frames for the README's animation; neither changes anything in PipeWire. `PATCHC
 prints which GPU it uses and PipeWire's errors that are otherwise expected noise;
 `PATCHCORD_FRAMES=1` prints every slow frame and what took the time (or `PATCHCORD_FRAMES=FILE`
 writes it to a file), for reports about the app feeling slow.
+`patchcord --report REPORT.txt` draws a saved report's rack and MIXER as its sender's Patchcord
+showed them (`REPORT-rack.png`, `REPORT-mixer.png`), and
+`python3 tools/report_graph.py REPORT.txt [OUT.svg|OUT.png]` draws it as a
+schematic: every node, its ports and how they are linked, its state and volume, and the
+report's ISSUES; it reads only the report.
 
 ### Bluetooth headsets: when the microphone switches on
 

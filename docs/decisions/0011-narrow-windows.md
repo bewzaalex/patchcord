@@ -3,9 +3,10 @@
 Status: accepted · 2026-11-19
 
 ## Decision
-- The top panel stays one row. When it is too wide, in this order: the logo goes, then the keys
-  disabled on that screen, then groups fold from the right into MORE ▾. DESK·RACK·ENGINE never
-  fold. A click off MORE's drop-down closes it and does what it does where it lands (a jack heard in
+- The top panel stays one row. A key the screen can't use isn't on it at all (2026-11-25; it was
+  greyed, and went first when the panel was too wide): the desk's keys in ENGINE and MIXER, ALIGN
+  in the rack. When it is too wide, in this order: the logo goes, then groups fold from the right
+  into MORE ▾. MIXER·RACK·ENGINE never fold. A click off MORE's drop-down closes it and does what it does where it lands (a jack heard in
   CUE mode at once, a plug taken): it isn't spent on closing (2026-11-23).
 - ENGINE's strip shows CLOCK, QUANTUM, DSP LOAD, XRUNS, HEALTH first, and the rest behind an "i"
   cell. SAVE REPORT is on DIAGNOSTICS' tab row.

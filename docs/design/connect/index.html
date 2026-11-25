@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Patchcord · making links in ENGINE</title>
+<!--
+  Making links in ENGINE, on a made-up graph drawn with ENGINE's own measures and colours
+  (src/ui/engine.rs: graph_svg, port_y, node_h, link_curve; colours as ADR 0014). Not wired to
+  PipeWire: a sketch of how it would feel. Three ways:
+    1. drag from a port to a port (either way: out to in, or in to out); a port linked to it
+       already takes no part; near the field's edge the view follows, as with cords
+    2. drag from a block's title to another block: all its channels, FL to FL, FR to FR, mono to both
+    3. click a port: its details on the right, in their CONN tab, list where it can go, a key each
+       (LINK TO)
+  A link is taken away by its key in the list, or chosen and Delete. Ctrl+Z, Ctrl+Shift+Z.
+-->
+<style>
+  @font-face { font-family: "Noto Sans"; font-weight: 700; src: url(../../../assets/fonts/NotoSans-Bold.ttf); }
+  @font-face { font-family: "Noto Sans Mono"; font-weight: 400; src: url(../../../assets/fonts/NotoSansMono-Regular.ttf); }
+  @font-face { font-family: "Noto Sans Mono"; font-weight: 700; src: url(../../../assets/fonts/NotoSansMono-Bold.ttf); }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1b1c1e; }
+  body { display: flex; flex-direction: column; user-select: none; font-family: "Noto Sans", sans-serif; }
+  #field { flex: 1; position: relative; overflow: hidden; }
+  #graph { position: absolute; left: 0; top: 0; }
+  #status { height: 22px; flex: none; background: #0e0f10; border-top: 1px solid #000; display: flex; justify-content: space-between;
+    align-items: center; padding: 0 12px; font: 12px "Noto Sans Mono", monospace; }
+  #status .l { color: #7d8085; }
+  #status .r { color: #a8abae; }
+</style>
+</head>
+<body>
+<div id="field"><svg id="graph" xmlns="http://www.w3.org/2000/svg" font-family="Noto Sans"></svg></div>
+<div id="status"><span class="l" id="sl">MOCKUP · nothing here reaches PipeWire</span><span class="r" id="sr"></span></div>
+<script>
+"use strict";
+// ---------- ENGINE's measures (engine.rs) ----------
+const NW = 244, NH0 = 40, PR = 15, COLW = NW + 120, NGAP = 14, BPAD = 26, BHEAD = 36, INSP_W = 380;
+const SEL = "#f7bb62", SEL_TEXT = "#3a2408";
+const portY = (i) => NH0 + i * PR + PR / 2 + 2;
+// a block's head: the band of its kind's colour (as a frame's on the rack), its first line on it
+const BAND_H = 24;
+// the lettering on a band: light, but dark on NO CLASS's light sand (face::band_ink)
+const bandInk = (c) => (c === "#cba553" ? "#1d1e20" : c === SEL ? SEL_TEXT : "#f3efe6");
+const nodeH = (n) => NH0 + Math.max(n.ins.length, n.outs.length, 1) * PR + 8;
+// a link from output a to input b: one curve, level at both ports (link_curve)
+function curve(a, b) {
+  const d = Math.max(Math.abs(b[0] - a[0]) / 2, 50);
+  return `M${a[0]},${a[1]} C${a[0] + d},${a[1]} ${b[0] - d},${b[1]} ${b[0]},${b[1]}`;
+}
+// the kinds' colours (face::kind_colour) and the ports' by their role (face::role_colour)
+const KIND = { SINK: "#007c7d", SOURCE: "#206ea6", PLAY: "#7e5a42", REC: "#427935", MIDI: "#934c7e" };
+const ROLE = { MIDI: "#934c7e", MONITOR: "#695ca6", PLAYBACK: "#007c7d", CAPTURE: "#206ea6", OUTPUT: "#7e5a42", INPUT: "#427935" };
+const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+const monoW = (t) => t.length * 6.02;
+const earW = (label) => monoW(label) + 20;
+
+// ---------- a made-up graph ----------
+// node: id, name, class, kind, band, col, ins/outs: [id, name, role, media]
+const P = (id, name, role, media = "audio") => ({ id, name, role, media });
+const NODES = [
+  { id: 60, busy: 31, name: "Firefox", cls: "Stream/Output/Audio", kind: "PLAY", band: 0, col: 0, ins: [], outs: [P(61, "output_FL", "OUTPUT"), P(62, "output_FR", "OUTPUT")] },
+  { id: 65, busy: 44, name: "fooyin", cls: "Stream/Output/Audio", kind: "PLAY", band: 0, col: 0, ins: [], outs: [P(66, "output_FL", "OUTPUT"), P(67, "output_FR", "OUTPUT")] },
+  { id: 50, busy: 52, name: "Scarlett 2i2", cls: "Audio/Sink", kind: "SINK", band: 0, col: 1, tag: "DRIVER", ins: [P(51, "playback_FL", "PLAYBACK"), P(52, "playback_FR", "PLAYBACK")], outs: [P(53, "monitor_FL", "MONITOR"), P(54, "monitor_FR", "MONITOR")] },
+  { id: 105, busy: 22, name: "Recorder", cls: "Stream/Input/Audio", kind: "REC", band: 0, col: 2, ins: [P(106, "input_FL", "INPUT"), P(107, "input_FR", "INPUT")], outs: [] },
+  { id: 90, busy: 18, name: "RØDE NT-USB", cls: "Audio/Source", kind: "SOURCE", band: 1, col: 0, tag: "DRIVER", ins: [], outs: [P(91, "capture_MONO", "CAPTURE")] },
+  { id: 95, busy: 61, name: "OBS", cls: "Stream/Input/Audio", kind: "REC", band: 1, col: 1, ins: [P(96, "input_FL", "INPUT"), P(97, "input_FR", "INPUT")], outs: [] },
+  { id: 120, name: "Midi-Bridge", cls: "Midi/Bridge", kind: "MIDI", band: 2, col: 0, ins: [], outs: [P(121, "Midi Through Port-0", "MIDI", "midi")] },
+  { id: 125, name: "Synth", cls: "Midi/Bridge", kind: "MIDI", band: 2, col: 1, ins: [P(126, "in", "MIDI", "midi")], outs: [] },
+];
+const BANDS = [
+  { head: `<tspan fill="#e58f2c" letter-spacing="1">DRIVER</tspan>  Scarlett 2i2  <tspan fill="#7d8085" font-weight="normal">Audio/Sink #50 · 48000 Hz · QUANT 1024 · 21.3 ms</tspan>`, color: KIND.SINK },
+  { head: `<tspan fill="#e58f2c" letter-spacing="1">DRIVER</tspan>  RØDE NT-USB  <tspan fill="#7d8085" font-weight="normal">Audio/Source #90 · 48000 Hz · QUANT 512 · 10.7 ms</tspan>`, color: KIND.SOURCE },
+  { head: `<tspan fill="#e58f2c" letter-spacing="1">NOT RUNNING</tspan>  <tspan fill="#7d8085" font-weight="normal">no driver clocks these now</tspan>`, color: "#3a3c40", idle: true },
+];
+let links = [[61, 51], [62, 52], [91, 96], [91, 97], [121, 126]];
+const undo = [], redo = [];
+
+// ---------- where things are (world units) ----------
+const node = (id) => NODES.find((n) => n.id === id);
+const portOf = (pid) => { for (const n of NODES) for (const [out, ps] of [[false, n.ins], [true, n.outs]]) { const i = ps.findIndex((p) => p.id === pid); if (i >= 0) return { n, p: ps[i], i, out }; } return null; };
+let POS = {}, BOX = [], W = 0, H = 0;
+function layout() {
+  let y = 0;
+  BOX = [];
+  BANDS.forEach((b, bi) => {
+    const cols = {};
+    for (const n of NODES.filter((n) => n.band === bi)) (cols[n.col] = cols[n.col] || []).push(n);
+    let bh = 0;
+    for (const [c, ns] of Object.entries(cols)) {
+      let ny = y + BHEAD;
+      for (const n of ns) { POS[n.id] = [BPAD + c * COLW, ny]; ny += nodeH(n) + NGAP; }
+      bh = Math.max(bh, ny - y);
+    }
+    bh += BPAD - NGAP;
+    BOX.push([y, bh]);
+    y += bh + 24;
+  });
+  W = BPAD * 2 + 3 * COLW - 120;
+  H = y - 24;
+}
+const portXY = (pid) => { const q = portOf(pid); const [x, y] = POS[q.n.id]; return [x + (q.out ? NW : 0), y + portY(q.i)]; };
+
+// ---------- what may link to what ----------
+// opposite ways, the same media (audio, MIDI), not a block to itself
+const fits = (a, b) => { const qa = portOf(a), qb = portOf(b); return qa.out !== qb.out && qa.p.media === qb.p.media && qa.n.id !== qb.n.id; };
+const linked = (o, i) => links.some(([a, b]) => a === o && b === i);
+const pairOf = (a, b) => (portOf(a).out ? [a, b] : [b, a]);
+// what a carried link can go to: a port that fits and isn't linked to it yet (one linked already
+// takes no part, as it would do nothing)
+const takes = (a, b) => fits(a, b) && !linked(...pairOf(a, b));
+// a block's ports to another's, by channel: FL to FL, FR to FR, mono to both (or both to mono)
+function pairsFor(from, to) {
+  const outs = from.outs.length ? from.outs : null, ins = from.outs.length ? to.ins : to.outs;
+  const src = outs || from.ins, dst = ins;
+  if (!src.length || !dst.length || src[0].media !== dst[0].media) return [];
+  const ch = (p) => (p.name.match(/_(FL|FR|MONO|[0-9]+)$/) || [])[1] || p.name;
+  const out = [];
+  for (const s of src) for (const d of dst) {
+    const a = ch(s), b = ch(d);
+    if (a === b || a === "MONO" || b === "MONO" || src.length === 1 || dst.length === 1) out.push(pairOf(s.id, d.id));
+  }
+  if (!out.length) src.forEach((s, i) => dst[i] && out.push(pairOf(s.id, dst[i].id)));
+  return out;
+}
+
+// ---------- state ----------
+let sel = null;          // { port } | { link: [o, i] }
+let drag = null;         // { kind: "port"|"node", from, at: [x,y], moved, snap }
+let hover = null;
+let view = { s: 1, x: 20, y: 20 };
+
+// ---------- drawing ----------
+const svg = document.getElementById("graph"), field = document.getElementById("field");
+function draw() {
+  const o = [];
+  const fw = field.clientWidth, fh = field.clientHeight;
+  svg.setAttribute("width", fw); svg.setAttribute("height", fh);
+  o.push(`<rect width="${fw}" height="${fh}" fill="#1b1c1e"/>`);
+  o.push(`<g transform="translate(${view.x},${view.y}) scale(${view.s})" font-family="Noto Sans">`);
+  BANDS.forEach((b, i) => {
+    const [y, bh] = BOX[i];
+    o.push(`<rect x="0" y="${y}" width="${W}" height="${bh}" rx="10" fill="#fff" fill-opacity=".025" stroke="${b.color}" stroke-opacity="${b.idle ? 0.5 : 0.35}" stroke-width="1.2"${b.idle ? ' stroke-dasharray="5 5"' : ""}/>`);
+    o.push(`<text x="${BPAD}" y="${y + 22}" font-family="Noto Sans Mono" font-weight="bold" font-size="12" fill="#c9cbcd" xml:space="preserve">${b.head}</text>`);
+  });
+  // while carrying: which ports (blocks) can take it
+  const cand = new Set();
+  let candNodes = new Set();
+  if (drag && drag.moved) {
+    if (drag.kind === "port") for (const n of NODES) for (const p of [...n.ins, ...n.outs]) { if (takes(drag.from, p.id)) { cand.add(p.id); candNodes.add(n.id); } }
+    if (drag.kind === "node") for (const n of NODES) if (n.id !== drag.from && pairsFor(node(drag.from), n).some((p) => !linked(...p))) candNodes.add(n.id);
+  }
+  const selPort = sel && sel.port, selLink = sel && sel.link;
+  const focusNodes = new Set();
+  if (selPort) { focusNodes.add(portOf(selPort).n.id); for (const [a, b] of links) if (a === selPort || b === selPort) { focusNodes.add(portOf(a).n.id); focusNodes.add(portOf(b).n.id); } }
+  if (selLink) { focusNodes.add(portOf(selLink[0]).n.id); focusNodes.add(portOf(selLink[1]).n.id); }
+  const anySel = !!sel && !drag;
+  // links
+  for (const [a, b] of links) {
+    const c = curve(portXY(a), portXY(b));
+    const isSel = selLink && selLink[0] === a && selLink[1] === b;
+    const touch = selPort && (a === selPort || b === selPort);
+    const col = isSel ? SEL : ROLE[portOf(a).p.role];
+    const op = drag && drag.moved ? 0.35 : anySel && !isSel && !touch ? 0.2 : 1;
+    o.push(`<path d="${c}" fill="none" stroke="${col}" stroke-width="${isSel ? 2.6 : 2}" opacity="${op}"/>`);
+  }
+  // blocks
+  for (const n of NODES) {
+    const [x, y] = POS[n.id], nh = nodeH(n);
+    const dim = (drag && drag.moved && !candNodes.has(n.id) && !(drag.kind === "node" ? drag.from === n.id : portOf(drag.from).n.id === n.id)) || (anySel && !focusNodes.has(n.id));
+    const target = drag && drag.snap && (drag.kind === "node" ? drag.snap === n.id : false);
+    const c = target ? SEL : KIND[n.kind];
+    const idle = n.band === 2;
+    o.push(`<g transform="translate(${x},${y})" opacity="${dim ? 0.3 : idle ? 0.72 : 1}">`);
+    // the head's first line as a frame's band on the rack and in MIXER: the kind's colour across
+    // the block's top, the name on it in its lettering, the light at its left, the time at its
+    // right as a dark key (as GRAPH's on a band); under it, on the block, its id and class and
+    // the tags
+    const ink = target ? SEL_TEXT : bandInk(c);
+    o.push(`<rect x=".75" y=".75" width="${NW - 1.5}" height="${nh - 1.5}" rx="5.25" fill="#1d1e21"/><path d="M0,${BAND_H} V6 A6,6 0 0 1 6,0 H${NW - 6} A6,6 0 0 1 ${NW},6 V${BAND_H} Z" fill="${c}"/><path d="M0,${BAND_H + 0.5} H${NW}" stroke="rgba(0,0,0,.35)"/><rect width="${NW}" height="${nh}" rx="6" fill="none" stroke="${c}" stroke-width="${target ? 2.5 : 1.5}"/>`);
+    o.push(`<circle cx="12" cy="12" r="4" fill="${idle ? "#4a4c50" : "#5cff7a"}" stroke="#0f1011" stroke-width="1.2"/><text x="22" y="16" font-size="11" font-weight="bold" letter-spacing="1" fill="${ink}">${esc(n.name.toUpperCase())}</text><text x="12" y="36" font-family="Noto Sans Mono" font-size="10" fill="#7d8085">${n.id} · ${esc(n.cls)}</text>`);
+    const chip = (t, y, fill) => { const w = monoW(t) + 10; o.push(`<rect x="${NW - 8 - w}" y="${y}" width="${w}" height="12" rx="2.5" fill="#1b1c1e" stroke="rgba(0,0,0,.45)"/><text x="${NW - 8 - w / 2}" y="${y + 9}" text-anchor="middle" font-family="Noto Sans Mono" font-size="9" font-weight="bold" fill="${fill}">${t}</text>`); };
+    if (n.busy && !idle) chip(`${n.busy}µs`, 6, "#5cff7a");
+    if (n.tag) o.push(`<text x="${NW - 10}" y="36" text-anchor="end" font-size="8.5" font-weight="bold" letter-spacing=".5" fill="#e58f2c">${n.tag}</text>`);
+    for (const [out, ps] of [[false, n.ins], [true, n.outs]]) {
+      ps.forEach((p, i) => {
+        const py = portY(i), w = earW(p.name);
+        const [px, tx, anchor] = out ? [NW, NW - 10, ' text-anchor="end"'] : [0, 10, ""];
+        const d = out ? `M${NW - 0.75},${py - 6.5} H${NW - w + 6.5} A6.5,6.5 0 0 0 ${NW - w + 6.5},${py + 6.5} H${NW - 0.75} Z` : `M0.75,${py - 6.5} H${w - 6.5} A6.5,6.5 0 0 1 ${w - 6.5},${py + 6.5} H0.75 Z`;
+        const lit = selPort === p.id || (selLink && selLink.includes(p.id)) || (drag && (drag.from === p.id || (drag.kind === "port" && drag.snap === p.id)));
+        const col = ROLE[p.role];
+        if (lit) {
+          o.push(`<path d="${d}" fill="${SEL}"/><circle cx="${px}" cy="${py}" r="4" fill="${SEL}" stroke="#0f1011" stroke-width="1.5"/><text x="${tx}" y="${py + 3.5}"${anchor} font-family="Noto Sans Mono" font-size="10" font-weight="bold" fill="${SEL_TEXT}">${esc(p.name)}</text>`);
+        } else {
+          const can = cand.has(p.id);
+          // one that can take it: its ear filled stronger and a ring round its dot
+          o.push(`<path d="${d}" fill="${col}" fill-opacity="${can ? 0.35 : 0.1}"/>`);
+          if (can) o.push(`<circle cx="${px}" cy="${py}" r="7.5" fill="none" stroke="${col}" stroke-width="1.6"/>`);
+          o.push(`<circle cx="${px}" cy="${py}" r="4" fill="${col}" stroke="#0f1011" stroke-width="1.5"/><text x="${tx}" y="${py + 3.5}"${anchor} font-family="Noto Sans Mono" font-size="10" fill="${can ? "#e6e7e8" : "#a8abae"}">${esc(p.name)}</text>`);
+        }
+      });
+    }
+    o.push(`</g>`);
+  }
+  // the link in the hand: from its port to the pointer, or to the port it would go to
+  if (drag && drag.moved) {
+    const pairs = dragPairs();
+    if (pairs.length) for (const [a, b] of pairs) o.push(`<path d="${curve(portXY(a), portXY(b))}" fill="none" stroke="${ROLE[portOf(a).p.role]}" stroke-width="2" opacity=".85"/>`);
+    else if (drag.kind === "port") {
+      const q = portOf(drag.from), pxy = portXY(drag.from);
+      const c = q.out ? curve(pxy, drag.at) : curve(drag.at, pxy);
+      o.push(`<path d="${c}" fill="none" stroke="${ROLE[q.p.role]}" stroke-width="2" stroke-dasharray="6 4"/><circle cx="${drag.at[0]}" cy="${drag.at[1]}" r="4" fill="${ROLE[q.p.role]}"/>`);
+    } else {
+      const n = node(drag.from), [x, y] = POS[n.id];
+      const from = n.outs.length ? [x + NW, y + 18] : [x, y + 18];
+      const c = n.outs.length ? curve(from, drag.at) : curve(drag.at, from);
+      o.push(`<path d="${c}" fill="none" stroke="${KIND[n.kind]}" stroke-width="3" stroke-dasharray="6 4"/>`);
+    }
+  }
+  o.push(`</g>`);
+  if (selPort) o.push(inspector(fw, fh));
+  svg.innerHTML = o.join("");
+}
+// the links a release now would make: to the port (block) it is over
+function dragPairs() {
+  if (!drag || !drag.snap) return [];
+  if (drag.kind === "port") return linked(...pairOf(drag.from, drag.snap)) ? [] : [pairOf(drag.from, drag.snap)];
+  return pairsFor(node(drag.from), node(drag.snap)).filter(([a, b]) => !linked(a, b));
+}
+
+// ---------- a port's details: LINKS and LINK TO ----------
+let rows = [];
+function inspector(fw, fh) {
+  const selPort = sel.port, q = portOf(selPort), x = fw - INSP_W, o = [];
+  rows = [];
+  o.push(`<rect x="${x}" y="0" width="${INSP_W}" height="${fh}" fill="#141517"/><path d="M${x},0 V${fh}" stroke="#000"/>`);
+  o.push(`<text x="${x + 18}" y="30" font-family="Noto Sans Mono" font-size="9" letter-spacing="1.2" fill="#e58f2c">PORT ${selPort}</text>`);
+  o.push(`<text x="${x + 18}" y="52" font-size="15" font-weight="bold" fill="#e6e7e8">${esc(q.p.name)}</text>`);
+  o.push(`<text x="${x + 18}" y="70" font-family="Noto Sans Mono" font-size="10" fill="#7d8085">${esc(q.n.name)} #${q.n.id} · ${q.out ? "output" : "input"} · ${q.p.media}</text>`);
+  // the details' tabs, as ENGINE's: CONN is this list (INFO and PROPS are as they were)
+  let tx = x + 10;
+  o.push(`<rect x="${x}" y="80" width="${INSP_W}" height="28" fill="#1a1b1d"/><path d="M${x},108.5 H${x + INSP_W}" stroke="#000"/>`);
+  for (const t of ["INFO", "CONN", "PROPS"]) {
+    const on = t === "CONN", tw = t.length * 6.6 + 24;
+    o.push(`<rect x="${tx}" y="86" width="${tw}" height="23" rx="3" fill="${on ? "#2e3034" : "#232427"}"/>${on ? `<rect x="${tx}" y="86" width="${tw}" height="2" fill="#e58f2c"/>` : ""}`);
+    o.push(`<text x="${tx + tw / 2}" y="102" font-size="10" font-weight="bold" letter-spacing=".6" text-anchor="middle" fill="${on ? "#e6e7e8" : "#9a9da1"}">${t}</text>`);
+    tx += tw + 4;
+  }
+  let y = 134;
+  const head = (t) => { o.push(`<text x="${x + 18}" y="${y}" font-family="Noto Sans Mono" font-size="9" letter-spacing="1.2" fill="#7d8085">${t}</text><path d="M${x + 18},${y + 6} H${x + INSP_W - 18}" stroke="#2a2b2e"/>`); y += 22; };
+  // every port it may go to, by block, a key each: lit where it is linked; a click links or unlinks
+  head(q.out ? "LINK TO" : "LINK FROM");
+  for (const n of NODES) {
+    const ps = [...n.ins, ...n.outs].filter((p) => fits(selPort, p.id));
+    if (!ps.length) continue;
+    o.push(`<text x="${x + 18}" y="${y + 4}" font-size="11" font-weight="bold" fill="#c9cbcd">${esc(n.name)} <tspan font-family="Noto Sans Mono" font-weight="normal" fill="#7d8085" font-size="10">#${n.id}</tspan></text>`);
+    y += 12;
+    for (const p of ps) {
+      const on = linked(...pairOf(selPort, p.id)), kx = x + 30, kw = INSP_W - 48;
+      // linked: the row in the amber of what is chosen, as a chosen port's ear; else plain
+      o.push(`<rect x="${kx}" y="${y}" width="${kw}" height="20" rx="4" fill="${on ? SEL : "#1d1e21"}" stroke="#0b0b0c"/>`);
+      // its dot in its port's colour either way, ringed dark as a port's dot is
+      o.push(`<circle cx="${kx + 12}" cy="${y + 10}" r="4" fill="${ROLE[p.role]}" stroke="#0f1011" stroke-width="1.5"/>`);
+      o.push(`<text x="${kx + 22}" y="${y + 14}" font-family="Noto Sans Mono" font-size="10"${on ? ' font-weight="bold"' : ""} fill="${on ? SEL_TEXT : "#a8abae"}">${esc(p.name)}</text>`);
+      o.push(`<text x="${kx + kw - 10}" y="${y + 14}" text-anchor="end" font-family="Noto Sans Mono" font-size="9" font-weight="bold" fill="${SEL_TEXT}">${on ? "LINKED" : ""}</text>`);
+      rows.push({ r: [kx, y, kw, 20], pair: pairOf(selPort, p.id) });
+      y += 24;
+    }
+    y += 8;
+  }
+  o.push(`<text x="${x + 18}" y="${y + 10}" font-family="Noto Sans Mono" font-size="9.5" fill="#7d8085">click: link · again: unlink · or drag from the port</text>`);
+  return o.join("");
+}
+
+// ---------- doing it ----------
+function change(add, del) {
+  add = add.filter((p) => !linked(...p)); del = del.filter((p) => linked(...p));
+  if (!add.length && !del.length) return false;
+  links = links.filter(([a, b]) => !del.some(([c, d]) => a === c && b === d)).concat(add);
+  undo.push({ add, del }); redo.length = 0;
+  return true;
+}
+const world = (e) => { const r = field.getBoundingClientRect(); return [(e.clientX - r.left - view.x) / view.s, (e.clientY - r.top - view.y) / view.s]; };
+// what is under a point: a port's ear, a block's title, a link
+function portAt([x, y]) {
+  for (const n of NODES) { const [nx, ny] = POS[n.id];
+    for (const [out, ps] of [[false, n.ins], [true, n.outs]]) for (let i = 0; i < ps.length; i++) {
+      const py = ny + portY(i), w = earW(ps[i].name), x0 = out ? nx + NW - w : nx - 6, x1 = out ? nx + NW + 6 : nx + w;
+      if (x >= x0 && x <= x1 && Math.abs(y - py) <= 7.5) return ps[i].id;
+    } }
+  return null;
+}
+const titleAt = ([x, y]) => NODES.find((n) => { const [nx, ny] = POS[n.id]; return x >= nx && x <= nx + NW && y >= ny && y <= ny + 26; });
+const blockAt = ([x, y]) => NODES.find((n) => { const [nx, ny] = POS[n.id]; return x >= nx - 8 && x <= nx + NW + 8 && y >= ny && y <= ny + nodeH(n); });
+function linkAt([x, y]) {
+  for (const l of links) { const a = portXY(l[0]), b = portXY(l[1]), d = Math.max(Math.abs(b[0] - a[0]) / 2, 50);
+    for (let t = 0; t <= 1; t += 0.02) { const u = 1 - t, px = u * u * u * a[0] + 3 * u * u * t * (a[0] + d) + 3 * u * t * t * (b[0] - d) + t * t * t * b[0], py = u * u * u * a[1] + 3 * u * u * t * a[1] + 3 * u * t * t * b[1] + t * t * t * b[1];
+      if (Math.hypot(px - x, py - y) < 5) return l; } }
+  return null;
+}
+// the nearest port that can take the carried one, near enough to snap to
+function snapPort(at) {
+  let best = null, bd = 22;
+  for (const n of NODES) for (const p of [...n.ins, ...n.outs]) if (takes(drag.from, p.id)) { const d = Math.hypot(...portXY(p.id).map((v, i) => v - at[i])); if (d < bd) { bd = d; best = p.id; } }
+  const over = portAt(at);
+  return over && takes(drag.from, over) ? over : best;
+}
+
+field.addEventListener("pointerdown", (e) => {
+  const r = field.getBoundingClientRect(), sx = e.clientX - r.left, sy = e.clientY - r.top;
+  // the details' keys
+  if (sel && sel.port && sx >= field.clientWidth - INSP_W) {
+    const row = rows.find(({ r: [x, y, w, h] }) => sx >= x && sx <= x + w && sy >= y && sy <= y + h);
+    if (row) { linked(...row.pair) ? change([], [row.pair]) : change([row.pair], []); draw(); }
+    return;
+  }
+  const w = world(e), p = portAt(w), t = !p && titleAt(w);
+  if (p) drag = { kind: "port", from: p, at: w, moved: false, snap: null, x0: sx, y0: sy };
+  else if (t) drag = { kind: "node", from: t.id, at: w, moved: false, snap: null, x0: sx, y0: sy };
+  else { const l = linkAt(w); sel = l ? { link: l } : null; drag = l ? null : { kind: "pan", x0: sx, y0: sy, vx: view.x, vy: view.y }; }
+  field.setPointerCapture(e.pointerId);
+  draw();
+});
+// carrying a link near the field's edge scrolls the view that way, as a cord does near the
+// window's edge: the other end may be out of sight
+const EDGE = 48;
+let pointer = null, scrolling = false;
+function carry(sx, sy) {
+  drag.at = [(sx - view.x) / view.s, (sy - view.y) / view.s];
+  if (Math.hypot(sx - drag.x0, sy - drag.y0) > 4) drag.moved = true;
+  if (drag.kind === "port") drag.snap = snapPort(drag.at);
+  else { const b = blockAt(drag.at); drag.snap = b && b.id !== drag.from && pairsFor(node(drag.from), b).some((p) => !linked(...p)) ? b.id : null; }
+}
+function edgeScroll() {
+  if (!drag || drag.kind === "pan" || !drag.moved || !pointer) { scrolling = false; return; }
+  const [sx, sy] = pointer, fw = field.clientWidth - (sel && sel.port ? INSP_W : 0), fh = field.clientHeight;
+  const push = (v, lo, hi) => (v < lo + EDGE ? (lo + EDGE - v) / EDGE : v > hi - EDGE ? -(v - (hi - EDGE)) / EDGE : 0);
+  const dx = push(sx, 0, fw) * 14, dy = push(sy, 0, fh) * 14;
+  if (dx || dy) { view.x += dx; view.y += dy; carry(sx, sy); draw(); }
+  requestAnimationFrame(edgeScroll);
+}
+field.addEventListener("pointermove", (e) => {
+  const r = field.getBoundingClientRect(), sx = e.clientX - r.left, sy = e.clientY - r.top;
+  pointer = [sx, sy];
+  if (drag && drag.kind === "pan") { view.x = drag.vx + sx - drag.x0; view.y = drag.vy + sy - drag.y0; draw(); return; }
+  if (drag) {
+    carry(sx, sy);
+    if (drag.moved && !scrolling) { scrolling = true; requestAnimationFrame(edgeScroll); }
+    draw();
+  }
+  status(world(e));
+});
+field.addEventListener("pointerup", () => {
+  if (drag && drag.kind !== "pan") {
+    if (!drag.moved) sel = drag.kind === "port" ? { port: drag.from } : null;
+    else { change(dragPairs(), []); }
+  }
+  drag = null;
+  draw();
+});
+field.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const r = field.getBoundingClientRect(), sx = e.clientX - r.left, sy = e.clientY - r.top, k = Math.exp(-e.deltaY * 0.0015);
+  const s = Math.min(Math.max(view.s * k, 0.4), 2.5);
+  view.x = sx - ((sx - view.x) * s) / view.s; view.y = sy - ((sy - view.y) * s) / view.s; view.s = s; draw();
+}, { passive: false });
+addEventListener("keydown", (e) => {
+  if ((e.key === "Delete" || e.key === "Backspace") && sel && sel.link) { change([], [sel.link]); sel = null; draw(); }
+  else if (e.key === "Escape") { drag = null; sel = null; draw(); }
+  else if (e.ctrlKey && e.key.toLowerCase() === "z") {
+    const from = e.shiftKey ? redo : undo, to = e.shiftKey ? undo : redo, c = from.pop();
+    if (c) { const [add, del] = e.shiftKey ? [c.add, c.del] : [c.del, c.add];
+      links = links.filter(([a, b]) => !del.some(([x, y]) => a === x && b === y)).concat(add); to.push(c); draw(); }
+  }
+});
+const sr = document.getElementById("sr");
+function status(w) {
+  if (drag && drag.moved && drag.kind === "port") {
+    const q = portOf(drag.from);
+    sr.textContent = drag.snap ? `let go: ${q.n.name} ${q.p.name} ${q.out ? "→" : "←"} ${portOf(drag.snap).n.name} ${portOf(drag.snap).p.name}` : `carry it to a ${q.out ? "input" : "output"} with a ring (near the edge the view follows) · Esc: drop it`;
+    return;
+  }
+  if (drag && drag.moved && drag.kind === "node") {
+    sr.textContent = drag.snap ? `let go: ${dragPairs().length} links, ${node(drag.from).name} → ${node(drag.snap).name}, channel to channel` : "carry it onto a block that can take it: all its channels at once";
+    return;
+  }
+  const p = portAt(w), t = titleAt(w), l = linkAt(w);
+  sr.textContent = p ? "drag: link it · click: its details, where it can go" : t ? "drag the title onto another block: all its channels, FL to FL, FR to FR" : l ? "click: choose it · Delete: unlink" : "drag: pan · wheel: zoom · Ctrl+Z: undo";
+}
+addEventListener("resize", draw);
+layout();
+document.fonts.ready.then(draw);
+draw();
+status([-1e9, -1e9]);
+</script>
+</body>
+</html>

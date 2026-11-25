@@ -141,6 +141,8 @@ struct ProfileList {
     at: (f64, f64),
     /// opened from MIXER: under the key there (window pixels), not the face's
     anchor: Option<[f64; 4]>,
+    /// a PORT list from MIXER: only this group's ports (its input's or its output's)
+    group: Option<usize>,
 }
 
 pub struct App {
@@ -661,21 +663,26 @@ impl App {
             Key::Fit if self.engine.on => self.engine.fit(self.size, self.dpi()),
             Key::Fit => self.fit(true),
             // LAYOUT: each key shows its own screen, pressed again it stays there (nothing goes
-            // back and forth); each has its own key on the keyboard (D, M, R, E)
+            // back and forth); each has its own key on the keyboard (R, M, E). RACK shows the
+            // devices in the view they were last in: the switch in VIEW (V) takes the other
             Key::Engine => self.set_engine(true),
             Key::Mixer => {
                 self.set_engine(false);
                 self.set_mixer(true);
             }
-            Key::Desk | Key::Rack => {
+            Key::Rack => {
                 self.set_engine(false);
                 self.set_mixer(false);
-                self.scene.set_rack(key == Key::Rack);
                 self.save_settings();
                 // at once: a glide between screens only gets in the way
                 self.view_to = None;
                 self.fit(false);
             }
+            Key::Views => {
+                let rails = !self.scene.rack;
+                self.set_view(rails);
+            }
+            Key::ViewsAt(i) => self.set_view(i == 0),
             Key::Save => self.open_menu(true),
             Key::Lcd => self.open_menu(false),
             Key::Defaults => self.open_defaults(true),
@@ -689,6 +696,19 @@ impl App {
             }
         }
         self.redraw();
+    }
+
+    /// The rack's view: the devices in its rails (`rails`), or anywhere on a desk. Only while RACK
+    /// shows (the switch is on the panel then).
+    fn set_view(&mut self, rails: bool) {
+        if self.engine.on || self.mixer.on || self.scene.rack == rails {
+            return;
+        }
+        self.scene.set_rack(rails);
+        self.save_settings();
+        // at once: a glide between views only gets in the way
+        self.view_to = None;
+        self.fit(false);
     }
 
     /// Shows ENGINE (the real graph) or goes back to the desk or rack.
@@ -772,23 +792,24 @@ impl App {
                 self.engine.show_node(node);
                 self.send_engine();
             }
-            Some(mixer::Action::Profile(di, r)) => self.open_list(di, ListOf::Profiles, r),
-            Some(mixer::Action::Port(di, r)) => self.open_list(di, ListOf::Ports, r),
+            Some(mixer::Action::Profile(di, r)) => self.open_list(di, ListOf::Profiles, None, r),
+            Some(mixer::Action::Port(di, gi, r)) => self.open_list(di, ListOf::Ports, Some(gi), r),
             Some(mixer::Action::Cue(keys)) => self.cue_group(keys),
             Some(mixer::Action::Changed) => self.after_patch(),
             None => {}
         }
     }
 
-    /// A card's PROFILE or PORT list, opened from MIXER under the key at `at` (window pixels).
-    fn open_list(&mut self, di: usize, what: ListOf, at: [f64; 4]) {
+    /// A card's PROFILE or PORT list (`group`: only that group's ports), opened from MIXER under the
+    /// key at `at` (window pixels).
+    fn open_list(&mut self, di: usize, what: ListOf, group: Option<usize>, at: [f64; 4]) {
         let Some(key) = self.scene.devs.get(di).map(|d| d.dev.key.clone()) else { return };
         // its own key again closes it
-        if self.profiles.as_ref().is_some_and(|p| p.key == key && p.what == what) {
+        if self.profiles.as_ref().is_some_and(|p| p.key == key && p.what == what && p.group == group) {
             self.profiles = None;
             return;
         }
-        self.profiles = Some(ProfileList { key, what, sig: 0, layer: None, hits: Vec::new(), at: (0.0, 0.0), anchor: Some(at) });
+        self.profiles = Some(ProfileList { key, what, sig: 0, layer: None, hits: Vec::new(), at: (0.0, 0.0), anchor: Some(at), group });
     }
 
     /// MIXER's CUE key: a group's jacks heard (in CUE mode), or no longer.
@@ -818,7 +839,7 @@ impl App {
 
     /// ENGINE's report for a bug ticket, into the home folder.
     fn save_report(&mut self) {
-        let text = self.engine.report(self.scene.version.as_deref().unwrap_or("?"));
+        let text = self.engine.report(self.scene.version.as_deref().unwrap_or("?"), &self.scene.graph.state_text());
         let name = format!("patchcord-report-{}.txt", super::engine::local_stamp().1);
         match crate::dirs::home().map(|d| d.join(name)) {
             Some(path) => match std::fs::write(&path, text) {
@@ -830,6 +851,13 @@ impl App {
             },
             None => self.say("Cannot save the report: no home folder"),
         }
+    }
+
+    /// Links ENGINE asks for (made or taken away), sent to PipeWire as one step to undo, as a
+    /// cord's: on the desk they are cords, in ENGINE links, once PipeWire has them.
+    fn engine_link(&mut self, add: &[(u32, u32)], del: &[(u32, u32)]) {
+        self.scene.link_ports(add, del);
+        self.after_patch();
     }
 
     fn send_engine(&mut self) {
@@ -1215,11 +1243,21 @@ impl App {
         }
         // (MIXER hides the desk or the rack as ENGINE does)
         let engine_on = engine_on || mixer_on;
+        let mut engine_at = 0;
+        let mut carried = None;
         if self.engine.on {
             self.prof.mark("badge");
-            for (l, x, y, w, h, clip, alpha) in self.engine.sprites(self.size, dpi, &version) {
+            // a link carried near the graph's edge scrolls it, frame after frame
+            if self.engine.edge_scroll(self.cursor, self.size, dpi) {
+                sf.window.request_redraw();
+            }
+            carried = self.engine.carried(dpi);
+            let start = sprites.len();
+            let (pics, graph_end) = self.engine.sprites(self.size, dpi, &version);
+            for (l, x, y, w, h, clip, alpha) in pics {
                 sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: x.round(), y: y.round(), w, h, alpha, clip });
             }
+            engine_at = start + graph_end;
             self.prof.mark("engine.pictures");
         }
         if !engine_on && self.scene.rack {
@@ -1323,6 +1361,11 @@ impl App {
         // while ENGINE shows, the GPU keeps the desk's pictures: back on the desk they are there;
         // the devices' faces for the other screen (desk or rack) and the jacks' pictures always
         let keep: std::collections::HashSet<u64> = if engine_on { self.scene.layer_ids().chain(mixer_ids).collect() } else { self.scene.pic_ids().chain(mixer_ids).collect() };
+        // in ENGINE the link in the hand, over the graph, under its panels
+        let (mesh, cords_at) = match carried {
+            Some(m) => (Some(m), engine_at),
+            None => (mesh, cords_at),
+        };
         let [wait, upload, draw] = sf.gpu.draw(&sprites, mesh.as_ref().map(|m| (cords_at, m)), &keep);
         self.prof.mark("gpu");
         self.prof.add("gpu.wait", wait);
@@ -1399,7 +1442,11 @@ impl App {
             self.profiles = None;
             return;
         };
-        let sections = if pl.what == ListOf::Ports { self.scene.port_sections(self.scene.devs.iter().position(|x| x.dev.key == pl.key).unwrap_or(0)) } else { Vec::new() };
+        let mut sections = if pl.what == ListOf::Ports { self.scene.port_sections(self.scene.devs.iter().position(|x| x.dev.key == pl.key).unwrap_or(0)) } else { Vec::new() };
+        // from MIXER, a module is an input or an output: its own ports only
+        if let Some(g) = pl.group {
+            sections.retain(|s| s.group == g);
+        }
         let mut h = std::hash::DefaultHasher::new();
         std::hash::Hash::hash(&(format!("{card:?}{sections:?}"), &d.dev.name, dpi.to_bits()), &mut h);
         let sig = std::hash::Hasher::finish(&h);
@@ -1456,6 +1503,7 @@ impl App {
                             self.find_device(di);
                         }
                     }
+                    Some(Action::Link { add, del }) => self.engine_link(&add, &del),
                     None => self.drag = Some(Drag::Engine),
                 }
                 self.send_engine();
@@ -1499,8 +1547,9 @@ impl App {
                             ListOf::Ports => self.scene.port_key_at(w.0, w.1),
                             ListOf::Profiles => self.scene.profile_key_at(w.0, w.1),
                         }
+                        .map(|i| (i, None))
                     };
-                    let own = key_at.is_some_and(|i| self.scene.devs[i].dev.key == pl.key);
+                    let own = key_at.is_some_and(|(i, g)| self.scene.devs[i].dev.key == pl.key && g == pl.group);
                     self.profiles = None;
                     self.redraw();
                     if own {
@@ -1677,7 +1726,7 @@ impl App {
             .map(|di| (di, ListOf::Ports))
             .or(self.scene.profile_key_at(w.0, w.1).map(|di| (di, ListOf::Profiles)))
         {
-            self.profiles = Some(ProfileList { key: self.scene.devs[di].dev.key.clone(), what, sig: 0, layer: None, hits: Vec::new(), at: (0.0, 0.0), anchor: None });
+            self.profiles = Some(ProfileList { key: self.scene.devs[di].dev.key.clone(), what, sig: 0, layer: None, hits: Vec::new(), at: (0.0, 0.0), anchor: None, group: None });
             self.redraw();
             return;
         }
@@ -1717,7 +1766,9 @@ impl App {
     fn release(&mut self) {
         match self.drag.take() {
             Some(Drag::Engine) => {
-                self.engine.release();
+                if let Some(Action::Link { add, del }) = self.engine.release() {
+                    self.engine_link(&add, &del);
+                }
                 self.send_engine();
             }
             Some(Drag::Mixer) => {
@@ -1878,7 +1929,7 @@ impl App {
                     let hint = if let Some(h) = self.mixer.hover(&self.scene, self.cursor, dpi) {
                         h
                     } else if self.cursor.1 <= bottom {
-                        "drag: scroll · wheel over a fader: volume · D: desk · R: rack · E: ENGINE".to_owned()
+                        "drag: scroll · wheel over a fader: volume · R: rack · E: ENGINE".to_owned()
                     } else {
                         String::new()
                     };
@@ -1929,7 +1980,9 @@ impl App {
                     {
                         // ENGINE shows the cue; it is played with on the desk
                         format!("{what}  ·  the CUE key stops it")
-                    } else if self.cursor.1 <= bottom { "click: inspect · drag: pan · wheel: zoom (scroll over the lists) · F: fit · ?: legend · D: desk · M: mixer · R: rack".to_owned() } else { String::new() };
+                    } else if let Some(h) = self.engine.graph_hint(self.cursor, self.size, dpi) {
+                        h
+                    } else if self.cursor.1 <= bottom { "click: inspect · drag: pan · wheel: zoom (scroll over the lists) · F: fit · ?: legend · R: rack · M: mixer".to_owned() } else { String::new() };
                     if hint != self.hint {
                         self.hint = hint;
                         self.redraw();
@@ -2142,14 +2195,20 @@ impl App {
         // ENGINE has keys of its own; the desk's don't reach the desk behind it
         if self.engine.on && !self.mods.control_key() && !self.mods.alt_key() {
             match code {
-                KeyCode::KeyD => self.panel_key(Key::Desk),
-                KeyCode::KeyM => self.panel_key(Key::Mixer),
                 KeyCode::KeyR => self.panel_key(Key::Rack),
+                KeyCode::KeyM => self.panel_key(Key::Mixer),
                 KeyCode::KeyF | KeyCode::Digit0 => self.panel_key(Key::Fit),
                 // ? (and / without Shift): the legend
                 KeyCode::Slash => {
                     self.engine.toggle_legend();
                     self.redraw();
+                }
+                // the chosen link taken away
+                KeyCode::Delete | KeyCode::Backspace => {
+                    if let Some(l) = self.engine.chosen_link() {
+                        self.engine_link(&[], &[l]);
+                        self.redraw();
+                    }
                 }
                 KeyCode::Escape => {
                     self.panel.menu = None;
@@ -2167,7 +2226,6 @@ impl App {
         // MIXER too: the desk's keys don't reach the desk behind it
         if self.mixer_shown() && !self.mods.control_key() && !self.mods.alt_key() {
             match code {
-                KeyCode::KeyD => self.panel_key(Key::Desk),
                 KeyCode::KeyR => self.panel_key(Key::Rack),
                 KeyCode::KeyE => self.panel_key(Key::Engine),
                 KeyCode::Escape => {
@@ -2218,10 +2276,11 @@ impl App {
                 self.redraw();
             }
             KeyCode::KeyC => self.panel_key(Key::Cables),
-            KeyCode::KeyD => self.panel_key(Key::Desk),
             KeyCode::KeyM => self.panel_key(Key::Mixer),
             KeyCode::KeyR => self.panel_key(Key::Rack),
             KeyCode::KeyE => self.panel_key(Key::Engine),
+            // the rack's other view: its rails, or the desk
+            KeyCode::KeyV => self.panel_key(Key::Views),
             KeyCode::Escape => {
                 self.panel.menu = None;
                 self.panel.state.more = false;

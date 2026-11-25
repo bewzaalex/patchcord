@@ -32,4 +32,5 @@ links are patch cords with physics. Rust (winit, wgpu, resvg, the `pipewire` cra
 ## Docs to keep in step
 
 `README.md` (what users see), `docs/decisions/` (why), `docs/architecture.md` (where),
-`docs/design/README.md` (the mockups), `docs/RELEASING.md` (how to release).
+`docs/design/README.md` (the mockups), `docs/RELEASING.md` (how to release), `docs/ROADMAP.md`
+(what is wanted and waiting: add to it, and take out what ships).

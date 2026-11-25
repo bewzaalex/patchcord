@@ -157,7 +157,8 @@ pub struct Wheel {
 enum Hit {
     Graph(u32),
     Profile(usize),
-    Port(usize),
+    /// a device's PORT: its card, and the group (its input or its output) whose ports it lists
+    Port((usize, usize)),
     /// an app's key to a sink (source)
     To((usize, usize), (usize, usize)),
     Main((usize, usize)),
@@ -178,7 +179,7 @@ pub enum Action {
     Graph(u32),
     /// a card's PROFILE or PORT list, under the key at this rectangle (window pixels)
     Profile(usize, [f64; 4]),
-    Port(usize, [f64; 4]),
+    Port(usize, usize, [f64; 4]),
     /// listen to a group (its jacks' keys)
     Cue(Vec<String>),
     /// something changed in PipeWire: send it
@@ -678,7 +679,7 @@ impl Mixer {
                             self.hits.push((Hit::All(s.at), [rx, sy + row(0), rw, KEY_H]));
                         }
                         if s.port.is_some() {
-                            self.hits.push((Hit::Port(m.di), [kx, sy + setup_row(below), kw, LCD_H]));
+                            self.hits.push((Hit::Port(s.at), [kx, sy + setup_row(below), kw, LCD_H]));
                         }
                     }
                 }
@@ -820,7 +821,7 @@ impl Mixer {
         match hit {
             Hit::Graph(node) => Some(Action::Graph(node)),
             Hit::Profile(di) => Some(Action::Profile(di, self.to_window(rect, dpi))),
-            Hit::Port(di) => Some(Action::Port(di, self.to_window(rect, dpi))),
+            Hit::Port((di, gi)) => Some(Action::Port(di, gi, self.to_window(rect, dpi))),
             Hit::Fader(at, ch, top) => {
                 if double {
                     self.set_fader(scene, at, ch, 1.0);
@@ -1080,11 +1081,11 @@ impl Mixer {
         })
     }
 
-    /// The device whose PROFILE (`ports`: PORT) key is at `p`.
-    pub fn list_key_at(&self, p: (f64, f64), ports: bool, dpi: f64) -> Option<usize> {
+    /// The device whose PROFILE (`ports`: PORT, and its group) key is at `p`.
+    pub fn list_key_at(&self, p: (f64, f64), ports: bool, dpi: f64) -> Option<(usize, Option<usize>)> {
         match self.hit(p, dpi)? {
-            Hit::Profile(di) if !ports => Some(di),
-            Hit::Port(di) if ports => Some(di),
+            Hit::Profile(di) if !ports => Some((di, None)),
+            Hit::Port((di, gi)) if ports => Some((di, Some(gi))),
             _ => None,
         }
     }
@@ -1310,6 +1311,13 @@ impl Mixer {
                 }
             }
         }
+    }
+
+    /// The console's whole size (logical pixels) in a window `size` pixels at `dpi`: how big a
+    /// picture of all of it must be.
+    pub fn content(&mut self, scene: &Scene, size: (u32, u32), dpi: f64) -> (f64, f64) {
+        self.layout(scene, &[], size, dpi);
+        self.size
     }
 
     /// The modules now (for tests).

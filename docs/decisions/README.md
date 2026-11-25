@@ -21,3 +21,7 @@ General rules live in [principles](../principles.md). New ADRs start from [the t
 | 0013 | [The frames' band colours](0013-band-colours.md) | 2026-11-23 |
 | 0014 | [A frame is a block: one frame a node, one table of colours with ENGINE](0014-a-frame-is-a-block.md) | 2026-11-23 |
 | 0015 | [MIXER: the graph as a mixing console](0015-mixer.md) | 2026-11-23 |
+| 0016 | [DESK is a view of the rack](0016-desk-is-a-view-of-the-rack.md) | 2026-11-25 |
+| 0017 | [Making links in ENGINE](0017-links-in-engine.md) | 2026-11-25 |
+| 0018 | [Reports: the whole state, and a picture of the graph from one](0018-reports-full-state-and-a-picture.md) | 2026-11-25 |
+| 0019 | [Video only in ENGINE, for now](0019-video-only-in-engine.md) | 2026-11-25 |
