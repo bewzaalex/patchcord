@@ -3836,19 +3836,36 @@ impl Redact {
         mask_macs(&s)
     }
 
-    /// A property as it goes into the report: None leaves it out.
+    /// What an object plays (a song, a video's title, a page: its `media.*` values but its kind),
+    /// to be left out wherever it shows. Not when it is only the program's name (Hydrogen's
+    /// `media.name` is "Hydrogen"), nor in Patchcord's own meters and cue: removing those would
+    /// remove the name everywhere. A node's own name may be a song's, so it doesn't count.
+    fn private(p: &Props) -> Vec<String> {
+        const KIND: [&str; 5] = ["media.class", "media.type", "media.category", "media.role", "media.software"];
+        let ours = p.get("node.name").is_some_and(|n| n.starts_with(crate::pw::METER_PREFIX) || n == crate::pw::CUE_NODE);
+        if ours {
+            return Vec::new();
+        }
+        let names: Vec<&str> = ["application.name", "application.process.binary"].iter().filter_map(|k| p.get(*k)).map(|v| v.trim()).collect();
+        p.iter()
+            .filter(|(k, v)| k.starts_with("media.") && !KIND.contains(&k.as_str()) && !names.iter().any(|n| n.eq_ignore_ascii_case(v.trim())))
+            .map(|(_, v)| v.clone())
+            .collect()
+    }
+
+    /// A property as it goes into the report, `private` being the object's (`Redact::private`):
+    /// None leaves it out.
     fn prop(&self, key: &str, value: &str, private: &[String]) -> Option<String> {
         const OUT: [&str; 7] = ["application.process.user", "application.process.host", "application.process.machine-id", "application.process.session-id", "application.process.id", "window.x11.display", "object.serial"];
         if OUT.contains(&key) || key.starts_with("pipewire.sec.") {
             return None;
         }
-        // what plays (a song, a video's title, a page) is the user's business
-        let media_kept = ["media.class", "media.type", "media.category", "media.role", "media.software"];
-        if key.starts_with("media.") && !media_kept.contains(&key) {
+        if key.starts_with("media.") && private.iter().any(|p| p == value) {
             return Some("<removed>".into());
         }
         let mut v = self.text(value);
-        for p in private {
+        // (a short one, as "on", would cut through words)
+        for p in private.iter().filter(|p| p.len() > 3) {
             v = v.replace(p.as_str(), "<removed>");
         }
         Some(v)
@@ -4022,7 +4039,7 @@ impl Engine {
         for (ty, id, _, _) in &self.objects {
             let Some(p) = self.props.get(id) else { continue };
             // what this object plays: left out wherever it shows (a stream named after its song)
-            let private: Vec<String> = p.iter().filter(|(k, v)| k.starts_with("media.") && !["media.class", "media.type", "media.category", "media.role", "media.software"].contains(&k.as_str()) && v.len() > 3).map(|(_, v)| v.clone()).collect();
+            let private = Redact::private(p);
             let _ = writeln!(o, "{ty} {id}");
             for (k, v) in p {
                 if let Some(v) = r.prop(k, v, &private) {
@@ -4047,6 +4064,34 @@ impl Engine {
 mod tests {
     use super::*;
     use crate::pw::{Event, Kind, Props};
+
+    /// What plays is left out of a report wherever it shows, a node's description named after the
+    /// song too; a `media.name` that is only the program's name (Hydrogen) is kept, and so is the
+    /// name, and Patchcord's own meters keep theirs.
+    #[test]
+    fn a_report_leaves_out_what_plays_but_not_names() {
+        let r = Redact { pairs: Vec::new() };
+        let props = |kv: &[(&str, &str)]| kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Props>();
+        fn out<'a>(r: &Redact, p: &'a Props) -> Vec<(&'a str, String)> {
+            p.iter().filter_map(|(k, v)| r.prop(k, v, &Redact::private(p)).map(|v| (k.as_str(), v))).collect()
+        }
+        let hydrogen = props(&[("application.name", "Hydrogen"), ("media.name", "Hydrogen"), ("node.name", "Hydrogen"), ("media.class", "Stream/Output/Audio")]);
+        assert_eq!(out(&r, &hydrogen), vec![("application.name", "Hydrogen".into()), ("media.class", "Stream/Output/Audio".into()), ("media.name", "Hydrogen".into()), ("node.name", "Hydrogen".into())]);
+        let meter = props(&[("media.name", "patchcord-meter-61"), ("node.name", "patchcord-meter-61"), ("node.description", "Patchcord signal meter")]);
+        assert!(out(&r, &meter).iter().all(|(_, v)| !v.contains("<removed>")), "{:?}", out(&r, &meter));
+        let player = props(&[("application.name", "mpv"), ("media.name", "Some Song - mpv"), ("media.title", "Some Song"), ("node.description", "Some Song - mpv"), ("node.name", "mpv"), ("media.role", "Music")]);
+        assert_eq!(
+            out(&r, &player),
+            vec![
+                ("application.name", "mpv".into()),
+                ("media.name", "<removed>".into()),
+                ("media.role", "Music".into()),
+                ("media.title", "<removed>".into()),
+                ("node.description", "<removed>".into()),
+                ("node.name", "mpv".into())
+            ]
+        );
+    }
 
     /// A port: (id, direction, name).
     type TPort<'a> = (u32, &'a str, &'a str);

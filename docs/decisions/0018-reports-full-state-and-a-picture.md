@@ -22,6 +22,13 @@ hard to picture from its text; the maintainer reads many of them.
 passes through the same redaction as the rest (user and host names, the home folder, MAC
 addresses to their last two bytes); profiles' and ports' names are the hardware's.
 
+**What plays is left out, not the names** (2026-11-25, `Redact::private`): an object's `media.*`
+values (but its kind: class, type, category, role, software) are what it plays, removed from
+every property of that object they show in, a node's description named after the song too. Not
+when the value is only the program's own name (`application.name`, `application.process.binary`:
+Hydrogen's `media.name` is "Hydrogen"), and never in Patchcord's own meters and cue: before,
+those names went with it, and a report's pictures lost them.
+
 **A picture from a report is a tool, not a feature**: `tools/report_graph.py`, a script beside
 the code (Python, nothing to install; a PNG needs `rsvg-convert`). It reads only the report and
 draws a schematic: every node a block (its description, `#id`, class and state, a red edge
