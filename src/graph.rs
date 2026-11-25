@@ -48,6 +48,10 @@ pub struct Group {
     /// on a MIDI bridge, the ALSA client its ports belong to (MIDI THROUGH, HYDROGEN): printed
     /// under its jacks in the bridge's one frame
     pub client: Option<String>,
+    /// its node's `node.nick`, PipeWire's short name for it (HDMI 1, Digital Microphone, a name
+    /// given in KDE's settings; on a desktop card the codec's, ALC287 Analog): a card's frame's
+    /// name when its port doesn't tell it from the others (`face::name`, ADR 0020)
+    pub nick: Option<String>,
     /// what its ports are for, whatever its name: PLAYBACK, CAPTURE, MONITOR, INPUT, OUTPUT, MIDI,
     /// VIDEO (`port_role`): its jacks' colour
     pub role: &'static str,
@@ -969,7 +973,8 @@ impl Graph {
             None if audio && device => self.ports_of(np, dir),
             None => Vec::new(),
         };
-        Group { label, client, role, kind: block_kind(class), dir, ports: ps, stereo, meter, mix, ports_to, stream: 0 }
+        let nick = some(np.get("node.nick")).cloned();
+        Group { label, client, nick, role, kind: block_kind(class), dir, ports: ps, stereo, meter, mix, ports_to, stream: 0 }
     }
 }
 

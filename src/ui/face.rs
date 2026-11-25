@@ -372,23 +372,58 @@ const ROWS_BAND: [f64; 2] = [54.0, 88.0];
 /// In a split stereo group, the first jack of each row: right of its tag (IN L, OUT R).
 const ROW_X: f64 = 62.0;
 
-/// What a frame is called on the face. An app's (and an effect's) say which way the sound goes:
-/// INPUT, OUTPUT. A sound card's say what it is, from the port in use, so they follow the PORT
-/// key: SPEAKERS, HEADPHONES, HDMI, BUILT-IN MIC, MIC; a card that tells nothing, SOUND OUT and
-/// SOUND IN. A monitor is MONITOR: a copy of what plays, to record or listen to it.
-/// (PipeWire's own words, PLAYBACK, CAPTURE and MONITOR, mean little to someone with a headset.)
+/// A frame's name (ADR 0020). A card's: the port in use as a word (SPEAKERS, HEADPHONES, HDMI),
+/// when no other frame of the device has that word; else PipeWire's short name for its node
+/// (`node.nick`: HDMI 1, DIGITAL MICROPHONE), when no other node of the device shares it (a
+/// desktop card's sink and source both say ALC287 ANALOG: the codec's) and it isn't the device's
+/// own name; else the word, or what it is (SOUND OUT, SOUND IN). A program's or the system's:
+/// what its node is called, or which way its sound goes. Two frames of a device still of one
+/// name: the second is numbered (HDMI 2).
 pub fn name(dev: &Device, gi: usize) -> String {
-    let g = &dev.groups[gi];
-    // the port in use; with none (HDMI with nothing plugged in), the one it has, or the word all
-    // its ports share
+    let n = base_name(dev, gi);
+    let counted = |i: usize| matches!(dev.groups[i].role, "PLAYBACK" | "CAPTURE");
+    if !counted(gi) {
+        return n;
+    }
+    let before = (0..gi).filter(|&i| counted(i) && base_name(dev, i) == n).count();
+    if before > 0 { format!("{n} {}", before + 1) } else { n }
+}
+
+/// The port in use as a word; with none in use (HDMI with nothing plugged in), the word all its
+/// ports share.
+fn port_word_of(g: &crate::graph::Group) -> Option<&'static str> {
     let active = g.mix.as_ref().and_then(|m| m.route).and_then(|r| g.ports_to.iter().find(|p| p.index == r.index));
     let words: Vec<&str> = g.ports_to.iter().filter_map(|p| port_word(&p.name, g.dir == Dir::Out)).collect();
-    if let Some(w) = active.and_then(|p| port_word(&p.name, g.dir == Dir::Out)).or(words.first().copied().filter(|w| words.iter().all(|x| x == w))) {
+    active.and_then(|p| port_word(&p.name, g.dir == Dir::Out)).or(words.first().copied().filter(|w| words.iter().all(|x| x == w)))
+}
+
+/// A frame's name before two of a name are numbered (`name`).
+fn base_name(dev: &Device, gi: usize) -> String {
+    let g = &dev.groups[gi];
+    let node = |g: &crate::graph::Group| g.ports.first().map(|p| p.node);
+    // the other nodes' frames of this device
+    let others = || dev.groups.iter().enumerate().filter(move |(i, o)| *i != gi && node(o) != node(g)).map(|(_, o)| o);
+    let word = port_word_of(g);
+    if let Some(w) = word
+        && others().all(|o| port_word_of(o) != Some(w))
+    {
         return w.to_owned();
     }
     // a name of its own: what its program named its node, a MIDI client's
     if g.label != g.role {
         return g.label.clone();
+    }
+    // hardware's: what PipeWire calls its node, when that tells it apart
+    if dev.finish == Finish::Aluminium
+        && matches!(g.role, "PLAYBACK" | "CAPTURE")
+        && let Some(nick) = g.nick.as_deref().map(str::trim).filter(|n| !n.is_empty())
+        && !nick.eq_ignore_ascii_case(dev.name.trim())
+        && others().all(|o| !o.nick.as_deref().is_some_and(|x| x.trim().eq_ignore_ascii_case(nick)))
+    {
+        return nick.to_uppercase();
+    }
+    if let Some(w) = word {
+        return w.to_owned();
     }
     let card = dev.card.is_some();
     // no port to go by (a Bluetooth headset's microphone in its hi-fi profile): what it is
@@ -1589,6 +1624,54 @@ fn base64(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pw::{Avail, Event, Kind, Profile, Props, Route};
+
+    /// A card's nodes (id, class, node.nick, card.profile.device), and its routes in use
+    /// (device, port name) when `routes`: its frames' names.
+    fn card_frames(nodes: &[(u32, &str, &str, i32)], routes: Option<&[(i32, &str)]>) -> Vec<String> {
+        let mut g = crate::graph::Graph::default();
+        let props = |kv: &[(&str, &str)]| kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Props>();
+        g.apply(&Event::Added { id: 1, kind: Kind::Device, props: props(&[("device.name", "alsa_card.x"), ("device.description", "Some HD Audio Controller"), ("media.class", "Audio/Device"), ("device.api", "alsa")]) });
+        if let Some(rs) = routes {
+            g.apply(&Event::Profiles { id: 1, list: vec![Profile { index: 1, name: "hifi".into(), description: "HiFi".into(), available: Avail::Yes, priority: 1 }], current: Some(1) });
+            let route = |i: usize, (dev, name): (i32, &str)| Route { index: i as u32, output: name.contains("Out") || name.contains("output"), device: Some(dev), name: name.into(), description: name.into(), available: Avail::Yes, devices: vec![dev], profiles: vec![1], volumes: Some(vec![1.0, 1.0]), mute: false, latency_ns: 0 };
+            let all: Vec<Route> = rs.iter().enumerate().map(|(i, r)| route(i, *r)).collect();
+            g.apply(&Event::Routes { id: 1, all: all.clone(), active: all });
+        }
+        for &(id, class, nick, dev) in nodes {
+            let dev = dev.to_string();
+            let p = props(&[("media.class", class), ("node.name", &format!("alsa.{id}")), ("node.nick", nick), ("device.id", "1"), ("card.profile.device", &dev), ("factory.name", "api.alsa.pcm.sink")]);
+            g.apply(&Event::Added { id, kind: Kind::Node, props: p.clone() });
+            g.apply(&Event::Info { id, props: p, state: Some("suspended") });
+            let (dir, name) = if class == "Audio/Sink" { ("in", "playback") } else { ("out", "capture") };
+            for (j, ch) in ["FL", "FR"].iter().enumerate() {
+                let pp = props(&[("node.id", &id.to_string()), ("port.direction", dir), ("port.name", &format!("{name}_{ch}")), ("format.dsp", "32 bit float mono audio"), ("audio.channel", ch)]);
+                g.apply(&Event::Added { id: id * 100 + j as u32, kind: Kind::Port, props: pp });
+            }
+        }
+        let devs = g.devices();
+        let d = devs.iter().find(|d| d.finish == Finish::Aluminium).expect("the card");
+        (0..d.groups.len()).filter(|&i| matches!(d.groups[i].role, "PLAYBACK" | "CAPTURE")).map(|i| name(d, i)).collect()
+    }
+
+    /// A card's frame: the port in use as a word while no other frame has it; else PipeWire's
+    /// short name for the node, when it tells the frames apart; else SOUND OUT / SOUND IN (ADR 0020).
+    #[test]
+    fn a_cards_frames_are_named_by_port_then_nick() {
+        // a laptop's card in its HiFi profile (Fedora's Meteor Lake): a node a port
+        let hifi = [(62, "Audio/Sink", "Headphones", 0), (63, "Audio/Sink", "HDMI 3", 5), (82, "Audio/Sink", "HDMI 1", 3), (83, "Audio/Sink", "HDMI 2", 4), (80, "Audio/Source", "Digital Microphone", 6), (81, "Audio/Source", "Headphones Mic", 7)];
+        let routes = [(0, "[Out] Headphones"), (5, "[Out] HDMI3"), (3, "[Out] HDMI1"), (4, "[Out] HDMI2"), (6, "[In] Mic1"), (7, "[In] Mic2")];
+        assert_eq!(card_frames(&hifi, Some(&routes)), ["HEADPHONES", "HDMI 3", "HDMI 1", "HDMI 2", "DIGITAL MICROPHONE", "HEADPHONES MIC"]);
+        // the same with no routes known (a report saved before STATE)
+        assert_eq!(card_frames(&hifi, None), ["HEADPHONES", "HDMI 3", "HDMI 1", "HDMI 2", "DIGITAL MICROPHONE", "HEADPHONES MIC"]);
+        // a desktop card: its sink and source share the codec's name, which tells nothing
+        let acp = [(51, "Audio/Sink", "ALC287 Analog", 1), (45, "Audio/Source", "ALC287 Analog", 2)];
+        assert_eq!(card_frames(&acp, Some(&[(1, "analog-output-speaker"), (2, "analog-input-internal-mic")])), ["SPEAKERS", "BUILT-IN MIC"]);
+        assert_eq!(card_frames(&acp, Some(&[])), ["SOUND OUT", "SOUND IN"]);
+        // two HDMI outputs with no nick: numbered
+        let two = [(70, "Audio/Sink", "", 1), (71, "Audio/Sink", "", 2)];
+        assert_eq!(card_frames(&two, Some(&[(1, "hdmi-output-0"), (2, "hdmi-output-1")])), ["HDMI", "HDMI 2"]);
+    }
 
     /// A long name is cut to fit, its number (the second of two programs of one name) kept.
     #[test]

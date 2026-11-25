@@ -25,3 +25,4 @@ General rules live in [principles](../principles.md). New ADRs start from [the t
 | 0017 | [Making links in ENGINE](0017-links-in-engine.md) | 2026-11-25 |
 | 0018 | [Reports: the whole state, and a picture of the graph from one](0018-reports-full-state-and-a-picture.md) | 2026-11-25 |
 | 0019 | [Video only in ENGINE, for now](0019-video-only-in-engine.md) | 2026-11-25 |
+| 0020 | [A card's frames: their names](0020-a-cards-frames-names.md) | 2026-11-25 |

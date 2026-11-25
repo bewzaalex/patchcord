@@ -9,6 +9,11 @@ ships; what was turned down goes under **Not now** with the ADR that says why.
 
 - **New pictures for the README**: screenshots and `demo.gif` are still from 0.5.0; MIXER, the
   rack and ENGINE have changed since.
+- **ENGINE shows all PipeWire has about an object, on request**: now it shows the registry's
+  properties of ports, modules and factories, and of a card's params only what the rack reads
+  (its routes and profiles aren't in ENGINE at all: "Speakers" is nowhere there). Opening an
+  object would ask for its whole info and every param (a node's error text, a link's format, a
+  module's arguments, a card's routes and profiles) and show them as they come. Mockup first.
 - **The rack's view switch, a new look**: RAILS ⇄ DESK works (ADR 0016), but the two-position
   knob in VIEW isn't liked. Find another form for it. Mockup first.
 

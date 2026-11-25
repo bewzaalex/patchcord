@@ -3207,6 +3207,7 @@ mod tests {
         let group = |label: &str, dir: Dir, ids: [u32; 2]| Group {
             label: label.into(),
             client: None,
+            nick: None,
             role: if label == "PLAYBACK" { "PLAYBACK" } else { "OUTPUT" },
             kind: if label == "PLAYBACK" { "SINK" } else { "PLAYBACK STREAM" },
             dir,
@@ -3240,6 +3241,7 @@ mod tests {
         let group = |role: &'static str, dir: Dir, ids: [u32; 2], mix: bool| Group {
             label: role.into(),
             client: None,
+            nick: None,
             role,
             kind: "SINK",
             dir,
@@ -3267,6 +3269,7 @@ mod tests {
         let group = |label: &str, dir: Dir, ids: [u32; 2]| Group {
             label: label.into(),
             client: None,
+            nick: None,
             role: if label == "PLAYBACK" { "PLAYBACK" } else { "OUTPUT" },
             kind: if label == "PLAYBACK" { "SINK" } else { "PLAYBACK STREAM" },
             dir,
