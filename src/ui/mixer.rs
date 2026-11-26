@@ -223,6 +223,8 @@ const GRAPH_H: f64 = 13.0;
 /// the first group of keys (OUTPUT, INPUT, PLAY ON, RECORD FROM): its title, then its keys in rows
 const ROUTE_Y: f64 = BAND + 7.0;
 const KEY_H: f64 = 17.0;
+/// Between two keys side by side: the hole's dark between them.
+const KEY_GAP: f64 = 2.0;
 fn row(i: usize) -> f64 {
     ROUTE_Y + 17.0 + i as f64 * 23.0
 }
@@ -406,13 +408,14 @@ fn row_keys(s: &Strip, x: f64, y: f64, w: f64, split: bool) -> Vec<(Hit, [f64; 4
         }
     }
     let n = if split { 3.0 } else { 2.0 };
-    let kw = (w - (n - 1.0) * 5.0) / n;
+    // side by side in a block, a thin line of the hole between them
+    let kw = (w - (n - 1.0) * KEY_GAP) / n;
     let place = |h: &Hit| match h {
         Hit::Cue(_) => 0.0,
         Hit::Mute(..) => 1.0,
         _ => 2.0,
     };
-    hs.into_iter().map(|h| { let px = x + place(&h) * (kw + 5.0); (h, [px, y, kw, KEY_H]) }).collect()
+    hs.into_iter().map(|h| { let px = x + place(&h) * (kw + KEY_GAP); (h, [px, y, kw, KEY_H]) }).collect()
 }
 
 /// The block when the window is too low for the faders, as the rack's: its name on top (· BAL on a
@@ -666,8 +669,9 @@ impl Mixer {
             for s in &m.strips {
                 let x0 = mx + s.x;
                 let [[lx, lw], [rx, rw]] = halves(x0 + 6.0, s.w - 12.0);
-                let gw = 10.0 + SMALL.width(&format!("#{}", s.node));
-                self.hits.push((Hit::Graph(s.node), [x0 + s.w - 2.0 - gw, sy + GRAPH_Y, gw, GRAPH_H]));
+                // the frame's name on the band: a click opens ENGINE with its block (as on the rack)
+                let nw = SMALL.width(&s.name).min(s.w - 26.0);
+                self.hits.push((Hit::Graph(s.node), [x0 + 7.0, sy + GRAPH_Y, nw + 6.0, GRAPH_H]));
                 let (kx, kw) = (x0 + 6.0, s.w - 12.0);
                 match s.role {
                     Role::Play | Role::Rec => {
@@ -1063,7 +1067,7 @@ impl Mixer {
     pub fn hover(&self, scene: &Scene, p: (f64, f64), dpi: f64) -> Option<String> {
         let name = |at: (usize, usize)| scene.devs.get(at.0).map(|d| format!("{} · {}", d.dev.name, face::name(&d.dev, at.1))).unwrap_or_default();
         Some(match self.hit(p, dpi)? {
-            Hit::Graph(n) => format!("#{n}: its block in ENGINE"),
+            Hit::Graph(n) => format!("#{n} · {}  ·  click: open it in ENGINE", scene.graph.node_name(n).unwrap_or("?")),
             Hit::Profile(_) => "The card's profile: which of its outputs and inputs it has".into(),
             Hit::Port(_) => "The card's port: where it plays or records from".into(),
             Hit::To(from, to) => {
@@ -1397,12 +1401,16 @@ fn vol_angle(v: f64) -> f64 {
     -135.0 + 270.0 * v.clamp(0.0, VOL_MAX) / VOL_MAX
 }
 
+/// A knob's shadow on the panel, the same for every knob, as the rack's (`face::mix_pic`): lit
+/// from the top left, down and a little right of it, as far as it stands out.
+fn knob_shadow(x: f64, y: f64, r: f64, lift: f64) -> String {
+    format!(r##"<circle cx="{}" cy="{}" r="{}" fill="#000" opacity=".5"/>"##, x + 0.5 * lift, y + lift, r + 0.3 * lift)
+}
+
 /// A knob `r` round at (x, y), its pointer at `a`, as the rack's (`face::mix_pic`).
 fn knob(x: f64, y: f64, r: f64, a: f64) -> String {
     format!(
-        r##"<circle cx="{x}" cy="{}" r="{}" fill="#111" opacity=".5"/><circle cx="{x}" cy="{y}" r="{r}" fill="url(#gVol)" stroke="#0c0c0d"/><circle cx="{x}" cy="{y}" r="{}" fill="none" stroke="rgba(255,255,255,.08)"/><path d="M{} L{}" stroke="#ffb02e" stroke-width="{}" stroke-linecap="round"/>"##,
-        y + 1.5,
-        r + 0.5,
+        r##"<circle cx="{x}" cy="{y}" r="{r}" fill="url(#gVol)" stroke="#0c0c0d"/><circle cx="{x}" cy="{y}" r="{}" fill="none" stroke="rgba(255,255,255,.08)"/><path d="M{} L{}" stroke="#ffb02e" stroke-width="{}" stroke-linecap="round"/>"##,
         r * 0.75,
         polar(x, y, a, r * 0.29),
         polar(x, y, a, r * 0.86),
@@ -1414,7 +1422,7 @@ const KNOB_DEFS: &str = r##"<defs><radialGradient id="gVol" cx=".38" cy=".3" r="
 
 /// The VOLUME knob at a volume (%), in the middle of 40×40.
 fn vol_knob_svg(pct: u32) -> String {
-    format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40">{KNOB_DEFS}{}</svg>"#, knob(20.0, 20.0, 14.0, vol_angle(pct as f64 / 100.0)))
+    format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40">{KNOB_DEFS}{}{}</svg>"#, knob_shadow(20.0, 20.0, 14.0, 2.5), knob(20.0, 20.0, 14.0, vol_angle(pct as f64 / 100.0)))
 }
 
 /// The BAL knob at a balance (%), in (0), held down (1) or out (2), in the middle of 30×30.
@@ -1426,7 +1434,7 @@ fn bal_knob_svg(bal: i32, state: u8) -> String {
         // held down: below flush, deeper in its well
         1 => format!(r##"<circle cx="{bx}" cy="{}" r="8.3" fill="#151618" stroke="#050506"/><circle cx="{bx}" cy="{}" r="8.6" fill="none" stroke="rgba(0,0,0,.7)" stroke-width="1.6"/>{}"##, by + 0.6, by - 0.4, pointer(0.6, "#6a5028", 1.7, 2.4, 6.6)),
         // out: a taller cap with a shadow under it
-        2 => format!(r##"<circle cx="{}" cy="{}" r="10.4" fill="#000" opacity=".55"/><circle cx="{bx}" cy="{}" r="9.6" fill="#0d0e0f"/>{}"##, bx + 1.6, by + 3.2, by + 2.0, knob(bx, by, 9.6, a)),
+        2 => format!(r##"{}<circle cx="{bx}" cy="{}" r="9.6" fill="#0d0e0f"/>{}"##, knob_shadow(bx, by, 9.6, 2.5), by + 2.0, knob(bx, by, 9.6, a)),
         // in: flush, a dim pointer
         _ => format!(r##"<circle cx="{bx}" cy="{by}" r="9" fill="#202124" stroke="#0c0c0d"/>{}"##, pointer(0.0, "#8a6a32", 1.8, 2.6, 7.4)),
     };
@@ -1508,52 +1516,92 @@ fn mix(a: &str, b: &str, t: f64) -> String {
     format!("#{:02x}{:02x}{:02x}", c(0), c(1), c(2))
 }
 
-/// The clear keys' gradients: lit (the whole cap glows, its side too, a little paler in the middle,
-/// never dark at an edge), and unlit frosted plastic (milky, matte, lighter at its edges).
+/// The keys' gradients: lit, a lamp behind frosted plastic in the key's colour (brightest a little
+/// above and left of the middle, falling off unevenly to the edges, as a bulb lights it); unlit,
+/// pale ivory frosted plastic, as a synth's lit keys are, a little warmer in the middle.
 pub(crate) fn glass_defs() -> String {
     let mut o = String::new();
     for (c, id) in GLASS {
         let _ = write!(
             o,
-            r#"<radialGradient id="{id}On" cx=".5" cy=".5" r=".75"><stop offset="0" stop-color="{}"/><stop offset=".7" stop-color="{}"/><stop offset="1" stop-color="{}"/></radialGradient><linearGradient id="{id}Body" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="{}"/><stop offset="1" stop-color="{}"/></linearGradient>"#,
-            mix(c, "#ffffff", 0.3),
-            mix(c, "#ffffff", 0.08),
-            c,
-            mix(c, "#000000", 0.08),
-            mix(c, "#000000", 0.2)
+            r#"<radialGradient id="{id}On" cx=".42" cy=".38" r=".78" fx=".38" fy=".3"><stop offset="0" stop-color="{}"/><stop offset=".3" stop-color="{}"/><stop offset=".72" stop-color="{c}"/><stop offset="1" stop-color="{}"/></radialGradient>"#,
+            mix(c, "#ffffff", 0.62),
+            mix(c, "#ffffff", 0.28),
+            mix(c, "#000000", 0.28)
         );
     }
-    o.push_str(r##"<linearGradient id="gFrost" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#d9dcdc" stop-opacity=".9"/><stop offset="1" stop-color="#cdd0d1" stop-opacity=".88"/></linearGradient><radialGradient id="gFrostIn" cx=".5" cy=".5" r=".62"><stop offset="0" stop-color="#5a5f63" stop-opacity=".16"/><stop offset=".75" stop-color="#5a5f63" stop-opacity=".04"/><stop offset="1" stop-color="#fff" stop-opacity=".22"/></radialGradient><linearGradient id="gFrostSide" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#b9bdbf" stop-opacity=".85"/><stop offset="1" stop-color="#a3a7aa" stop-opacity=".85"/></linearGradient>"##);
+    o.push_str(r##"<radialGradient id="gFrost" cx=".44" cy=".4" r=".8" fx=".4" fy=".32"><stop offset="0" stop-color="#f6f1e3"/><stop offset=".55" stop-color="#e2dbc8"/><stop offset="1" stop-color="#bdb6a3"/></radialGradient>"##);
     o
 }
 
-/// CUE, MUTE, SPLIT: a clear key lit from inside, as a DJ mixer's CUE. A flat cap of frosted
-/// plastic standing on the panel (its side under it, its shadow on the panel), no hole round it. It
-/// doesn't latch: down only while held, back up either way. Off, milky and unlit; on, the whole cap
-/// glows in its colour, paler in the middle. Its name black. No blur: fills and gradients only.
+/// The hole a row of keys sits in, milled in the panel round them all: its corners barely
+/// rounded, a dark edge round the keys and between them, its far wall in shade at the top and the
+/// panel's lip catching the light at the bottom. `[x, y, w, h]`: the keys' row.
+pub(crate) fn key_hole(o: &mut String, [x, y, w, h]: [f64; 4]) {
+    let _ = write!(
+        o,
+        r##"<rect x="{}" y="{}" width="{}" height="{}" rx="1.8" fill="#0b0c0d"/><path d="M{},{} h{}" stroke="#000" stroke-opacity=".5" stroke-width="1"/><path d="M{},{} h{}" stroke="#fff" stroke-opacity=".28" stroke-width=".8"/><path d="M{},{} v{}" stroke="#fff" stroke-opacity=".12" stroke-width=".8"/>"##,
+        x - 1.5,
+        y - 1.5,
+        w + 3.0,
+        h + 3.0,
+        x - 0.5,
+        y - 1.0,
+        w + 1.0,
+        x - 0.5,
+        y + h + 1.9,
+        w + 1.0,
+        x + w + 1.9,
+        y - 0.5,
+        h + 1.0
+    );
+}
+
+/// CUE, MUTE, SPLIT, MAIN: a key flush with the panel, in a hole milled for its row (`key_hole`,
+/// drawn under the row), as a synth's lit keys side by side. Off, pale ivory frosted plastic; on,
+/// lit from behind by a lamp in its colour, unevenly, brightest a little above the middle. Its
+/// name dark. Held down, a shade darker and its name a little lower. No blur: fills and gradients.
 pub(crate) fn lit_key(o: &mut String, [x, y, w, h]: [f64; 4], label: &str, colour: &str, on: bool, held: bool) {
     let id = GLASS.iter().find(|g| g.0 == colour).map_or("gC", |g| g.1);
-    let side = if held { 1.0 } else { 3.0 };
-    let (top, th) = (y + 3.0 - side, h - side);
-    // its shadow on the panel; while lit, its light on the panel round it
-    let _ = write!(o, r##"<rect x="{}" y="{}" width="{}" height="{}" rx="3" fill="#000" opacity=".5"/>"##, x - 0.5, y + 1.5, w + 1.0, h + 1.5);
-    if on {
-        let _ = write!(o, r#"<rect x="{}" y="{}" width="{}" height="{}" rx="4" fill="{colour}" opacity=".28"/>"#, x - 2.0, y - 1.5, w + 4.0, h + 5.0);
+    let fill = if on { format!("url(#{id}On)") } else { "url(#gFrost)".to_owned() };
+    let _ = write!(o, r#"<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="1" fill="{fill}"/>"#);
+    // its edge: a fine light line at its top, a dark one at its bottom (held: the other way, as
+    // it sinks)
+    let (top, bottom) = if held { (0.0, 0.15) } else { (if on { 0.5 } else { 0.6 }, 0.3) };
+    let _ = write!(
+        o,
+        r##"<path d="M{},{} h{}" stroke="#fff" stroke-opacity="{top}" stroke-width=".7"/><path d="M{},{} h{}" stroke="#000" stroke-opacity="{bottom}" stroke-width=".7"/>"##,
+        x + 1.0,
+        y + 0.4,
+        w - 2.0,
+        x + 1.0,
+        y + h - 0.4,
+        w - 2.0
+    );
+    if held {
+        let _ = write!(o, r##"<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="1" fill="#000" fill-opacity=".22"/><path d="M{},{} h{}" stroke="#000" stroke-opacity=".35" stroke-width="1.2"/>"##, x + 0.6, y + 0.7, w - 1.2);
     }
-    // the dark inside the cap, seen through the plastic, and the side; then the top, frosted or lit
-    if on {
-        let _ = write!(o, r#"<rect x="{x}" y="{top}" width="{w}" height="{h}" rx="2.5" fill="url(#{id}Body)"/><rect x="{x}" y="{top}" width="{w}" height="{th}" rx="2.5" fill="url(#{id}On)"/>"#);
-    } else {
-        let _ = write!(o, r##"<rect x="{x}" y="{top}" width="{w}" height="{h}" rx="2.5" fill="#25282a"/><rect x="{x}" y="{top}" width="{w}" height="{h}" rx="2.5" fill="url(#gFrostSide)"/><rect x="{x}" y="{top}" width="{w}" height="{th}" rx="2.5" fill="url(#gFrost)"/><rect x="{x}" y="{top}" width="{w}" height="{th}" rx="2.5" fill="url(#gFrostIn)"/>"##);
-    }
-    // the rim: lit, a paler line of its light
-    let rim = if on { mix(colour, "#ffffff", 0.55) } else { "#ffffff".into() };
-    let _ = write!(o, r##"<rect x="{}" y="{}" width="{}" height="{}" rx="2" fill="none" stroke="{rim}" stroke-opacity="{}"/><rect x="{x}" y="{top}" width="{w}" height="{h}" rx="2.5" fill="none" stroke="#000" stroke-opacity="{}" stroke-width=".8"/>"##, x + 0.5, top + 0.5, w - 1.0, th - 1.0, if on { 0.7 } else { 0.4 }, if on { 0.3 } else { 0.35 });
-    o.push_str(&SMALL.text(x + w / 2.0, top + th / 2.0 + 2.9, "#000", "middle", label));
+    let dy = if held { 0.6 } else { 0.0 };
+    o.push_str(&SMALL.text(x + w / 2.0, y + h / 2.0 + 2.9 + dy, if on { "#1d1408" } else { "#2a2720" }, "middle", label));
 }
 
 /// The VOLUME (GAIN) block's keys.
 fn block_keys(o: &mut String, s: &Strip, keys: &[(Hit, [f64; 4])]) {
+    // one hole for each run of keys side by side (a key missing leaves its place bare)
+    let mut run: Option<[f64; 4]> = None;
+    for (_, r) in keys {
+        run = match run {
+            Some(a) if (r[0] - (a[0] + a[2])) <= KEY_GAP + 0.5 => Some([a[0], a[1], r[0] + r[2] - a[0], a[3]]),
+            Some(a) => {
+                key_hole(o, a);
+                Some(*r)
+            }
+            None => Some(*r),
+        };
+    }
+    if let Some(a) = run {
+        key_hole(o, a);
+    }
     for (h, r) in keys {
         let held = s.held.as_ref() == Some(h);
         match h {
@@ -1639,15 +1687,9 @@ fn module_svg(m: &Module, print: &str, rows: &Rows) -> String {
         }
         let _ = write!(o, r#"<rect x="{}" y=".6" width="{}" height="{}" rx="{}" fill="none" stroke="{}" stroke-opacity="{}" stroke-width="1.2"/>"#, fx + 0.6, fw - 1.2, h - 1.2, RADIUS - 0.6, band.map_or(print, |b| b.0), if band.is_some() { 0.9 } else { 0.35 });
         o.push_str(&SECTION.text(fx + 10.0, 16.0, ink, "start", &fit(&m.name, SECTION, fw - 20.0)));
-        if let Some((_, _, sub, node)) = band {
-            let mut gw = 0.0;
-            if let Some(node) = node {
-                let id = format!("#{node}");
-                gw = 10.0 + SMALL.width(&id);
-                let gx = fx + fw - 8.0 - gw;
-                let _ = write!(o, r##"<rect x="{gx}" y="{GRAPH_Y}" width="{gw}" height="{GRAPH_H}" rx="2.5" fill="#1b1c1e" stroke="rgba(0,0,0,.45)"/>{}"##, SMALL.text(gx + gw / 2.0, GRAPH_Y + 9.4, "#e6e7e8", "middle", &id));
-            }
-            o.push_str(&SMALL.text(fx + 10.0, 30.0, ink, "start", &fit(sub, SMALL, fw - 26.0 - gw)));
+        // (the frame's name opens its block in ENGINE: no key for it, as on the rack)
+        if let Some((_, _, sub, _)) = band {
+            o.push_str(&SMALL.text(fx + 10.0, 30.0, ink, "start", &fit(sub, SMALL, fw - 26.0)));
         }
     };
     if m.strips.is_empty() {
@@ -1697,6 +1739,7 @@ fn module_svg(m: &Module, print: &str, rows: &Rows) -> String {
             Role::Sink | Role::Source => {
                 if s.mix.is_some() && s.node_name.is_some() {
                     // MAIN: a state, lit like CUE and MUTE; ALL HERE: once, a plain key
+                    key_hole(&mut o, [lx, sy + row(0), lw, KEY_H]);
                     lit_key(&mut o, [lx, sy + row(0), lw, KEY_H], "MAIN", "#ffb02e", s.main, held(|h| matches!(h, Hit::Main(_))));
                     action_key(&mut o, [rx, sy + row(0), rw, KEY_H], "ALL HERE", held(|h| matches!(h, Hit::All(_))));
                 }

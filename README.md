@@ -142,12 +142,12 @@ what goes out, after its volume or gain).
 | Frame names | an app's say which way the sound goes: INPUT, OUTPUT; a program with several nodes names each frame as it named the node (EASY EFFECTS SINK, SPECTRUM), two of a name kept so. A sound card's say what it is, from the port in use, and follow it: SPEAKERS, HEADPHONES, HDMI, BUILT-IN MIC, MIC. Where that word doesn't tell two frames apart (a laptop with three HDMI outputs), the name PipeWire gives the output (HDMI 1, DIGITAL MICROPHONE, or one you gave it in your desktop's sound settings); SOUND OUT / SOUND IN when nothing tells. A Bluetooth headset has HEADPHONES and MIC. WirePlumber's MIDI bridge is one frame, a jack for each MIDI client on it, named in its tag (IN · MIDI THROUGH, OUT · HYDROGEN) |
 | A frame's name | on its band, at its left: a click opens ENGINE with that block chosen and in view; the status bar over it says the node's number (#180) |
 | Screen | three lines: what the device is and its state (RUNNING); a card's profile (scrolling when long) or what it carries (STEREO, MONO, MIDI, or 2 CH for channels that don't say they're L and R); what it takes of PipeWire and its cords (2 NODES 6 PORTS 2 LINKS), or the volume while it changes |
-| IN / OUT / MONITOR tags | under the jacks, what each port is: into it (IN), out of it (OUT), a copy of what goes in (MONITOR), each outlined; a split pair's rows are IN L, IN R; of several jacks side by side, each its channel in its tag (OUT · OUT5, IN · FC) |
+| IN / OUT / MON tags | under the jacks, what each port is: into it (IN), out of it (OUT), a copy of what goes in (MON, the monitor), each outlined; a split pair's rows are IN L, IN R; of several jacks side by side, each its channel in its tag (OUT · OUT5, IN · FC) |
 | MONITOR | beside the input it copies, after a dotted rule (a sound card's, a virtual sink's, an app's recording stream's): to record or listen to it (PipeWire's monitor) |
 | OUTPUT 1, OUTPUT 2… | an app with several streams of a kind (Teams in a call records on two and plays on six) is one device with a numbered frame for each, each with its own controls and meter |
 | Units | up to four frames side by side; more make the device two or three units high, the frames spread evenly (eight: two units of four), inputs first and outputs last, vents where a unit has nothing to show |
 | Colours (K) | a frame's band and outline in its block's kind, as in ENGINE: a sink teal, a source blue, a playback stream brown, a recording stream green, MIDI plum, a duplex block magenta, a node without a class sand; or plain frames. A jack's ring is what its port is for, either way: a sink's input teal, a source's output blue, a monitor violet, any other input green and output brown, MIDI plum, a port of a format Patchcord doesn't know sand |
-| Paint | who owns the device: hardware the top panel's painted metal, a program black, a node of PipeWire's or WirePlumber's own (a MIDI bridge) olive |
+| Paint | who owns the device: hardware navy, a program black, a node of PipeWire's or WirePlumber's own (a MIDI bridge) graphite green |
 | HIDE key | the struck-through eye at the left of the keys under a device's screen, on every device (or H over it), hides a device without cords; a device with cords has no HIDE key (pull them out first, or press H over it to be told so). Hidden devices stay hidden after a restart and come back by themselves when something connects to them |
 | HIDDEN key | the eye on the top panel (or H over the desk), with how many are hidden: click one to show it again. It also lists, dimmed and marked SYSTEM, what Patchcord always leaves out: other programs' level meters and its own, and the plumbing behind a Bluetooth headset's MIC |
 
@@ -159,7 +159,7 @@ what goes out, after its volume or gain).
 | Drag a cord's end | move it to another jack, or drop it in empty space to unlink |
 | Double-click a cord or its end | pull it out (unlink) |
 | Drag a cord | grab it and swing it |
-| SPLIT / JOIN | in a frame's row of keys, left of MUTE, a clear key lit amber while split, as MIXER's (on its band, before the name, when it has no stereo volume): one stereo jack, or separate L and R jacks, L above R, for every stereo pair in the frame (an effect's IN and OUT, an input and the MONITOR inside it) together; the stereo jacks its cords lead to follow, and theirs in turn, and so does a new stream that starts playing into a split pair |
+| SPLIT / JOIN | in a frame's row of keys, left of MUTE, a key lit amber while split, as MIXER's (on its band, before the name, when it has no stereo volume): one stereo jack, or separate L and R jacks, L above R, for every stereo pair in the frame (an effect's IN and OUT, an input and the MONITOR inside it) together; the stereo jacks its cords lead to follow, and theirs in turn, and so does a new stream that starts playing into a split pair |
 | FLOW key (W) | which way each cord goes: a light runs inside every plugged-in cord from its output to its input, one at a time; on by default |
 | Hover a jack, cord or device | its cords stand out (even with CABLES on fade or hide) and the others fade; after a moment a tooltip gives the full names |
 | Ctrl+Z / Ctrl+Shift+Z | undo / redo |
@@ -170,7 +170,7 @@ what goes out, after its volume or gain).
 | --- | --- |
 | VOLUME / GAIN knob | in each frame with controls: VOLUME on what plays (an app's OUTPUT, a card's SPEAKERS), GAIN on what comes in (an app's INPUT, a MIC). A sound card's are its own hardware volume, as pavucontrol sets it. From silence to 150% (red past 100%: it can clip): drag up or down (Shift: fine), or the wheel (5%, Shift: 1%); it rests at 100% for a moment, and a double-click sets 100%. The screen shows the value in % and dB while it changes |
 | BAL knob | on stereo: the balance between L and R. A push-push knob, as on an old car stereo: click to pop it out, then turn it like VOLUME; click again to push it back in, where it can't be turned by accident |
-| MUTE key | silences it; a clear key, as MIXER's, that glows red while muted |
+| MUTE key | silences it, when let go over it; a key flush with the panel, as MIXER's, lit red while muted |
 
 ### Sound cards
 
@@ -214,12 +214,12 @@ group by name, A to Z (the defaults too: nothing jumps when they change).
 
 | | |
 | --- | --- |
-| Module | one strip in a frame of its kind's colour: a device's input or output, or an app's. Its band says whose it is and which frame, with GRAPH (#id, opens ENGINE). The keys are in titled groups: PLAY ON / RECORD FROM on an app, SETUP on a device; then VOLUME (GAIN). All modules are as tall as the tallest; in a low window the faders become the rack's knobs. A card that is off has a grey band saying OFF and its PROFILE |
+| Module | one strip in a frame of its kind's colour: a device's input or output, or an app's. Its band says whose it is and which frame; a click on the frame's name opens ENGINE (the status bar says its #id). The keys are in titled groups: PLAY ON / RECORD FROM on an app, SETUP on a device; then VOLUME (GAIN). All modules are as tall as the tallest; in a low window the faders become the rack's knobs. A card that is off has a grey band saying OFF and its PROFILE |
 | PLAY ON / RECORD FROM | on an app's strip, a key for each output (input) shown, its red LED lit where the app plays (records). Click to link it there or not: as many at once as you like. Ctrl+Z undoes it |
 | MAIN | on an output's (input's) strip, lit amber on the default: make it the default, where new apps play (record) |
 | ALL HERE | every app that plays (records) moves here, and it becomes the default |
 | PROFILE · PORT | small amber screens with the card's profile and port: click for the list |
-| CUE · MUTE · SPLIT | listen to it in the default output (CUE mode, as on the rack); mute it; a fader for L and one for R. Clear keys that glow in their colour while on. No key stays pushed in: each goes down while you hold it and does what it does when you let go over it. Each key has its own place; a key that would do nothing isn't there |
+| CUE · MUTE · SPLIT | listen to it in the default output (CUE mode, as on the rack); mute it; a fader for L and one for R. Keys flush with the panel, side by side in one hole, ivory, lit from behind in their colour while on. No key stays pushed in: each goes down while you hold it and does what it does when you let go over it. Each key has its own place; a key that would do nothing isn't there |
 | VOLUME / GAIN fader | the volume (GAIN on what comes in), as the rack's knob, on its cap (0 to 150%, red past 100%): drag, or the wheel over it (Shift: finer); double-click: 100%. Beside it the meter, after the volume. An app without a volume in PipeWire (a DAW's engine) says so. In a low window, the rack's VOLUME and BAL knobs instead |
 | Drag empty space · wheel · scroll bars | scroll the console; the bars show where it goes on beyond the window, and their thumbs can be dragged |
 

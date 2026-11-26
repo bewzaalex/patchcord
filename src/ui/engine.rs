@@ -3969,7 +3969,7 @@ impl Redact {
     }
 }
 
-/// `C9:C1:60:6A:FD:E3` (or with `_`) as `XX:XX:XX:XX:FD:E3`.
+/// `02:00:00:00:00:01` (or with `_`) as `XX:XX:XX:XX:00:01`.
 pub(crate) fn mask_macs(s: &str) -> String {
     let b: Vec<char> = s.chars().collect();
     let mut out = String::new();

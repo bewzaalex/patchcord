@@ -63,8 +63,11 @@ kept on. Dummy-Driver and Freewheel-Driver have no class: NO CLASS, like any (no
 
 **A device's paint is who owns it**, one paint a kind, lightness first so none passes for another:
 HARDWARE aluminium `#C3C6CA` (print `#1D1E20`; since 2026-11-23 the top panel's own painted metal
-`#8C8E91`, the same on the desk, in the rack and in MIXER), PROGRAM black `#232427` (print `#D5D7D9`), a NODE
-of PipeWire's or WirePlumber's olive `#66683F` (print `#F1F1E6`).
+`#8C8E91`; since 2026-11-26 navy `#2B3950`, print `#DDE5F0`, noise as the others, the first
+version's navy: the light grey stood out of the rack, and navy beside black reads apart once the
+frames carry their colours; the same on the desk, in the rack and in MIXER), PROGRAM black `#232427` (print `#D5D7D9`), a NODE
+of PipeWire's or WirePlumber's olive `#66683F` (print `#F1F1E6`; since 2026-11-26 a graphite green
+`#2C312C`, print `#DFE4DF`: the olive stood out beside the navy and the black).
 
 **The frame**, as the face draws it, with these changes:
 - The band: the name (after SPLIT on a frame without a stereo volume), at the left on every frame; VOLUME · BAL (GAIN on a source or a recording stream) and SIG
@@ -72,18 +75,18 @@ of PipeWire's or WirePlumber's olive `#66683F` (print `#F1F1E6`).
 - GRAPH: a click on the frame's name opens ENGINE with that block chosen and in view; the
   status bar over it says the node's number, `#180` (the id ENGINE's block shows). No animation.
   (2026-11-26: it was a small key with the number before the name, which made the band wider.)
-- Under each port's jacks, what it is: IN, OUT or MONITOR, all outlined in the paint's print (a
+- Under each port's jacks, what it is: IN, OUT or MON (a monitor; MONITOR until 2026-11-26), all outlined in the paint's print (a
   filled tag passed for a key, as SPLIT and MUTE), in one row with the keys; IN L / IN R when
   split; a bridge's client, or a channel of several jacks side by side, in its tag
-  (IN · HYDROGEN, OUT · OUT5, MONITOR · FC): nothing hangs under the tags. STEREO and MONO go:
+  (IN · HYDROGEN, OUT · OUT5, MON · FC): nothing hangs under the tags. STEREO and MONO go:
   SPLIT says it.
 - SPLIT: one key a frame. On a frame whose first section is a stereo pair with a volume, it is
-  in the row of keys under the knobs, the left half of it, MUTE the right half; both clear keys
+  in the row of keys under the knobs, the left half of it, MUTE the right half; both keys
   as MIXER's, lit while on (SPLIT amber, MUTE red) (2026-11-26: on the band it made the band, and
   so the frame, wider than what is under it). Elsewhere it stays on the band before the name, as
   wide whether it says SPLIT or JOIN. Before that (2026-11-23) on the band right of GRAPH, and earlier a key
   beside MUTE, or a little switch under the jacks that ran over the frame's edge. It splits every stereo pair in the frame and the MONITOR inside it together
-  (MONITOR L over MONITOR R, beside IN L over IN R); none on a frame without a stereo pair
+  (MON L over MON R, beside IN L over IN R); none on a frame without a stereo pair
   (mono, MIDI, video).
 
 **Still off the rack** (HIDDEN, marked SYSTEM; in ENGINE): Patchcord's own meters and cue, other

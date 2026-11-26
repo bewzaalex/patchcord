@@ -182,6 +182,15 @@ pub struct MixGeo {
     pub bal: Option<(f64, f64)>,
     /// the MUTE key (x, y, w, h)
     pub mute: [f64; 4],
+    /// the frame's SPLIT, left of MUTE (x, y, w, h), when it is in the row (`split_below`)
+    pub split: Option<[f64; 4]>,
+}
+
+/// A key in a frame's row (MUTE, SPLIT): which one is held down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RowKey {
+    Mute,
+    Split,
 }
 
 impl MixGeo {
@@ -191,6 +200,7 @@ impl MixGeo {
         m.knob.1 -= self.y;
         m.bal = m.bal.map(|(x, y)| (x, y - self.y));
         m.mute[1] -= self.y;
+        m.split = m.split.map(|[x, y, w, h]| [x, y - self.y, w, h]);
         m.y = 0.0;
         m
     }
@@ -257,6 +267,10 @@ pub fn accent_index(dev: &Device, gi: usize) -> usize {
 
 /// The lettering on a coloured band.
 const BAND_INK: &str = "#f3efe6";
+
+/// A frame's printed rules (before its knobs, its MON, a section): from and to, as far below its
+/// band (which ends at 36) as above its bottom (110), so they sit in the middle.
+const RULE: (f64, f64) = (42.0, 104.0);
 
 /// A frame's colour: its block's kind (`graph::block_kind`, ADR 0014), the same as the block's in
 /// ENGINE. A kind with a main group of ports has that group's colour (a sink's PLAYBACK, a
@@ -363,10 +377,12 @@ fn fin(f: Finish) -> Fin {
     match f {
         // ADR 0014 (docs/design/apps/paints.py, variant D): one paint a kind of device, light,
         // dark and in between, so none passes for another
-        // (hardware in the top panel's own painted metal, 2026-11-23)
-        Finish::Aluminium => Fin { base: "#8c8e91", paint: true, noise: 0.0, print: "#1d1e20" },
+        // (hardware in the top panel's own painted metal, 2026-11-23; navy since 2026-11-26, the
+        // first version's paint, as it was: the light grey stood out of the rack)
+        Finish::Aluminium => Fin { base: "#2b3950", paint: false, noise: 0.8, print: "#dde5f0" },
         Finish::Black => Fin { base: "#232427", paint: false, noise: 0.9, print: "#d5d7d9" },
-        Finish::Olive => Fin { base: "#66683f", paint: false, noise: 0.7, print: "#f1f1e6" },
+        // (a graphite green since 2026-11-26: the olive stood out beside the navy and the black)
+        Finish::Olive => Fin { base: "#2c312c", paint: false, noise: 0.8, print: "#dfe4df" },
     }
 }
 
@@ -522,7 +538,7 @@ fn rec_w(dev: &Device, gi: usize, jd: &[JackDef], counts: &[usize]) -> f64 {
 
 /// A split MONITOR's first jack in each row, from the rule before it: room for its tag (MONITOR L).
 fn mon_row_x() -> f64 {
-    9.0 + SMALL.width("MONITOR L") + 10.0 + 6.0 + 21.0
+    9.0 + SMALL.width("MON L") + 10.0 + 6.0 + 21.0
 }
 
 /// A stereo group whose switch is on SPLIT: its L and R stand one above the other.
@@ -541,7 +557,8 @@ fn group_w(dev: &Device, gi: usize, jd: &[JackDef], counts: &[usize]) -> f64 {
 /// side by side, its channel (OUT · OUT5, MONITOR · FC).
 fn jack_tag(dev: &Device, gi: usize, jd: &[JackDef], i: usize) -> String {
     let g = &dev.groups[gi];
-    let word = if host(dev, gi).is_some() { "MONITOR" } else if g.dir == Dir::In { "IN" } else { "OUT" };
+    // (MON: the monitor's tag short, as IN and OUT are, 2026-11-26)
+    let word = if host(dev, gi).is_some() { "MON" } else if g.dir == Dir::In { "IN" } else { "OUT" };
     if let Some(c) = &g.client {
         format!("{word} · {c}")
     } else if jd.iter().filter(|j| j.group == gi).count() > 1 && !stacked(dev, gi, jd) {
@@ -572,7 +589,20 @@ fn jacks_w(dev: &Device, gi: usize, jd: &[JackDef], counts: &[usize]) -> f64 {
     // across them all)
     let n = sections(dev, gi).len().max(1) as f64;
     let keys = if splits(dev, gi) && !split_below(dev, gi) { split_key_w() + 4.0 } else { 0.0 };
-    let named = ((label_w(&name(dev, gi)) + keys + 34.0) / n).ceil();
+    // (9 before the name; after it 12 to what is on the band at its right, the volume's heading or
+    // SIG, or 25 to the frame's edge where nothing is)
+    let g = &dev.groups[gi];
+    let after = if g.mix.is_some() || metered(g) { 21.0 } else { 34.0 };
+    let mut named = ((label_w(&name(dev, gi)) + keys + after) / n).ceil();
+    // the name may run on over the knobs, up to their heading (VOLUME · BAL, centred over them):
+    // only what it needs beyond that widens the jacks' part
+    if n == 1.0
+        && let Some(m) = &g.mix
+    {
+        let knobs = if g.stereo { 96.0 } else { 58.0 };
+        let heading = format!("{}{}", if m.gain { "GAIN" } else { "VOLUME" }, if g.stereo { " · BAL" } else { "" });
+        named -= ((knobs - label_w(&heading)) / 2.0 - 6.0).max(0.0);
+    }
     (jacks + rec).max(named)
 }
 
@@ -873,11 +903,12 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
             // MUTE under the knobs; the frame's SPLIT beside it at the left, the two halves of
             // the row (as MIXER's keys)
             let first = sections(dev, gi).first() == Some(&gi) && split_below(dev, gi);
-            let kw = if first { (w - 14.0 - 4.0) / 2.0 } else { w - 14.0 };
+            // (side by side in a block, as MIXER's: 2 of the hole's dark between them)
+            let kw = if first { (w - 14.0 - 2.0) / 2.0 } else { w - 14.0 };
             if first {
                 geo.switches.push((gi, [ox + 7.0, oy + 89.0, kw, 14.0]));
             }
-            let mx0 = ox + 7.0 + if first { kw + 4.0 } else { 0.0 };
+            let mx0 = ox + 7.0 + if first { kw + 2.0 } else { 0.0 };
             let mute = [mx0, oy + 89.0, kw, 14.0];
             geo.mix.push((gi, MixGeo {
                 x: ox,
@@ -887,6 +918,7 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
                 knob: (if stereo { ox + 33.0 } else { ox + w / 2.0 }, oy + 60.0),
                 bal: stereo.then_some((ox + 75.0, oy + 56.0)),
                 mute,
+                split: first.then_some([ox + 7.0, oy + 89.0, kw, 14.0]),
             }));
         }
         // its meter: after its knobs, or (without) right of its jacks
@@ -995,15 +1027,17 @@ fn polar(x: f64, y: f64, a: f64, r: f64) -> String {
 /// the MUTE key and its own meter's dark LEDs (the knobs and the lit LEDs are pictures of their
 /// own, see `mix_pic`). On an output the knob is the VOLUME it plays at; on an input, the GAIN it
 /// records with, as on a mixer's input channel.
-fn mix_panel(m: &MixGeo, print: &str, band: bool) -> String {
+fn mix_panel(m: &MixGeo, print: &str, band: bool, edge: &str) -> String {
     let oy = m.y;
     let m = &m.local();
     let name = if m.input { "GAIN" } else { "VOLUME" };
-    // on a coloured band the heading is in its light lettering, and the groove starts below it
-    let (ink, gy) = if band { (BAND_INK, 40.0) } else { (print, 26.0) };
+    // on a coloured band the heading is in its light lettering, and the rule starts below it: a
+    // line in the frame's own colour, as its edge (`edge`; 2026-11-26: a groove pressed in)
+    // (as far from the band, or the heading, as from the frame's bottom: RULE)
+    let (ink, gy) = if band { (BAND_INK, RULE.0) } else { (print, 26.0) };
     let mut s = format!(
-        r#"<path d="M{x},{gy} V102" stroke="rgba(0,0,0,.45)"/><path d="M{},{gy} V102" stroke="rgba(255,255,255,.1)"/>{}"#,
-        m.x + 1.0,
+        r#"<path d="M{x},{gy} V{}" stroke="{edge}" stroke-width="1.2" stroke-opacity=".9"/>{}"#,
+        RULE.1,
         SECTION.text(m.x + m.w / 2.0, 31.0, ink, "middle", &if m.bal.is_some() { format!("{name} · BAL") } else { name.to_owned() }),
         x = m.x
     );
@@ -1024,21 +1058,25 @@ fn mix_panel(m: &MixGeo, print: &str, band: bool) -> String {
         }
         let _ = write!(s, r#"<circle cx="{bx}" cy="{by}" r="10.8" fill="url(#gHole)" stroke="rgba(255,255,255,.12)" stroke-width=".7"/>{}{}"#, SMALL.text(bx - 12.0, by + 17.0, print, "middle", "L"), SMALL.text(bx + 12.0, by + 17.0, print, "middle", "R"));
     }
-    // MUTE: a clear key, lit red while muted, as MIXER's: in `mix_pic`, which is drawn again as
-    // it changes
+    // the hole milled for the row of keys (SPLIT and MUTE, or MUTE): the keys themselves in
+    // `mix_pic`, which is drawn again as they change or are pressed
+    let [kx, ky, kw, kh] = m.mute;
+    let row = m.split.map_or([kx, ky, kw, kh], |[sx, ..]| [sx, ky, kx + kw - sx, kh]);
+    super::mixer::key_hole(&mut s, row);
     if oy != 0.0 { format!(r#"<g transform="translate(0,{oy})">{s}</g>"#) } else { s }
 }
 
 /// The knobs and the MUTE LED of a VOLUME section, as an SVG document covering the section
 /// (`MIX_Y` down from the face's top, `MIX_H` high): drawn again whenever they move, without the
 /// face.
-pub fn mix_pic(m: &MixGeo, volume: f64, balance: f64, mute: bool, bal: BalKnob) -> String {
+pub fn mix_pic(m: &MixGeo, volume: f64, balance: f64, mute: bool, bal: BalKnob, split: bool, held: Option<RowKey>) -> String {
     let m = &m.local();
+    // a knob's shadow on the panel, the same for both (lit from the top left: down and a little
+    // right of it), as far as it stands out
+    let shadow = |x: f64, y: f64, r: f64, lift: f64| format!(r##"<circle cx="{}" cy="{}" r="{}" fill="#000" opacity=".5"/>"##, x + 0.5 * lift, y + lift, r + 0.3 * lift);
     let knob = |x: f64, y: f64, r: f64, a: f64| {
         format!(
-            r##"<circle cx="{x}" cy="{}" r="{}" fill="#111" opacity=".5"/><circle cx="{x}" cy="{y}" r="{r}" fill="url(#gVol)" stroke="#0c0c0d"/><circle cx="{x}" cy="{y}" r="{}" fill="none" stroke="rgba(255,255,255,.08)"/><path d="M{} L{}" stroke="#ffb02e" stroke-width="{}" stroke-linecap="round"/>"##,
-            y + 1.5,
-            r + 0.5,
+            r##"<circle cx="{x}" cy="{y}" r="{r}" fill="url(#gVol)" stroke="#0c0c0d"/><circle cx="{x}" cy="{y}" r="{}" fill="none" stroke="rgba(255,255,255,.08)"/><path d="M{} L{}" stroke="#ffb02e" stroke-width="{}" stroke-linecap="round"/>"##,
             r * 0.75,
             polar(x, y, a, r * 0.29),
             polar(x, y, a, r * 0.86),
@@ -1046,7 +1084,7 @@ pub fn mix_pic(m: &MixGeo, volume: f64, balance: f64, mute: bool, bal: BalKnob) 
         )
     };
     let (cx, cy) = m.knob;
-    let mut s = knob(cx, cy, 14.0, vol_angle(volume));
+    let mut s = shadow(cx, cy, 14.0, 2.5) + &knob(cx, cy, 14.0, vol_angle(volume));
     if let Some((bx, by)) = m.bal {
         let a = balance.clamp(-1.0, 1.0) * 135.0;
         let pointer = |dy: f64, color: &str, w: f64, r0: f64, r1: f64| format!(r#"<path d="M{} L{}" stroke="{color}" stroke-width="{w}" stroke-linecap="round"/>"#, polar(bx, by + dy, a, r0), polar(bx, by + dy, a, r1));
@@ -1054,12 +1092,15 @@ pub fn mix_pic(m: &MixGeo, volume: f64, balance: f64, mute: bool, bal: BalKnob) 
             // held down: below flush, deeper in its well
             BalKnob::Held => format!(r##"<circle cx="{bx}" cy="{}" r="8.3" fill="#151618" stroke="#050506"/><circle cx="{bx}" cy="{}" r="8.6" fill="none" stroke="rgba(0,0,0,.7)" stroke-width="1.6"/>{}"##, by + 0.6, by - 0.4, pointer(0.6, "#6a5028", 1.7, 2.4, 6.6)),
             // out: a taller cap with a shadow under it
-            BalKnob::Out => format!(r##"<circle cx="{}" cy="{}" r="10.4" fill="#000" opacity=".55"/><circle cx="{bx}" cy="{}" r="9.6" fill="#0d0e0f"/>{}"##, bx + 1.6, by + 3.2, by + 2.0, knob(bx, by, 9.6, a)),
+            BalKnob::Out => format!(r##"{}<circle cx="{bx}" cy="{}" r="9.6" fill="#0d0e0f"/>{}"##, shadow(bx, by, 9.6, 2.5), by + 2.0, knob(bx, by, 9.6, a)),
             // in: flush, a dim pointer
             BalKnob::In => format!(r##"<circle cx="{bx}" cy="{by}" r="9" fill="#202124" stroke="#0c0c0d"/>{}"##, pointer(0.0, "#8a6a32", 1.8, 2.6, 7.4)),
         };
     }
-    super::mixer::lit_key(&mut s, m.mute, "MUTE", "#ff4a32", mute, false);
+    super::mixer::lit_key(&mut s, m.mute, "MUTE", "#ff4a32", mute, held == Some(RowKey::Mute));
+    if let Some(r) = m.split {
+        super::mixer::lit_key(&mut s, r, "SPLIT", "#ffb02e", split, held == Some(RowKey::Split));
+    }
     format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{MIX_H}" viewBox="{x} {MIX_Y} {w} {MIX_H}"><defs><radialGradient id="gVol" cx=".38" cy=".3" r=".8"><stop offset="0" stop-color="#5a5b5f"/><stop offset="1" stop-color="#151618"/></radialGradient>{}</defs>{s}</svg>"##,
         super::mixer::glass_defs(),
@@ -1339,7 +1380,8 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
                 jd.iter().enumerate().filter(|(_, j)| j.group == gi).map(|(i, _)| geo.jacks[i].0 - 21.0).fold(f64::MAX, f64::min)
             };
             let rx = if start < f64::MAX && start > end { (end + start) / 2.0 } else { x + 2.0 };
-            let mut s = format!(r#"<path d="M{rx},{} V100" stroke="{}" stroke-opacity=".35" stroke-dasharray="2 3"/>"#, if accents { 44.0 } else { 34.0 }, f.print);
+            // (printed, as the tags are, dashed: what it copies is the input's own sound)
+            let mut s = format!(r#"<path d="M{rx},{} V{}" stroke="{}" stroke-width=".9" stroke-dasharray="4 3"/>"#, if accents { RULE.0 } else { 34.0 }, RULE.1, f.print);
             for (i, _) in jd.iter().enumerate().filter(|(_, j)| j.group == gi) {
                 let k = slots(counts[i]);
                 let (jx, jy) = (geo.jacks[i].0, geo.jacks[i].1 - oy);
@@ -1350,7 +1392,7 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
                 }
                 // split with its input: its rows' tags at their left, MONITOR L, MONITOR R
                 if split {
-                    let t = format!("MONITOR {}", jd[i].label);
+                    let t = format!("MON {}", jd[i].label);
                     s.push_str(&port_tag(jx - 21.0 - (SMALL.width(&t) + 10.0) / 2.0, jy, &t, &f));
                     continue;
                 }
@@ -1400,7 +1442,7 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
             let nx = fx + 9.0 + if splits(dev, gi) && !split_below(dev, gi) { split_key_w() + 4.0 } else { 0.0 };
             body.push_str(&SECTION.text(nx, 31.0, ink, "start", &name(dev, gi)));
         } else {
-            let _ = write!(body, r#"<path d="M{x},40 V104" stroke="{}" stroke-opacity=".35" stroke-dasharray="2 3"/>"#, f.print);
+            let _ = write!(body, r#"<path d="M{x},{} V{}" stroke="{}" stroke-width=".9"/>"#, RULE.0, RULE.1, f.print);
         }
         // under its jacks, what each port is: IN, OUT, outlined (ADR 0014); a split group's
         // rows IN L, IN R at their left; a MIDI client's name, or a channel, under the tag
@@ -1433,20 +1475,22 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
     }
     // a frame's SPLIT: a key like GRAPH, on the band; JOIN while its pairs are split
     for (gi, [bx, by, bw, bh]) in &geo.switches {
-        let on = sections(dev, *gi).iter().find(|s| dev.groups[**s].stereo).and_then(|s| split.get(*s)).copied().unwrap_or(false);
-        // in the row of keys: a clear key, lit amber while split, as MIXER's
+        // in the row of keys: drawn with MUTE over the knobs (`mix_pic`), which is drawn again
+        // as it is pressed
         if split_below(dev, *gi) {
-            super::mixer::lit_key(&mut body, [*bx, *by, *bw, *bh], "SPLIT", "#ffb02e", on, false);
             continue;
         }
+        let on = sections(dev, *gi).iter().find(|s| dev.groups[**s].stereo).and_then(|s| split.get(*s)).copied().unwrap_or(false);
         let _ = write!(
             body,
             r##"<rect x="{bx}" y="{by}" width="{bw}" height="{bh}" rx="2" fill="#1b1c1e" stroke="rgba(0,0,0,.45)"/>{}"##,
             SMALL.text(bx + bw / 2.0, by + bh / 2.0 + 3.0, "#e6e7e8", "middle", if on { "JOIN" } else { "SPLIT" })
         );
     }
-    for (_, m) in &geo.mix {
-        body.push_str(&mix_panel(m, f.print, accents));
+    for (gi, m) in &geo.mix {
+        // the rule before its knobs in the frame's own colour, as its edge (the print without bands)
+        let edge = if accents { kind_colour(dev.groups[*gi].kind) } else { f.print };
+        body.push_str(&mix_panel(m, f.print, accents, edge));
     }
     // every audio frame's meter: SIG on its heading, the dark LEDs (lit ones are layers of their own)
     for &(gi, mx, oy, cols) in &geo.meters {

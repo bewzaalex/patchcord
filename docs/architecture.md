@@ -28,7 +28,7 @@ PipeWire ──(pw.rs thread)── Event ──► Graph (graph.rs) ──devic
   uses it too.
 - **`ui/face.rs`** draws a device's face as SVG: plate, name, LCD, keys, frames, jacks. A frame
   is a node (`face::sections`: its groups side by side, a MONITOR inside the input it copies).
-  It computes the face's `Geometry` (where jacks, keys, knobs and each frame's GRAPH key are)
+  It computes the face's `Geometry` (where jacks, keys, knobs and each frame's name, its GRAPH target, are)
   for hit-testing.
 - **`ui/app.rs`** is the window: input, the top panel, drop-down lists (PROFILE, PORT),
   and switching between MIXER, RACK (its two views, rails and desk) and ENGINE.

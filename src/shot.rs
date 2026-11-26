@@ -684,8 +684,8 @@ fn compose_engine(eng: &mut ui::engine::Engine, (w, h): (u32, u32), dpi: f64, ve
     out
 }
 
-/// `patchcord --render out.png engine [select=NODE] [tab=top|issues|objects|metadata|events]
-/// [itab=info|conn|props|params|timing] [shut=bottom] [legend] [info] [size=WxH]`: the ENGINE screen of the live graph, after the
+/// `patchcord --render out.png engine [select=NODE] [tab=server|top|issues|objects|metadata|events]
+/// [itab=info|conn|props|params|timing] [shut=bottom] [legend] [size=WxH]`: the ENGINE screen of the live graph, after the
 /// profiler has run for two seconds (it only reads: nothing in PipeWire changes).
 fn render_engine(path: &str, opts: &[String]) -> Result<(), String> {
     use crate::ui::engine::Engine;

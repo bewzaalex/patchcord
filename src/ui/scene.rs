@@ -252,6 +252,9 @@ pub struct DevView {
     mix_pics: Vec<(usize, u64, Layer)>,
     /// a group's own meter (on a device with two app streams): its lit LEDs, falling smoothly
     glevel: HashMap<usize, [f32; 2]>,
+    /// a key in a frame's row held down (the frame's group, which key): it shows pressed, and
+    /// does what it does when let go over it
+    pub pressed: Option<(usize, face::RowKey)>,
     gmeters: Vec<(usize, (u8, u8), Layer)>,
 }
 
@@ -274,7 +277,7 @@ impl DevView {
 
     /// A device as first seen: at `at`, nothing drawn yet.
     fn new(dev: Device, split: Vec<bool>, geo: Geometry, (x, y): (f64, f64)) -> Self {
-        DevView { dev, split, defs: Vec::new(), counts: Vec::new(), geo, x, y, tx: x, ty: y, dx: x, dy: y, face: None, shade: None, face_sig: 0, face_scale: 0.0, face_want: None, spare: None, shade_want: None, lcd: None, lcd_want: None, mix_want: HashMap::new(), mix_local: HashMap::new(), mix_note: None, bal: HashMap::new(), mix_pics: Vec::new(), glevel: HashMap::new(), gmeters: Vec::new() }
+        DevView { dev, split, defs: Vec::new(), counts: Vec::new(), geo, x, y, tx: x, ty: y, dx: x, dy: y, face: None, shade: None, face_sig: 0, face_scale: 0.0, face_want: None, spare: None, shade_want: None, lcd: None, lcd_want: None, mix_want: HashMap::new(), mix_local: HashMap::new(), mix_note: None, bal: HashMap::new(), mix_pics: Vec::new(), glevel: HashMap::new(), pressed: None, gmeters: Vec::new() }
     }
 
     /// How high the face is: a unit for each row of frames (one before it is first drawn).
@@ -1918,6 +1921,13 @@ impl Scene {
         })
     }
 
+    /// A frame's SPLIT in its row of keys (beside MUTE) under a world point: its device and group.
+    pub fn row_split_at(&self, x: f64, y: f64) -> Option<(usize, usize)> {
+        self.devs.iter().enumerate().rev().find_map(|(di, d)| {
+            d.geo.mix.iter().find_map(|(gi, m)| m.split.filter(|[kx, ky, kw, kh]| x >= d.x + kx && x <= d.x + kx + kw && y >= d.y + ky && y <= d.y + ky + kh).map(|_| (di, *gi)))
+        })
+    }
+
     /// Any of an app stream's controls under a world point.
     pub fn mix_control_at(&self, x: f64, y: f64) -> bool {
         self.knob_at(x, y).or(self.bal_at(x, y)).or(self.mute_at(x, y)).is_some()
@@ -2853,7 +2863,7 @@ impl Scene {
     }
 }
 
-/// The name in a default's value: `{ "name": "bluez_output.C9_C1_60_6A_FD_E3.1" }`.
+/// The name in a default's value: `{ "name": "bluez_output.02_00_00_00_00_01.1" }`.
 fn json_name(v: &str) -> Option<String> {
     let rest = &v[v.find("\"name\"")? + 6..];
     let rest = &rest[rest.find('"')? + 1..];
@@ -2945,7 +2955,10 @@ fn prepare_dev(d: &mut DevView, n: usize, c: &DevCtx, inbox: &mut painter::Inbox
         let Some((vol, bal, mute)) = d.mix(*gi) else { continue };
         let mut h = DefaultHasher::new();
         // (its shape too: a stream gone from stereo to mono has a narrower section, without BAL)
-        (vol.to_bits(), bal.to_bits(), mute, d.bal(*gi), c.scale.to_bits(), m.x.to_bits(), m.y.to_bits(), m.w.to_bits(), m.bal.is_some()).hash(&mut h);
+        // its SPLIT, in the row with MUTE, and which of the two is held down
+        let split_on = d.split.get(*gi).copied().unwrap_or(false);
+        let held = d.pressed.filter(|(g, _)| g == gi).map(|(_, k)| k);
+        (vol.to_bits(), bal.to_bits(), mute, d.bal(*gi), c.scale.to_bits(), m.x.to_bits(), m.y.to_bits(), m.w.to_bits(), m.bal.is_some(), m.split.is_some(), split_on, held).hash(&mut h);
         let sig = h.finish();
         match (d.mix_pics.iter().position(|(g, s, _)| g == gi && *s == sig), d.mix_pics.iter().position(|(g, _, _)| g == gi)) {
             (Some(i), _) => pics.push(d.mix_pics.swap_remove(i)),
@@ -2957,7 +2970,7 @@ fn prepare_dev(d: &mut DevView, n: usize, c: &DevCtx, inbox: &mut painter::Inbox
                 pics.push(p);
                 if d.mix_want.get(gi).map(|w| w.0) != Some(sig) {
                     d.mix_want.insert(*gi, (sig, m.x, m.y + MIX_Y, m.w));
-                    inbox.ask(painter::key("mix", (&d.dev.key, gi)), sig, face::mix_pic(m, vol, bal, mute, d.bal(*gi)), c.scale);
+                    inbox.ask(painter::key("mix", (&d.dev.key, gi)), sig, face::mix_pic(m, vol, bal, mute, d.bal(*gi), split_on, held), c.scale);
                 }
             }
             (None, other) => {
@@ -2965,7 +2978,7 @@ fn prepare_dev(d: &mut DevView, n: usize, c: &DevCtx, inbox: &mut painter::Inbox
                     d.mix_pics.swap_remove(i);
                 }
                 let t0 = Instant::now();
-                let pm = rasterize(c.opt, &face::mix_pic(m, vol, bal, mute, d.bal(*gi)), c.scale);
+                let pm = rasterize(c.opt, &face::mix_pic(m, vol, bal, mute, d.bal(*gi), split_on, held), c.scale);
                 t.knobs += t0.elapsed();
                 pics.push((*gi, sig, Layer { id: next_id(), pm, x: m.x, y: m.y + MIX_Y, w: m.w, h: MIX_H }));
             }
@@ -3342,7 +3355,7 @@ mod tests {
     /// The hover highlight eases to where it is going and stays there, frame after frame.
     #[test]
     fn a_default_is_read_by_its_node_name() {
-        assert_eq!(json_name(r#"{ "name": "bluez_output.C9_C1_60_6A_FD_E3.1" }"#).as_deref(), Some("bluez_output.C9_C1_60_6A_FD_E3.1"));
+        assert_eq!(json_name(r#"{ "name": "bluez_output.02_00_00_00_00_01.1" }"#).as_deref(), Some("bluez_output.02_00_00_00_00_01.1"));
         assert_eq!(json_name(r#"{"name":"a \"quoted\" sink"}"#).as_deref(), Some(r#"a "quoted" sink"#));
         assert_eq!(json_name("{}"), None);
     }

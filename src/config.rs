@@ -321,24 +321,24 @@ mod tests {
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
 
         let mut s = Settings { cables: 2, lock: true, align: false, accents: false, flow: false, rack: true, mixer: true, engine: true, window: Some((1600, 900)), preset: Some("HOME STUDIO".into()), pos: BTreeMap::new(), rack_order: vec!["node:Midi-Bridge".into(), "device:alsa_card.pci-0000_63_00.6".into()], hidden: vec!["node:BLE MIDI 1".into()], cue_level: 35 };
-        s.pos.insert("device:bluez_card.C9_C1_60_6A_FD_E3".into(), (40.0, 214.0));
+        s.pos.insert("device:bluez_card.02_00_00_00_00_01".into(), (40.0, 214.0));
         s.pos.insert("node:VLC media player (LibVLC 4.0.0-dev)".into(), (-12.0, 388.0));
         s.save();
         assert_eq!(Settings::load(), s);
 
         let p = Preset {
             name: "HOME STUDIO".into(),
-            nodes: vec!["bluez_input.C9:C1:60:6A:FD:E3".into(), "Midi-Bridge".into()],
+            nodes: vec!["bluez_input.02:00:00:00:00:01".into(), "Midi-Bridge".into()],
             links: vec![
-                (("VLC media player (LibVLC 4.0.0-dev)".into(), "output_FL".into()), ("bluez_output.C9_C1_60_6A_FD_E3.1".into(), "playback_FL".into())),
+                (("VLC media player (LibVLC 4.0.0-dev)".into(), "output_FL".into()), ("bluez_output.02_00_00_00_00_01.1".into(), "playback_FL".into())),
                 (("Midi-Bridge".into(), "Midi Through: Port-0 (capture)".into()), ("bluez_midi.server".into(), "in".into())),
             ],
             split: vec![("device:alsa_card.pci-0000_63_00.6".into(), "PLAYBACK".into(), "in".into())],
             pos: s.pos.clone(),
             mix: BTreeMap::from([(("node:fooyin".into(), "OUTPUT".into(), "out".into()), (0.85, -0.3, false)), (("app:Audacity".into(), "INPUT".into(), "in".into()), (1.2, 0.0, true))]),
-            profiles: BTreeMap::from([("device:bluez_card.C9_C1_60_6A_FD_E3".into(), "High Fidelity Playback (A2DP Sink, codec AAC)".into())]),
+            profiles: BTreeMap::from([("device:bluez_card.02_00_00_00_00_01".into(), "High Fidelity Playback (A2DP Sink, codec AAC)".into())]),
             ports: BTreeMap::from([(("device:alsa_card.pci-0000_63_00.6".into(), "PLAYBACK".into(), "in".into()), ("Headphones".into(), 20_500_000))]),
-            default_out: Some("bluez_output.C9_C1_60_6A_FD_E3.1".into()),
+            default_out: Some("bluez_output.02_00_00_00_00_01.1".into()),
             default_in: Some("alsa_input.pci-0000_63_00.6.analog-stereo".into()),
         };
         let q = Preset { name: "EMPTY".into(), ..Default::default() };

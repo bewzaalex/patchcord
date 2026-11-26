@@ -69,6 +69,8 @@ enum Drag {
     /// an app's BAL knob, pressed: it turns once the pointer moves (if it was out), else the
     /// release pops it out or pushes it in
     Bal { key: String, gi: usize, y0: f64, last: f64, raw: f64, was: BalKnob, turned: bool },
+    /// a key in a frame's row (MUTE, SPLIT) held down: it does what it does when let go over it
+    RowKey { key: String, gi: usize, which: crate::ui::face::RowKey },
 }
 
 /// How far the pointer moves (logical pixels) to turn a knob all the way.
@@ -1739,9 +1741,13 @@ impl App {
             d.bal.insert(gi, BalKnob::Held);
             return self.redraw();
         }
-        if let Some(at) = self.scene.mute_at(w.0, w.1) {
-            self.scene.toggle_mute(at);
-            return self.after_patch();
+        // MUTE, and SPLIT in the row with it: down while held, done when let go over it
+        let row_key = self.scene.mute_at(w.0, w.1).map(|at| (at, crate::ui::face::RowKey::Mute)).or_else(|| self.scene.row_split_at(w.0, w.1).map(|at| (at, crate::ui::face::RowKey::Split)));
+        if let Some(((di, gi), which)) = row_key {
+            let d = &mut self.scene.devs[di];
+            d.pressed = Some((gi, which));
+            self.drag = Some(Drag::RowKey { key: d.dev.key.clone(), gi, which });
+            return self.redraw();
         }
         // a device's HIDE key
         if let Some(di) = self.scene.hide_key_at(w.0, w.1) {
@@ -1797,6 +1803,25 @@ impl App {
 
     fn release(&mut self) {
         match self.drag.take() {
+            Some(Drag::RowKey { key, gi, which }) => {
+                let Some(di) = self.scene.dev_index(&key) else { return };
+                self.scene.devs[di].pressed = None;
+                let w = self.world(self.cursor);
+                let over = match which {
+                    crate::ui::face::RowKey::Mute => self.scene.mute_at(w.0, w.1),
+                    crate::ui::face::RowKey::Split => self.scene.row_split_at(w.0, w.1),
+                };
+                if over == Some((di, gi)) {
+                    match which {
+                        crate::ui::face::RowKey::Mute => {
+                            self.scene.toggle_mute((di, gi));
+                            return self.after_patch();
+                        }
+                        crate::ui::face::RowKey::Split => self.split(di, gi),
+                    }
+                }
+                self.redraw();
+            }
             Some(Drag::Engine) => {
                 if let Some(Action::Link { add, del }) = self.engine.release() {
                     self.engine_link(&add, &del);
@@ -1893,7 +1918,7 @@ impl App {
                     self.redraw();
                 }
             }
-            Some(Drag::Key) => {}
+            Some(Drag::Key | Drag::RowKey { .. }) => {}
             Some(Drag::CueLevel { from, v0 }) => {
                 let v = (v0 + (from - self.cursor.1) / (120.0 * self.dpi())).clamp(0.0, 1.0);
                 self.cue.level = (v * 100.0).round() / 100.0;

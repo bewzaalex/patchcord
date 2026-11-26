@@ -38,12 +38,13 @@ put a headset's mic and headphones together and the master anywhere). Left to ri
 
 **A module is one strip**, of one width (112 + 12), in a frame as the rack's (2026-11-24): on the
 module's very edge, its corners the module's, its edge and its band in the block kind's colour.
-The band has two lines: the device's (or app's) name, then the frame's, cut with an ellipsis, and
-GRAPH (`#id`, opens ENGINE) at the second line's right (it was under the band, and before that on
-it beside one line). A card's PROFILE is once: on its output (else its input). A card that is off
+The band has two lines: the device's (or app's) name, then the frame's, cut with an ellipsis; a
+click on the frame's name opens ENGINE with its block, the status bar saying its `#id`, as on the
+rack (2026-11-26: it was a key, GRAPH, at the second line's right; before that under the band, and
+on it beside one line). A card's PROFILE is once: on its output (else its input). A card that is off
 has a plain grey band, OFF on its second line (no GRAPH: it has no node), and SETUP with PROFILE.
-No screens. Paint by owner, as on the rack: hardware the top panel's metal, a program black,
-PipeWire's own olive.
+No screens. Paint by owner, as on the rack: hardware navy, a program black,
+PipeWire's own graphite green.
 
 **Every module is as tall as the tallest** (2026-11-25; they were as tall as the window, the room
 under the first keys growing with it, which left empty room). The VOLUME (GAIN) block goes right
@@ -58,10 +59,14 @@ was CHANNEL, with the name under the fader).
 
 **Every function has a form of its own** (2026-11-25; they were all the top panel's key, which
 made a muddle of a state, an action and a choice):
-- A state, lit (MAIN, CUE, MUTE, SPLIT): a clear key lit from inside, as a DJ mixer's CUE. Off,
-  frosted milky plastic; on, the whole cap glows in its colour (MAIN and SPLIT amber, CUE blue,
-  MUTE red), its side too, its light on the panel round it; its name black. No blur: fills and
-  gradients.
+- A state, lit (MAIN, CUE, MUTE, SPLIT): a key flush with the panel, keys side by side in a block,
+  one hole milled in the panel for the whole row (corners barely rounded, its dark round the keys
+  and 2 of it between them, the panel's lip lit below it), as a synth's lit keys. Off, pale ivory
+  frosted plastic (as the synth's keys lit); on, lit from behind by a lamp in its colour (MAIN and
+  SPLIT amber, CUE blue, MUTE red), unevenly, brightest a little above the middle; its name dark.
+  Held down, a shade darker, its name a little lower. The same keys on the rack (MUTE, SPLIT),
+  which also act when let go over them. No blur: fills and gradients.
+  (2026-11-26: they were raised caps standing on the panel, their light on the panel round them.)
 - Where an app goes (PLAY ON, RECORD FROM): the top panel's key (`panel::cap_svg`) with a red LED.
 - An action (ALL HERE): the top panel's key, no light.
 - A choice with a list (PROFILE, PORT): a small amber LCD, as the top panel's, its name over it,
