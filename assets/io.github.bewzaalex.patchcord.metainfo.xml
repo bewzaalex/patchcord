@@ -32,15 +32,15 @@
   <screenshots>
     <screenshot type="default">
       <caption>Devices on the desk, patched with cords</caption>
-      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.0/docs/screenshots/desk.png</image>
+      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.1/docs/screenshots/desk.png</image>
     </screenshot>
     <screenshot>
       <caption>The same devices in a rack</caption>
-      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.0/docs/screenshots/rack.png</image>
+      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.1/docs/screenshots/rack.png</image>
     </screenshot>
     <screenshot>
       <caption>ENGINE: PipeWire's real graph, with an app's details and timings</caption>
-      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.0/docs/screenshots/engine.png</image>
+      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.1/docs/screenshots/engine.png</image>
     </screenshot>
   </screenshots>
   <description>
@@ -65,6 +65,23 @@
     </ul>
   </description>
   <releases>
+    <release version="0.7.1" date="2026-11-27">
+      <url type="details">https://github.com/bewzaalex/patchcord/releases/tag/v0.7.1</url>
+      <description>
+        <p>A lighter, quieter look; ENGINE's diagnostics in tabs; CUE that wakes what it listens to.</p>
+        <ul>
+          <li>Devices more compact: a three-line screen, keys level with the frames, less room above and below; jacks without the hex nut, all nickel</li>
+          <li>Hardware painted navy, PipeWire's own nodes graphite green; thinner cords, all alike</li>
+          <li>MUTE, SPLIT, CUE and MAIN are keys flush with the panel, side by side in one hole, lit from behind in their colour; on the rack they act when let go, as in MIXER</li>
+          <li>A frame's name opens its block in ENGINE (no #id key); no HIDE key on a device with cords</li>
+          <li>CUE listens only to the jacks you click, and wakes a sleeping source (a microphone) while it listens; no listening on hover or Alt</li>
+          <li>ENGINE: the strip above the graph becomes DIAGNOSTICS' SERVER tab; FIND · SHOW to search and choose what shows; ISSUES lists only what is wrong, as ERROR or WARNING</li>
+          <li>Meters light red only past 0 dBFS; the balance on the screen as each channel's volume, nothing jumping as it turns</li>
+          <li>Patchcord's own links (meters, the cue) can't be deleted, and a meter's link mends itself</li>
+          <li>The screen last open (rack, MIXER or ENGINE) opens again next time</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.7.0" date="2026-11-26">
       <url type="details">https://github.com/bewzaalex/patchcord/releases/tag/v0.7.0</url>
       <description>
