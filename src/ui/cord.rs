@@ -107,8 +107,7 @@ pub struct Cord {
     settle: bool,
 }
 
-/// The hand holding a cord's end: where, and the kind of jack it is about to go into (a cord
-/// into a stereo jack is drawn thicker).
+/// The hand holding a cord's end: where, and the kind of jack it is about to go into.
 #[derive(Clone, Copy, Debug)]
 pub struct Held {
     pub x: f32,
@@ -184,10 +183,6 @@ impl Cord {
 
     pub fn live(&self) -> bool {
         self.dying.is_none() && self.a.jack.is_some() && self.b.jack.is_some()
-    }
-
-    pub fn stereo(&self) -> bool {
-        self.a.kind == JackKind::Stereo || self.b.kind == JackKind::Stereo
     }
 
     /// Pulls the cord out: the given end drops and the cord fades away.

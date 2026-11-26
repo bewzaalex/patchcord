@@ -49,13 +49,16 @@ fn trace(c: &Cord, ox: f32, oy: f32) -> Option<Path> {
     pb.finish()
 }
 
+/// A cord's thickness: every cord alike, stereo or mono (2026-11-26: they were 7.6 and 6.6, which
+/// looked like macaroni); thinner as it is pulled taut.
 pub(super) fn cord_w(c: &Cord) -> f32 {
-    (if c.stereo() { 7.6 } else { 6.6 }) / c.strain.max(1.0).sqrt()
+    5.0 / c.strain.max(1.0).sqrt()
 }
 
 pub fn shadow(pm: &mut Pixmap, c: &Cord, alpha: f32, ts: Transform) {
     let Some(path) = trace(c, 7.0, 12.0) else { return };
-    for (w, a) in [(13.0, 0.07), (9.0, 0.1), (6.0, 0.12)] {
+    // (as wide round the cord as it was round the thicker one)
+    for (w, a) in [(9.0, 0.07), (6.3, 0.1), (4.2, 0.12)] {
         pm.stroke_path(&path, &solid([0, 0, 0], a * alpha), &stroke(w), ts, None);
     }
 }

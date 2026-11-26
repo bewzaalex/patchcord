@@ -140,7 +140,7 @@ what goes out, after its volume or gain).
 | Programs | everything one program makes in PipeWire is one device, APP on its screen, under the program's own name (`application.name`): its streams, its own sinks and sources, its effects (Easy Effects), a DAW's engine (Bitwig). A program is known by its name, binary and process, as PipeWire gives them; PipeWire's own processes and WirePlumber are not programs, their nodes stay devices of their own. Two programs of one name (two VLCs): the first keeps it, the next is numbered (VLC MEDIA PLAYER 2) |
 | On a program's face | all its nodes, nothing hidden: a program that wires its own nodes together (Easy Effects) shows them in the order its sound goes through them, each node's IN then its OUT, its own cords running between them on the face; any of them can be patched by hand. A program whose nodes aren't linked among themselves (an app's streams) has its inputs at the left and outputs at the right, as every face |
 | Frame names | an app's say which way the sound goes: INPUT, OUTPUT; a program with several nodes names each frame as it named the node (EASY EFFECTS SINK, SPECTRUM), two of a name kept so. A sound card's say what it is, from the port in use, and follow it: SPEAKERS, HEADPHONES, HDMI, BUILT-IN MIC, MIC. Where that word doesn't tell two frames apart (a laptop with three HDMI outputs), the name PipeWire gives the output (HDMI 1, DIGITAL MICROPHONE, or one you gave it in your desktop's sound settings); SOUND OUT / SOUND IN when nothing tells. A Bluetooth headset has HEADPHONES and MIC. WirePlumber's MIDI bridge is one frame, a jack for each MIDI client on it, named in its tag (IN · MIDI THROUGH, OUT · HYDROGEN) |
-| GRAPH key | on a frame's band, at its left, its node's number (#180); then SPLIT where the frame has a stereo pair, then the name: opens ENGINE with that block chosen and in view |
+| A frame's name | on its band, at its left: a click opens ENGINE with that block chosen and in view; the status bar over it says the node's number (#180) |
 | Screen | three lines: what the device is and its state (RUNNING); a card's profile (scrolling when long) or what it carries (STEREO, MONO, MIDI, or 2 CH for channels that don't say they're L and R); what it takes of PipeWire and its cords (2 NODES 6 PORTS 2 LINKS), or the volume while it changes |
 | IN / OUT / MONITOR tags | under the jacks, what each port is: into it (IN), out of it (OUT), a copy of what goes in (MONITOR), each outlined; a split pair's rows are IN L, IN R; of several jacks side by side, each its channel in its tag (OUT · OUT5, IN · FC) |
 | MONITOR | beside the input it copies, after a dotted rule (a sound card's, a virtual sink's, an app's recording stream's): to record or listen to it (PipeWire's monitor) |
@@ -148,7 +148,7 @@ what goes out, after its volume or gain).
 | Units | up to four frames side by side; more make the device two or three units high, the frames spread evenly (eight: two units of four), inputs first and outputs last, vents where a unit has nothing to show |
 | Colours (K) | a frame's band and outline in its block's kind, as in ENGINE: a sink teal, a source blue, a playback stream brown, a recording stream green, MIDI plum, a duplex block magenta, a node without a class sand; or plain frames. A jack's ring is what its port is for, either way: a sink's input teal, a source's output blue, a monitor violet, any other input green and output brown, MIDI plum, a port of a format Patchcord doesn't know sand |
 | Paint | who owns the device: hardware the top panel's painted metal, a program black, a node of PipeWire's or WirePlumber's own (a MIDI bridge) olive |
-| HIDE key | the struck-through eye at the left of the keys under a device's screen, on every device (or H over it), hides a device without cords; with cords it is dimmed. Hidden devices stay hidden after a restart and come back by themselves when something connects to them |
+| HIDE key | the struck-through eye at the left of the keys under a device's screen, on every device (or H over it), hides a device without cords; a device with cords has no HIDE key (pull them out first, or press H over it to be told so). Hidden devices stay hidden after a restart and come back by themselves when something connects to them |
 | HIDDEN key | the eye on the top panel (or H over the desk), with how many are hidden: click one to show it again. It also lists, dimmed and marked SYSTEM, what Patchcord always leaves out: other programs' level meters and its own, and the plumbing behind a Bluetooth headset's MIC |
 
 ### Patching
@@ -159,7 +159,7 @@ what goes out, after its volume or gain).
 | Drag a cord's end | move it to another jack, or drop it in empty space to unlink |
 | Double-click a cord or its end | pull it out (unlink) |
 | Drag a cord | grab it and swing it |
-| SPLIT / JOIN | on a frame's band, right of its number: one stereo jack, or separate L and R jacks, L above R, for every stereo pair in the frame (an effect's IN and OUT, an input and the MONITOR inside it) together; the stereo jacks its cords lead to follow, and theirs in turn, and so does a new stream that starts playing into a split pair |
+| SPLIT / JOIN | in a frame's row of keys, left of MUTE, a clear key lit amber while split, as MIXER's (on its band, before the name, when it has no stereo volume): one stereo jack, or separate L and R jacks, L above R, for every stereo pair in the frame (an effect's IN and OUT, an input and the MONITOR inside it) together; the stereo jacks its cords lead to follow, and theirs in turn, and so does a new stream that starts playing into a split pair |
 | FLOW key (W) | which way each cord goes: a light runs inside every plugged-in cord from its output to its input, one at a time; on by default |
 | Hover a jack, cord or device | its cords stand out (even with CABLES on fade or hide) and the others fade; after a moment a tooltip gives the full names |
 | Ctrl+Z / Ctrl+Shift+Z | undo / redo |
@@ -170,7 +170,7 @@ what goes out, after its volume or gain).
 | --- | --- |
 | VOLUME / GAIN knob | in each frame with controls: VOLUME on what plays (an app's OUTPUT, a card's SPEAKERS), GAIN on what comes in (an app's INPUT, a MIC). A sound card's are its own hardware volume, as pavucontrol sets it. From silence to 150% (red past 100%: it can clip): drag up or down (Shift: fine), or the wheel (5%, Shift: 1%); it rests at 100% for a moment, and a double-click sets 100%. The screen shows the value in % and dB while it changes |
 | BAL knob | on stereo: the balance between L and R. A push-push knob, as on an old car stereo: click to pop it out, then turn it like VOLUME; click again to push it back in, where it can't be turned by accident |
-| MUTE key | silences it; its LED lights red |
+| MUTE key | silences it; a clear key, as MIXER's, that glows red while muted |
 
 ### Sound cards
 

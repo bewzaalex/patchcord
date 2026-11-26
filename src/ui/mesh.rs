@@ -142,7 +142,7 @@ pub fn cords(cords: &[Cord], alpha_of: impl Fn(&Cord) -> f32, v: View) -> Mesh {
     let shown: Vec<(&Cord, f32)> = cords.iter().map(|c| (c, alpha_of(c))).filter(|(_, a)| *a > 0.01).collect();
     // the shadow: three soft strokes in `paint`, one softer one here
     for &(c, a) in &shown {
-        stroke(&mut m.normal, &line(c, 7.0, 12.0, v), 4.0 * s, 5.0 * s, rgba([0, 0, 0], 0.26 * a));
+        stroke(&mut m.normal, &line(c, 7.0, 12.0, v), 2.8 * s, 3.5 * s, rgba([0, 0, 0], 0.26 * a));
     }
     for &(c, a) in &shown {
         let w = cord_w(c);

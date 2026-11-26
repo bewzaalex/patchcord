@@ -1510,7 +1510,7 @@ fn mix(a: &str, b: &str, t: f64) -> String {
 
 /// The clear keys' gradients: lit (the whole cap glows, its side too, a little paler in the middle,
 /// never dark at an edge), and unlit frosted plastic (milky, matte, lighter at its edges).
-fn glass_defs() -> String {
+pub(crate) fn glass_defs() -> String {
     let mut o = String::new();
     for (c, id) in GLASS {
         let _ = write!(
@@ -1531,7 +1531,7 @@ fn glass_defs() -> String {
 /// plastic standing on the panel (its side under it, its shadow on the panel), no hole round it. It
 /// doesn't latch: down only while held, back up either way. Off, milky and unlit; on, the whole cap
 /// glows in its colour, paler in the middle. Its name black. No blur: fills and gradients only.
-fn lit_key(o: &mut String, [x, y, w, h]: [f64; 4], label: &str, colour: &str, on: bool, held: bool) {
+pub(crate) fn lit_key(o: &mut String, [x, y, w, h]: [f64; 4], label: &str, colour: &str, on: bool, held: bool) {
     let id = GLASS.iter().find(|g| g.0 == colour).map_or("gC", |g| g.1);
     let side = if held { 1.0 } else { 3.0 };
     let (top, th) = (y + 3.0 - side, h - side);

@@ -279,12 +279,6 @@ pub fn band_ink(kind: &str) -> &'static str {
     if kind_colour(kind) == "#cba553" { "#1d1e20" } else { BAND_INK }
 }
 
-/// GRAPH, on a frame's band before its name: the node's number (#180). Its width.
-fn graph_key_w(dev: &Device, gi: usize) -> f64 {
-    let id = dev.groups[gi].ports.first().map_or(0, |p| p.node);
-    10.0 + SMALL.width(&format!("#{id}"))
-}
-
 /// The width of a group's controls, its meter included.
 fn mix_w(dev: &Device, gi: usize) -> f64 {
     // a BAL knob only for a stereo pair of jacks (a stream may report two volumes for one port)
@@ -577,7 +571,7 @@ fn jacks_w(dev: &Device, gi: usize, jd: &[JackDef], counts: &[usize]) -> f64 {
     // room on the band for GRAPH, SPLIT and the name (a frame of several sections has them once,
     // across them all)
     let n = sections(dev, gi).len().max(1) as f64;
-    let keys = graph_key_w(dev, gi) + if splits(dev, gi) { split_key_w() + 4.0 } else { 0.0 };
+    let keys = if splits(dev, gi) && !split_below(dev, gi) { split_key_w() + 4.0 } else { 0.0 };
     let named = ((label_w(&name(dev, gi)) + keys + 34.0) / n).ceil();
     (jacks + rec).max(named)
 }
@@ -585,6 +579,12 @@ fn jacks_w(dev: &Device, gi: usize, jd: &[JackDef], counts: &[usize]) -> f64 {
 /// A frame's one SPLIT key, on its band right of GRAPH: as wide whether it says SPLIT or JOIN.
 fn split_key_w() -> f64 {
     10.0 + SMALL.width("SPLIT").max(SMALL.width("JOIN"))
+}
+
+/// Whether a frame's SPLIT is in its row of keys, left of MUTE (its first section is a stereo pair
+/// with a volume: room for both under its knobs), rather than on its band.
+fn split_below(dev: &Device, gi: usize) -> bool {
+    splits(dev, gi) && sections(dev, gi).first().is_some_and(|f| dev.groups[*f].mix.is_some() && dev.groups[*f].stereo)
 }
 
 /// Whether a frame has a SPLIT key: one of its sections is a stereo pair.
@@ -798,8 +798,12 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
     // (in the rack as wide as it, or its widest frame if the rack is narrower still)
     let w = rack_w.map_or(natural, |r| r.max(rack_min_w(dev, jd, counts)));
     let ports = dev.card.is_some() && dev.groups.iter().any(|g| g.ports_to.len() > 1);
-    let hide = [ear + PAD + KEY_IN, KEY_Y, HIDE_W, KEY_H];
-    let (kx, room) = (hide[0] + HIDE_W + KEY_GAP, IDW - 2.0 * KEY_IN - HIDE_W - KEY_GAP);
+    // (no HIDE while it has cords: it can't be hidden then, the key isn't there, and PROFILE and
+    // PORT take its room)
+    let cords = counts.iter().any(|c| *c > 0);
+    let hide = [ear + PAD + KEY_IN, KEY_Y, if cords { 0.0 } else { HIDE_W }, if cords { 0.0 } else { KEY_H }];
+    let taken = if cords { 0.0 } else { HIDE_W + KEY_GAP };
+    let (kx, room) = (hide[0] + taken, IDW - 2.0 * KEY_IN - taken);
     let (profile, port) = if ports {
         let kw = (room - KEY_GAP) / 2.0;
         (Some([kx, KEY_Y, kw, KEY_H]), Some([kx + kw + KEY_GAP, KEY_Y, kw, KEY_H]))
@@ -858,10 +862,23 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
         }
         let g = &dev.groups[gi];
         // a stream's controls, right of its jacks
+        // a column for each of a stereo pair's channels, and for each of two channels that don't
+        // say which they are (a JACK app's out1, out2)
+        let two = g.stereo || (g.ports.len() == 2 && g.ports.iter().all(|p| p.media == Media::Audio));
+        let cols = if two { 2 } else { 1 };
+        let metered_here = metered(g) && host(dev, gi).is_none();
         if g.mix.is_some() {
             let (ox, stereo) = (x + jw, g.stereo);
             let w = if stereo { 96.0 } else { 58.0 };
-            let mute = [ox + 7.0, oy + 89.0, w - 14.0, 14.0];
+            // MUTE under the knobs; the frame's SPLIT beside it at the left, the two halves of
+            // the row (as MIXER's keys)
+            let first = sections(dev, gi).first() == Some(&gi) && split_below(dev, gi);
+            let kw = if first { (w - 14.0 - 4.0) / 2.0 } else { w - 14.0 };
+            if first {
+                geo.switches.push((gi, [ox + 7.0, oy + 89.0, kw, 14.0]));
+            }
+            let mx0 = ox + 7.0 + if first { kw + 4.0 } else { 0.0 };
+            let mute = [mx0, oy + 89.0, kw, 14.0];
             geo.mix.push((gi, MixGeo {
                 x: ox,
                 y: oy,
@@ -873,22 +890,21 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
             }));
         }
         // its meter: after its knobs, or (without) right of its jacks
-        if metered(g) && host(dev, gi).is_none() {
+        if metered_here {
             let mx = if g.mix.is_some() { x + jw + if g.stereo { 96.0 } else { 58.0 } + 1.0 } else { x + jw - 2.0 };
-            // a column for each of a stereo pair's channels, and for each of two channels that don't
-            // say which they are (a JACK app's out1, out2)
-            let two = g.stereo || (g.ports.len() == 2 && g.ports.iter().all(|p| p.media == Media::Audio));
-            geo.meters.push((gi, mx, oy, if two { 2 } else { 1 }));
+            geo.meters.push((gi, mx, oy, cols));
         }
         geo.groups[gi] = (x, gw, jw, oy);
         // a frame's first section: its GRAPH key on the band, and right of it the frame's one
         // SPLIT (every stereo pair in the frame, a MONITOR inside it too)
         if sections(dev, gi).first() == Some(&gi) {
             if let Some(node) = node_of(dev, gi) {
-                geo.graph.push((node, [x + 6.0, oy + 21.0, graph_key_w(dev, gi), 12.0]));
+                // the name: a click on it opens ENGINE with this block (it was a key, #180)
+                let nx = x + 9.0 + if splits(dev, gi) && !split_below(dev, gi) { split_key_w() + 4.0 } else { 0.0 };
+                geo.graph.push((node, [nx - 3.0, oy + 20.0, label_w(&name(dev, gi)) + 6.0, 14.0]));
             }
-            if splits(dev, gi) {
-                geo.switches.push((gi, [x + 6.0 + graph_key_w(dev, gi) + 4.0, oy + 21.0, split_key_w(), 12.0]));
+            if splits(dev, gi) && !split_below(dev, gi) {
+                geo.switches.push((gi, [x + 6.0, oy + 21.0, split_key_w(), 12.0]));
             }
         }
         x + gw + gap_after(dev, gi)
@@ -1008,16 +1024,8 @@ fn mix_panel(m: &MixGeo, print: &str, band: bool) -> String {
         }
         let _ = write!(s, r#"<circle cx="{bx}" cy="{by}" r="10.8" fill="url(#gHole)" stroke="rgba(255,255,255,.12)" stroke-width=".7"/>{}{}"#, SMALL.text(bx - 12.0, by + 17.0, print, "middle", "L"), SMALL.text(bx + 12.0, by + 17.0, print, "middle", "R"));
     }
-    // MUTE: a dark key, its LED at the left (lit in `mix_pic`); the label centred on the key, or
-    // beside the LED on a narrow one
-    let [kx, ky, kw, kh] = m.mute;
-    let _ = write!(
-        s,
-        r##"<rect x="{kx}" y="{ky}" width="{kw}" height="{kh}" rx="2.5" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/><circle cx="{}" cy="{}" r="2.6" fill="#3a1411" stroke="rgba(0,0,0,.6)" stroke-width=".6"/>{}"##,
-        kx + 8.0,
-        ky + kh / 2.0,
-        SWITCH.text(kx + kw / 2.0 + if kw >= 60.0 { 0.0 } else { 5.0 }, ky + 9.6, "#e6e7e8", "middle", "MUTE")
-    );
+    // MUTE: a clear key, lit red while muted, as MIXER's: in `mix_pic`, which is drawn again as
+    // it changes
     if oy != 0.0 { format!(r#"<g transform="translate(0,{oy})">{s}</g>"#) } else { s }
 }
 
@@ -1051,12 +1059,10 @@ pub fn mix_pic(m: &MixGeo, volume: f64, balance: f64, mute: bool, bal: BalKnob) 
             BalKnob::In => format!(r##"<circle cx="{bx}" cy="{by}" r="9" fill="#202124" stroke="#0c0c0d"/>{}"##, pointer(0.0, "#8a6a32", 1.8, 2.6, 7.4)),
         };
     }
-    if mute {
-        let [kx, ky, _, kh] = m.mute;
-        let _ = write!(s, r##"<circle cx="{}" cy="{}" r="5" fill="#ff3b2f" opacity=".35"/><circle cx="{}" cy="{}" r="2.6" fill="#ff3b2f" stroke="rgba(0,0,0,.6)" stroke-width=".6"/>"##, kx + 8.0, ky + kh / 2.0, kx + 8.0, ky + kh / 2.0);
-    }
+    super::mixer::lit_key(&mut s, m.mute, "MUTE", "#ff4a32", mute, false);
     format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{MIX_H}" viewBox="{x} {MIX_Y} {w} {MIX_H}"><defs><radialGradient id="gVol" cx=".38" cy=".3" r=".8"><stop offset="0" stop-color="#5a5b5f"/><stop offset="1" stop-color="#151618"/></radialGradient></defs>{s}</svg>"##,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{MIX_H}" viewBox="{x} {MIX_Y} {w} {MIX_H}"><defs><radialGradient id="gVol" cx=".38" cy=".3" r=".8"><stop offset="0" stop-color="#5a5b5f"/><stop offset="1" stop-color="#151618"/></radialGradient>{}</defs>{s}</svg>"##,
+        super::mixer::glass_defs(),
         x = m.x,
         w = m.w
     )
@@ -1389,17 +1395,9 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
                     fw - 1.2
                 );
             }
-            // GRAPH: this frame's block in ENGINE; the node's number (#180), as ENGINE's block shows it
-            let kw = graph_key_w(dev, gi);
-            let (kx, ky) = (fx + 6.0, 21.0);
-            let id = node_of(dev, gi).unwrap_or(0);
-            let _ = write!(
-                body,
-                r##"<rect x="{kx}" y="{ky}" width="{kw}" height="12" rx="2" fill="#1b1c1e" stroke="rgba(0,0,0,.45)"/>{}"##,
-                SMALL.text(kx + kw / 2.0, ky + 9.0, "#e6e7e8", "middle", &format!("#{id}"))
-            );
-            // the name at the left, after GRAPH and SPLIT
-            let nx = kx + kw + 7.0 + if splits(dev, gi) { split_key_w() + 4.0 } else { 0.0 };
+            // the name at the left, after SPLIT when that is on the band: a click on it opens ENGINE
+            // with this frame's block (`geo.graph`)
+            let nx = fx + 9.0 + if splits(dev, gi) && !split_below(dev, gi) { split_key_w() + 4.0 } else { 0.0 };
             body.push_str(&SECTION.text(nx, 31.0, ink, "start", &name(dev, gi)));
         } else {
             let _ = write!(body, r#"<path d="M{x},40 V104" stroke="{}" stroke-opacity=".35" stroke-dasharray="2 3"/>"#, f.print);
@@ -1436,10 +1434,15 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
     // a frame's SPLIT: a key like GRAPH, on the band; JOIN while its pairs are split
     for (gi, [bx, by, bw, bh]) in &geo.switches {
         let on = sections(dev, *gi).iter().find(|s| dev.groups[**s].stereo).and_then(|s| split.get(*s)).copied().unwrap_or(false);
+        // in the row of keys: a clear key, lit amber while split, as MIXER's
+        if split_below(dev, *gi) {
+            super::mixer::lit_key(&mut body, [*bx, *by, *bw, *bh], "SPLIT", "#ffb02e", on, false);
+            continue;
+        }
         let _ = write!(
             body,
             r##"<rect x="{bx}" y="{by}" width="{bw}" height="{bh}" rx="2" fill="#1b1c1e" stroke="rgba(0,0,0,.45)"/>{}"##,
-            SMALL.text(bx + bw / 2.0, by + 9.0, "#e6e7e8", "middle", if on { "JOIN" } else { "SPLIT" })
+            SMALL.text(bx + bw / 2.0, by + bh / 2.0 + 3.0, "#e6e7e8", "middle", if on { "JOIN" } else { "SPLIT" })
         );
     }
     for (_, m) in &geo.mix {
@@ -1465,14 +1468,15 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
 
     let r = if rack { 3.0 } else { 12.0 };
     let title = format!(r#"<text x="{x0}" y="{}" font-size="{TITLE}">{}</text>"#, 33.0 - LIFT, esc(&fit_title(&dev.name, IDW)));
-    // HIDE: a small key at the left of the row under the LCD, an eye struck through; dimmed while
-    // the device has cords (only an unused one can be hidden)
-    let hide = {
+    // HIDE: a small key at the left of the row under the LCD, an eye struck through; not there
+    // while the device has cords (only an unused one can be hidden: `face_geometry`)
+    let hide = if geo.hide[2] == 0.0 {
+        String::new()
+    } else {
         let [hx, hy, hw, hh] = geo.hide;
         let (ex, ey) = (hx + hw / 2.0, hy + hh / 2.0);
         format!(
-            r##"<g opacity="{}"><rect x="{hx}" y="{hy}" width="{hw}" height="{hh}" rx="2.5" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/><path d="M{},{ey} q6,-6 12,0 q-6,6 -12,0z" fill="none" stroke="#e6e7e8" stroke-width="1.1"/><circle cx="{ex}" cy="{ey}" r="1.7" fill="#e6e7e8"/><path d="M{},{} L{},{}" stroke="#1b1c1e" stroke-width="2.6"/><path d="M{},{} L{},{}" stroke="#e6e7e8" stroke-width="1.1"/></g>"##,
-            if counts.iter().any(|c| *c > 0) { 0.35 } else { 1.0 },
+            r##"<rect x="{hx}" y="{hy}" width="{hw}" height="{hh}" rx="2.5" fill="#1b1c1e" stroke="rgba(255,255,255,.18)"/><path d="M{},{ey} q6,-6 12,0 q-6,6 -12,0z" fill="none" stroke="#e6e7e8" stroke-width="1.1"/><circle cx="{ex}" cy="{ey}" r="1.7" fill="#e6e7e8"/><path d="M{},{} L{},{}" stroke="#1b1c1e" stroke-width="2.6"/><path d="M{},{} L{},{}" stroke="#e6e7e8" stroke-width="1.1"/>"##,
             ex - 6.0,
             ex - 5.5, ey + 4.5, ex + 5.5, ey - 4.5,
             ex - 5.5, ey + 4.5, ex + 5.5, ey - 4.5
@@ -1497,9 +1501,11 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
             .iter()
             .enumerate()
             .map(|(i, (sx, sy))| {
+                // the head lit from the top left whichever way it turned; its cross turned, its
+                // recess lit on the side away from the light
+                let a = (i * 37 + dev.name.len() * 11) % 90;
                 format!(
-                    r##"<use href="#screw" transform="translate({sx},{sy}) rotate({}) scale({big})"/>"##,
-                    (i * 37 + dev.name.len() * 11) % 90
+                    r##"<g transform="translate({sx},{sy}) scale({big})"><use href="#screwHead"/><use href="#screwCross" fill="#fff" fill-opacity=".55" transform="translate(.45,.45) rotate({a})"/><use href="#screwCross" fill="#2a2b2f" transform="rotate({a})"/></g>"##
                 )
             })
             .collect()
@@ -1595,9 +1601,12 @@ fn defs() -> &'static str {
 <pattern id="nz" width="128" height="128" patternUnits="userSpaceOnUse"><image href="{noise}" width="128" height="128"/></pattern>
 <linearGradient id="gSheen" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".16"/><stop offset=".35" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".24"/></linearGradient>
 <linearGradient id="gLcd" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f7bb62"/><stop offset="1" stop-color="#e38c2a"/></linearGradient>
-<g id="screw"><circle r="5.2" fill="url(#gChrome)" stroke="#35363a" stroke-width=".7"/><path d="M-3.2,0 H3.2 M0,-3.2 V3.2" stroke="#36373b" stroke-width="1.4" stroke-linecap="round"/></g>
-{metal}</defs>"##,
-            metal = METAL
+<radialGradient id="gScrew" cx=".38" cy=".32" r=".75"><stop offset="0" stop-color="#f4f5f6"/><stop offset=".45" stop-color="#b7babe"/><stop offset=".85" stop-color="#6d7075"/><stop offset="1" stop-color="#55585d"/></radialGradient>
+<g id="screwHead"><circle r="5.6" fill="#000" opacity=".35" transform="translate(.3,.5)"/><circle r="5.2" fill="url(#gScrew)" stroke="#2c2d30" stroke-width=".6"/><circle r="4.3" fill="none" stroke="#fff" stroke-opacity=".28" stroke-width=".5"/></g>
+<path id="screwCross" d="M-3,-.75 H-.75 V-3 H.75 V-.75 H3 V.75 H.75 V3 H-.75 V.75 H-3 Z"/>
+{metal}{glass}</defs>"##,
+            metal = METAL,
+            glass = super::mixer::glass_defs()
         )
     })
 }

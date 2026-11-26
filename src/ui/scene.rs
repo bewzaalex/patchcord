@@ -327,16 +327,28 @@ fn vol_text(volume: f64, mute: bool, input: bool) -> String {
         return "MUTED".into();
     }
     let (pct, db) = volume_text(volume);
-    format!("{} {pct:>4}  {db}", if input { "GAIN" } else { "VOL" })
+    format!("{} {pct:>4}  {db:>9}", if input { "GAIN" } else { "VOL" })
 }
 
-/// The balance as the LCD shows it: "BAL R 30%  L -9.29 dB" (the quieter side), or CENTRE.
+/// The balance as the LCD shows it: each channel's volume, as the volume is shown, L then R
+/// ("BAL  L  60%  R  85%"), or CENTRE.
 fn bal_text(volume: f64, balance: f64) -> String {
     if balance.abs() < 0.005 {
         return "BAL CENTRE".into();
     }
-    let (near, far) = if balance < 0.0 { ("L", "R") } else { ("R", "L") };
-    format!("BAL {near} {:.0}%  {far} {}", balance.abs() * 100.0, volume_text(volume * (1.0 - balance.abs())).1)
+    let l = if balance > 0.0 { volume * (1.0 - balance) } else { volume };
+    let r = if balance < 0.0 { volume * (1.0 + balance) } else { volume };
+    // (as wide whatever the numbers: nothing on the line jumps as it turns)
+    format!("BAL  L {:>4}  R {:>4}", volume_text(l).0, volume_text(r).0)
+}
+
+/// What the LCD says when a frame's volume, balance or mute is set: what the hand turns.
+#[derive(Clone, Copy, PartialEq)]
+enum Says {
+    Volume,
+    Balance,
+    /// whichever changed (a preset put back, two faders apart)
+    Changed,
 }
 
 /// What a meter measures for: the frames whose meters show it (`groups`). One measuring
@@ -1301,12 +1313,14 @@ impl Scene {
             self.make_room();
         }
         lap(&mut self.spent, "tick.room");
-        // meters: peaks to lit LEDs on a dB scale (-54…0 dB → 0…10), quick up and slow down
+        // meters: peaks to lit LEDs on a dB scale (-48.6…+5.4 dB → 0…10), quick up and slow down;
+        // one LED higher than -54…0 was, so that the red one lights only at a clip (0 dBFS and
+        // over), not on a loud track at 100%
         let mut target: HashMap<(&str, Option<usize>), [f32; 2]> = HashMap::new();
         let index: HashMap<&str, usize> = self.devs.iter().enumerate().map(|(i, d)| (d.dev.key.as_str(), i)).collect();
         for (id, p) in &self.peaks {
             let Some(m) = self.meter_dev.get(id) else { continue };
-            let led = |v: f32| if v <= 0.0 { 0.0 } else { ((20.0 * v.log10() + 54.0) / 54.0 * 10.0).clamp(0.0, 10.0) };
+            let led = |v: f32| if v <= 0.0 { 0.0 } else { ((20.0 * v.log10() + 48.6) / 54.0 * 10.0).clamp(0.0, 10.0) };
             // each frame channel: the loudest of what comes into it
             let mut ch = [0.0f32; 2];
             for (i, v) in p.iter().enumerate() {
@@ -1911,7 +1925,7 @@ impl Scene {
 
     /// Sets an app stream's volume, balance and mute (PipeWire is told; the LCD says what
     /// changed, and which stream on a device with two: IN or OUT).
-    fn set_mix(&mut self, (di, gi): (usize, usize), volume: f64, balance: f64, mute: bool) {
+    fn set_mix(&mut self, (di, gi): (usize, usize), volume: f64, balance: f64, mute: bool, says: Says) {
         let Some(d) = self.devs.get_mut(di) else { return };
         let Some(g) = d.dev.groups.get(gi) else { return };
         let Some(m) = &g.mix else { return };
@@ -1927,7 +1941,14 @@ impl Scene {
             None => Cmd::SetMix { node: m.node, volumes, mute },
         });
         d.mix_local.insert(gi, (Instant::now(), (volume, balance, mute)));
-        let mut note = if was.is_some_and(|(_, b, _)| (b - balance).abs() > 0.001) { bal_text(volume, balance) } else { vol_text(volume, mute, input) };
+        // what the hand turns, the LCD says, all the while it turns (told by what changed it
+        // flickered between the two as the balance, rounded, changed or didn't)
+        let bal = match says {
+            Says::Balance => true,
+            Says::Volume => false,
+            Says::Changed => was.is_some_and(|(_, b, _)| (b - balance).abs() > 0.001),
+        };
+        let mut note = if bal && !mute { bal_text(volume, balance) } else { vol_text(volume, mute, input) };
         if d.dev.groups.iter().filter(|g| g.mix.is_some()).count() > 1 {
             // which one, by its frame's name: INPUT, OUTPUT, SPEAKERS, MIC…
             note = format!("{} {note}", face::name(&d.dev, gi));
@@ -1938,12 +1959,12 @@ impl Scene {
 
     pub fn set_volume(&mut self, at: (usize, usize), volume: f64) {
         let Some((_, bal, mute)) = self.devs.get(at.0).and_then(|d| d.mix(at.1)) else { return };
-        self.set_mix(at, (volume.clamp(0.0, VOL_MAX) * 100.0).round() / 100.0, bal, mute);
+        self.set_mix(at, (volume.clamp(0.0, VOL_MAX) * 100.0).round() / 100.0, bal, mute, Says::Volume);
     }
 
     pub fn set_balance(&mut self, at: (usize, usize), balance: f64) {
         let Some((vol, _, mute)) = self.devs.get(at.0).and_then(|d| d.mix(at.1)) else { return };
-        self.set_mix(at, vol, (balance.clamp(-1.0, 1.0) * 100.0).round() / 100.0, mute);
+        self.set_mix(at, vol, (balance.clamp(-1.0, 1.0) * 100.0).round() / 100.0, mute, Says::Balance);
     }
 
     /// Sets a stereo pair's L and R (on the knob's scale, 1 is 100%) apart: the louder one is its
@@ -1956,12 +1977,12 @@ impl Scene {
         let (l, r) = (pct(l), pct(r));
         let v = l.max(r);
         let bal = if v <= 0.0 || l == r { 0.0 } else if l > r { r / l - 1.0 } else { 1.0 - l / r };
-        self.set_mix(at, v, bal, mute);
+        self.set_mix(at, v, bal, mute, Says::Changed);
     }
 
     pub fn toggle_mute(&mut self, at: (usize, usize)) {
         let Some((vol, bal, mute)) = self.devs.get(at.0).and_then(|d| d.mix(at.1)) else { return };
-        self.set_mix(at, vol, bal, !mute);
+        self.set_mix(at, vol, bal, !mute, Says::Volume);
     }
 
     /// A card's outputs and inputs with ports to choose from, for its PORT list: group, label,
@@ -2519,7 +2540,7 @@ impl Scene {
                 if let Some(&(vol, bal, mute)) = p.mix.get(&key)
                     && d.mix(gi).is_some_and(|(v, b, m)| (v - vol).abs() > 0.005 || (b - bal).abs() > 0.005 || m != mute)
                 {
-                    self.set_mix((di, gi), vol.clamp(0.0, VOL_MAX), bal.clamp(-1.0, 1.0), mute);
+                    self.set_mix((di, gi), vol.clamp(0.0, VOL_MAX), bal.clamp(-1.0, 1.0), mute, Says::Changed);
                 }
             }
         }
@@ -2761,6 +2782,11 @@ impl Scene {
         }
         if let Some(k) = self.free_jack_at(x, y) {
             return format!("{}  ·  drag: pull out a cord", self.jack_name(&k));
+        }
+        // a frame's name: its block in ENGINE, by the node's number
+        if let Some(node) = self.graph_key_at(x, y) {
+            let name = self.graph.node_name(node).unwrap_or("?");
+            return format!("#{node} · {name}  ·  click: open it in ENGINE");
         }
         if let Some((di, gi)) = self.knob_at(x, y)
             && let Some((v, _, mute)) = self.devs[di].mix(gi)
