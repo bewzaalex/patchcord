@@ -261,7 +261,7 @@ def draw(r, meters):
                 y += ROW
     hd = []
     for i, t in enumerate(head):
-        colour = "#e6e7e8" if i == 0 else "#e5534b" if t.startswith("[ERROR]") else "#e5a72c" if t.startswith("[warn]") else "#a8abae"
+        colour = "#e6e7e8" if i == 0 else "#e5534b" if t.startswith("[ERROR]") else "#e5a72c" if t.startswith(("[warn]", "[WARNING]")) else "#a8abae"
         hd.append(f'<text x="30" y="{30 + 16 * i}" font-family="Noto Sans Mono, monospace" font-size="{13 if i == 0 else 11}" fill="{colour}" xml:space="preserve">{escape(t)}</text>')
     if loose:
         hd.append(f'<text x="30" y="{box[loose[0]][1] - 10}" font-family="Noto Sans Mono, monospace" font-size="11" fill="#7d8085">NOT LINKED</text>')

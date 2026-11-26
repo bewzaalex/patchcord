@@ -2983,9 +2983,16 @@ fn prepare_dev(d: &mut DevView, n: usize, c: &DevCtx, inbox: &mut painter::Inbox
     // what it is, and its state against the right edge (the name is on the plate)
     let state = d.dev.state.to_uppercase();
     let kind = format!("{:<w$}{state}", d.dev.kind, w = face::LCD_CH.saturating_sub(state.chars().count()).max(d.dev.kind.chars().count() + 1));
-    // in this order: what it is, what it carries (a card's profile), what it takes of PipeWire, its
-    // cords (or a volume note while it changes)
-    let text = format!("{kind}\n{carries}\n{usage}\n{links}");
+    // in this order: what it is, what it carries (a card's profile), what it takes of PipeWire
+    // and its cords on one line (two spaces between, one where the line is full; a volume note
+    // instead while it changes)
+    let third = if d.mix_note.as_ref().is_some_and(|(until, _)| Instant::now() < *until) {
+        links
+    } else {
+        let wide = format!("{usage}  {links}");
+        if wide.chars().count() <= face::LCD_CH { wide } else { format!("{usage} {links}") }
+    };
+    let text = format!("{kind}\n{carries}\n{third}");
     let x = d.geo.left + LCD_X;
     let lsig = painter::sig((&text, x.to_bits()), c.scale);
     // the screen as it was shows where it is now until it is drawn again
@@ -2994,7 +3001,7 @@ fn prepare_dev(d: &mut DevView, n: usize, c: &DevCtx, inbox: &mut painter::Inbox
     }
     if d.lcd.as_ref().is_none_or(|(s, _)| *s != lsig) && d.lcd_want.map(|w| w.0) != Some(lsig) {
         let l: Vec<&str> = text.split('\n').collect();
-        let svg = face::lcd([l[0], l[1], l[2], l[3]]);
+        let svg = face::lcd([l[0], l[1], l[2]]);
         if d.lcd.is_none() {
             let t0 = Instant::now();
             let pm = rasterize(c.opt, &svg, c.scale);
@@ -3027,7 +3034,7 @@ fn prepare_dev(d: &mut DevView, n: usize, c: &DevCtx, inbox: &mut painter::Inbox
     d.gmeters = meters;
 }
 
-/// The lit LEDs of a signal meter (the dark ones are part of the face), with a little glow.
+/// The lit LEDs of a signal meter (the slot and the dark ones are part of the face), as MIXER's: no glow.
 fn meter_layer(lit: (u8, u8), leds: Leds, scale: f64) -> Layer {
     let (x0, y0) = (leds.x - 4.0, leds.y - 9.0 * leds.step - 4.0);
     let (w, h) = (leds.col + leds.w + 8.0, 9.0 * leds.step + leds.h + 8.0);
@@ -3037,22 +3044,13 @@ fn meter_layer(lit: (u8, u8), leds: Leds, scale: f64) -> Layer {
         let ts = Transform::from_row(s, 0.0, 0.0, s, -(x0 as f32) * s, -(y0 as f32) * s);
         for (c, n) in [lit.0, lit.1].into_iter().enumerate() {
             for i in 0..n.min(10) {
-                let rgb: [u8; 3] = if i >= 9 {
-                    [0xff, 0x3b, 0x2f]
-                } else if i >= 7 {
-                    [0xff, 0xb0, 0x2e]
-                } else {
-                    [0x4c, 0xff, 0x6a]
-                };
+                // lit as MIXER's: its colour, no glow
+                let rgb = Leds::colour(i as usize);
                 let (x, y) = ((leds.x + c as f64 * leds.col) as f32, (leds.y - i as f64 * leds.step) as f32);
-                let (lw, lh) = (leds.w as f32, leds.h as f32);
-                for (grow, a) in [(2.0, 50u8), (0.0, 255u8)] {
-                    if let Some(r) = Rect::from_xywh(x - grow, y - grow, lw + 2.0 * grow, lh + 2.0 * grow) {
-                        let mut p = Paint { anti_alias: true, ..Default::default() };
-                        p.set_color_rgba8(rgb[0], rgb[1], rgb[2], a);
-                        let path = PathBuilder::from_rect(r);
-                        pm.fill_path(&path, &p, FillRule::Winding, ts, None);
-                    }
+                if let Some(r) = Rect::from_xywh(x, y, leds.w as f32, leds.h as f32) {
+                    let mut p = Paint { anti_alias: true, ..Default::default() };
+                    p.set_color_rgba8(rgb[0], rgb[1], rgb[2], 255);
+                    pm.fill_path(&PathBuilder::from_rect(r), &p, FillRule::Winding, ts, None);
                 }
             }
         }
@@ -3488,8 +3486,14 @@ mod tests {
         for (l, [x, y, w, h]) in s.rails((0.0 - v.y) / sc, (wh as f64 - v.y) / sc) {
             draw(&mut pm, l, (x, y, w, h));
         }
+        // (in the rack every shadow under every face, as on screen)
+        for d in s.devs.iter().filter(|_| s.rack) {
+            if let Some((_, l)) = &d.shade {
+                draw(&mut pm, l, (d.x + l.x, d.y + l.y, l.w, l.h));
+            }
+        }
         for d in &s.devs {
-            for l in d.layers() {
+            for l in d.layers().skip(usize::from(s.rack && d.shade.is_some())) {
                 draw(&mut pm, l, (d.x + l.x, d.y + l.y, l.w, l.h));
             }
         }
@@ -3524,12 +3528,11 @@ mod tests {
             };
             let without = |pat: &str| svg.replace(pat, "url(#none)");
             println!(
-                "{} {:.0}x{:.0}: all {:?}; no nut shadow {:?}; no sheen {:?}",
+                "{} {:.0}x{:.0}: all {:?}; no sheen {:?}",
                 d.dev.name,
                 geo.w,
                 geo.h,
                 time(&svg),
-                time(&without("url(#nutShadow)")),
                 time(&without("url(#gSheen)"))
             );
         }

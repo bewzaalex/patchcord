@@ -29,6 +29,10 @@ video), on two blocks, neither Patchcord's own (its meters, the cue). A port lin
 takes no part while one is carried.
 
 **Taking a link away**: its row in LINK TO, or the link chosen and Delete (Backspace).
+Patchcord's own links (into its signal meters, into or out of its cue) aren't taken away
+(2026-11-26): the key does nothing but say "Patchcord uses this link: it can't be taken away".
+One another program takes away is made again a moment later, while what the meter measures is
+there (`pw::Meter::mend`).
 
 - Ctrl+Z undoes it, Ctrl+Shift+Z does it again: one step with the cords' (`Scene::link_ports`).
 - Carried near the graph's edge, the link scrolls the graph that way, as a plug does on the desk:

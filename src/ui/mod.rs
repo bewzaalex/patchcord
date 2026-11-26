@@ -40,12 +40,17 @@ pub fn face_frames(dev: &crate::graph::Device) -> Vec<u32> {
     face::face_geometry(dev, &jd, &vec![0; jd.len()], None, true).graph.iter().map(|g| g.0).collect()
 }
 
-/// A device's face: its size, and where each group's frame starts (x, how far down its unit).
+/// A face's unit height (for the graph's tests of how faces are laid out).
+#[cfg(test)]
+pub const DEV_H: f64 = face::DEV_H;
+
+/// A device's face: its size, and where each group's frame starts (x, the top of its unit).
 #[cfg(test)]
 pub fn face_layout(dev: &crate::graph::Device) -> ((f64, f64), Vec<(f64, f64)>) {
     let jd = face::jacks(dev, &[]);
     let geo = face::face_geometry(dev, &jd, &vec![0; jd.len()], None, true);
-    ((geo.w, geo.h), geo.groups.iter().map(|g| (g.0, g.3)).collect())
+    // (each group's x, and the top of the unit it is in)
+    ((geo.w, geo.h), geo.groups.iter().map(|g| (g.0, g.3 + face::LIFT)).collect())
 }
 
 #[cfg(test)]

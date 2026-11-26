@@ -1,12 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
   <defs>
     <linearGradient id="case" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#9a9ea3"/>
-      <stop offset="1" stop-color="#5d6065"/>
-    </linearGradient>
-    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#c3c7cc"/>
-      <stop offset="1" stop-color="#2c2e31"/>
+      <stop offset="0" stop-color="#3a3b3f"/>
+      <stop offset="1" stop-color="#161719"/>
     </linearGradient>
     <radialGradient id="head" cx="0.36" cy="0.32" r="0.75">
       <stop offset="0" stop-color="#ffc08a"/>
@@ -15,8 +11,8 @@
     </radialGradient>
     <filter id="soft" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="3"/></filter>
   </defs>
-  <!-- the panel -->
-  <rect x="12" y="12" width="232" height="232" rx="44" fill="url(#rim)"/>
+  <!-- the panel: black, as a program's face on the rack -->
+  <rect x="12" y="12" width="232" height="232" rx="44" fill="#000"/>
   <rect x="15" y="15" width="226" height="226" rx="41" fill="url(#case)"/>
   <!-- shadows on the panel -->
   <g fill="none" stroke="#000" stroke-opacity="0.35" stroke-linecap="round" filter="url(#soft)" transform="translate(4 6)">

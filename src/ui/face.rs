@@ -14,7 +14,12 @@ use super::print::{SECTION, SMALL, SWITCH};
 use super::text::{self, esc};
 use crate::graph::{Device, Dir, Finish, Media, VOL_MAX};
 
-pub const DEV_H: f64 = 128.0;
+/// A face's height (a unit's): its frames with a little room above and below them (2026-11-26: it
+/// was 128, room for a four-line screen and its keys under the frames' bottom)
+pub const DEV_H: f64 = 108.0;
+/// How much higher than it used to a unit's content sits: its frames are drawn in their own
+/// numbers (18 to 110 down a unit), the unit's top `LIFT` above where those start
+pub(crate) const LIFT: f64 = 10.0;
 /// distance between jacks
 pub const JP: f64 = 48.0;
 /// a rack is at least this wide
@@ -49,12 +54,14 @@ pub const LCD_CH: usize = 27;
 /// where the LCD's text area is, relative to the face (without rack ears): right under the name,
 /// down to the row of keys; the same on every face
 pub const LCD_X: f64 = PAD + 1.5;
-pub const LCD_Y: f64 = 43.0;
+pub const LCD_Y: f64 = 33.0;
 pub const LCD_W: f64 = IDW - 3.0;
-pub const LCD_H: f64 = 57.0;
+/// three lines (it had four: its cords now share the third)
+pub const LCD_H: f64 = 45.0;
 /// the row of keys under the LCD, on every face: HIDE at its left, then a card's PROFILE and PORT
-/// sharing the rest evenly (the row a little in from the LCD's edges, clear of the desk's screws)
-const KEY_Y: f64 = 107.0;
+/// sharing the rest evenly (the row a little in from the LCD's edges, clear of the desk's screws);
+/// its bottom level with the frames' bottom edge
+const KEY_Y: f64 = 110.0 - LIFT - KEY_H;
 const KEY_H: f64 = 14.0;
 const KEY_IN: f64 = 4.0;
 const HIDE_W: f64 = 22.0;
@@ -313,18 +320,38 @@ pub struct Leds {
 
 impl Leds {
     /// A group's own meter, right of its knobs, in the unit `y` down: a column for each of its
-    /// channels (one, centred, for mono). Under a coloured band it is packed a little closer, so
-    /// its top LED clears the band and the SIG on it.
+    /// channels (one, centred, for mono), thin LEDs as MIXER's (4 wide, 2 between). Under a
+    /// coloured band it is packed a little closer, so its top LED clears the band and the SIG on it.
     pub fn strip(x: f64, y: f64, cols: usize, band: bool) -> Leds {
-        Leds { x: if cols == 1 { x + 4.0 } else { x }, y: 96.0 + y, w: 6.0, h: if band { 4.2 } else { 4.6 }, step: if band { 5.9 } else { 6.6 }, col: 8.0, cols }
+        Leds { x: if cols == 1 { x + 5.0 } else { x + 2.0 }, y: 96.0 + y, w: 4.0, h: if band { 4.2 } else { 4.6 }, step: if band { 5.9 } else { 6.6 }, col: 6.0, cols }
     }
 
-    /// The dark LEDs, printed on the face.
+    /// The colour a LED lights in: green, amber near the top, red at it (as MIXER's).
+    pub fn colour(i: usize) -> [u8; 3] {
+        if i >= 9 {
+            [0xff, 0x3b, 0x2f]
+        } else if i >= 7 {
+            [0xff, 0xb0, 0x2e]
+        } else {
+            [0x4c, 0xff, 0x6a]
+        }
+    }
+
+    /// The meter as printed on the face, as MIXER's: a black slot, and in it the LEDs off, each
+    /// a dark of the colour it lights in.
     fn dark(&self) -> String {
-        let mut s = String::new();
+        let top = self.y - 9.0 * self.step;
+        let mut s = format!(
+            r##"<rect x="{}" y="{}" width="{}" height="{}" rx="3" fill="#0b0b0c"/>"##,
+            self.x - 3.0,
+            top - 3.0,
+            (self.cols - 1) as f64 * self.col + self.w + 6.0,
+            9.0 * self.step + self.h + 6.0
+        );
         for c in 0..self.cols {
             for i in 0..10 {
-                let _ = write!(s, r#"<rect x="{}" y="{}" width="{}" height="{}" rx="1" fill="rgba(0,0,0,.5)"/>"#, self.x + c as f64 * self.col, self.y - i as f64 * self.step, self.w, self.h);
+                let dark = if i >= 9 { "#351612" } else if i >= 7 { "#2f2810" } else { "#1c2a1f" };
+                let _ = write!(s, r#"<rect x="{}" y="{}" width="{}" height="{}" rx="1" fill="{dark}"/>"#, self.x + c as f64 * self.col, self.y - i as f64 * self.step, self.w, self.h);
             }
         }
         s
@@ -872,7 +899,7 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
     if rack || framed(dev) {
         let right = w - ear - PAD;
         for (u, row) in rows_of.iter().enumerate() {
-            let oy = u as f64 * if rack { RACK_U } else { DEV_H };
+            let oy = u as f64 * if rack { RACK_U } else { DEV_H } - LIFT;
             let x0 = if u == 0 { ear + PAD + IDW + 14.0 } else { ear + PAD };
             let mut a = x0;
             for &gi in &row.left {
@@ -902,7 +929,7 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
         }).collect();
         let right = w - ear - PAD;
         for (u, row) in rows_of.iter().enumerate() {
-            let oy = u as f64 * DEV_H;
+            let oy = u as f64 * DEV_H - LIFT;
             for &(gi, c) in &at[u] {
                 let x = if dev.groups[gi].dir == Dir::In { cx[c] } else { cx[c] + cw[c] - group_w(dev, gi, jd, counts) };
                 place(gi, x, oy, &mut geo);
@@ -928,7 +955,7 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
     let span: f64 = outs.iter().map(|g| group_w(dev, *g, jd, counts) + 10.0).sum::<f64>();
     let mut x = ear + PAD + IDW + 14.0;
     for g in &ins {
-        x = place(*g, x, 0.0, &mut geo);
+        x = place(*g, x, -LIFT, &mut geo);
     }
     let gx0 = x;
     // (in a rack, against the right edge)
@@ -937,7 +964,7 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
         geo.grille = Some((gx0, ox - 10.0));
     }
     for g in &outs {
-        ox = place(*g, ox, 0.0, &mut geo);
+        ox = place(*g, ox, -LIFT, &mut geo);
     }
     geo
 }
@@ -991,7 +1018,7 @@ fn mix_panel(m: &MixGeo, print: &str, band: bool) -> String {
         ky + kh / 2.0,
         SWITCH.text(kx + kw / 2.0 + if kw >= 60.0 { 0.0 } else { 5.0 }, ky + 9.6, "#e6e7e8", "middle", "MUTE")
     );
-    if oy > 0.0 { format!(r#"<g transform="translate(0,{oy})">{s}</g>"#) } else { s }
+    if oy != 0.0 { format!(r#"<g transform="translate(0,{oy})">{s}</g>"#) } else { s }
 }
 
 /// The knobs and the MUTE LED of a VOLUME section, as an SVG document covering the section
@@ -1074,7 +1101,7 @@ pub fn shadow(w: f64, h: f64, rack: bool) -> String {
     )
 }
 
-/// Half the size of a jack's picture: the nut and its shadow fit inside.
+/// Half the size of a jack's picture: its bushing and edge fit inside.
 pub const PIC: f64 = 22.0;
 
 /// The plus badge at the corner of a mult's free jack, as an SVG document `2 PIC` square centred
@@ -1091,16 +1118,15 @@ pub fn badge_pic() -> String {
     )
 }
 
-/// A jack with a ring in its group's colour: mono and MIDI one ring, stereo two (as the gold
-/// ring marks a stereo jack without colours).
-pub fn jack_pic_ring(kind: JackKind, color: &str) -> String {
+/// A jack as a small amp's panel-mount one, flush with the face (ADR 0023; it had a hex nut): a
+/// wide bushing in its group's colour, and inside it the jack: a black bezel, nickel round the deep
+/// hole; the same for mono, stereo and MIDI (its colour tells MIDI; its tag, a stereo pair).
+pub fn jack_pic_ring(_kind: JackKind, color: &str) -> String {
     let s = 2.0 * PIC;
-    let (base, rings) = match kind {
-        JackKind::Mono => ("jack-mono", format!(r#"<circle cx="{PIC}" cy="{PIC}" r="10.1" fill="none" stroke="{color}" stroke-width="1.3"/>"#)),
-        JackKind::Midi => ("jack-midi", format!(r#"<circle cx="{PIC}" cy="{PIC}" r="10.1" fill="none" stroke="{color}" stroke-width="1.3"/>"#)),
-        JackKind::Stereo => ("jack-mono", format!(r#"<circle cx="{PIC}" cy="{PIC}" r="10.7" fill="none" stroke="{color}" stroke-width="1"/><circle cx="{PIC}" cy="{PIC}" r="9.3" fill="none" stroke="{color}" stroke-width="1"/>"#)),
-    };
-    format!(r##"<svg xmlns="http://www.w3.org/2000/svg" width="{s}" height="{s}" viewBox="0 0 {s} {s}">{}<use href="#{base}" x="{PIC}" y="{PIC}"/>{rings}</svg>"##, jack_defs())
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{s}" height="{s}" viewBox="0 0 {s} {s}">{}<circle cx="{PIC}" cy="{PIC}" r="14.6" fill="none" stroke="#000" stroke-opacity=".35" stroke-width="1.2"/><circle cx="{PIC}" cy="{PIC}" r="14" fill="{color}"/><use href="#jack" x="{PIC}" y="{PIC}"/></svg>"##,
+        jack_defs()
+    )
 }
 
 /// Half the size of a cue mark's picture: the ring round a jack listened to, and the
@@ -1108,7 +1134,7 @@ pub fn jack_pic_ring(kind: JackKind, color: &str) -> String {
 pub const CUE_PIC: f64 = 27.0;
 
 /// A jack kept on (clicked in CUE mode): a cyan disc out to the ring, laid under the jack, so the
-/// jack's nut lies on it with its shadow.
+/// jack's bushing lies on it.
 pub fn cue_disc_pic() -> String {
     let s = 2.0 * CUE_PIC;
     format!(r##"<svg xmlns="http://www.w3.org/2000/svg" width="{s}" height="{s}" viewBox="0 0 {s} {s}"><circle cx="{CUE_PIC}" cy="{CUE_PIC}" r="21.1" fill="#5fd4ff"/><circle cx="{CUE_PIC}" cy="{CUE_PIC}" r="20.7" fill="none" stroke="#000" stroke-opacity=".35" stroke-width=".8"/></svg>"##)
@@ -1326,7 +1352,7 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
                 let cx = jx + (k - 1) as f64 * JP / 2.0;
                 s.push_str(&port_tag(cx, KEY_ROW, &jack_tag(dev, gi, jd, i), &f));
             }
-            if oy > 0.0 {
+            if oy != 0.0 {
                 s = format!(r#"<g transform="translate(0,{oy})">{s}</g>"#);
             }
             body.push_str(&s);
@@ -1402,7 +1428,7 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
                 body.push_str(&port_tag(cx, KEY_ROW, &jack_tag(dev, gi, jd, i), &f));
             }
         }
-        if oy > 0.0 {
+        if oy != 0.0 {
             body.insert_str(at, &format!(r#"<g transform="translate(0,{oy})">"#));
             body.push_str("</g>");
         }
@@ -1429,7 +1455,7 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
     // the slots of a rack unit's vents: between a 1U device's inputs and outputs in a rack, and
     // wherever a multi-unit face has nothing to show
     let mut grille = String::new();
-    for (gx0, gx1, oy) in geo.grille.map(|(a, b)| (a, b, 0.0)).into_iter().chain(geo.vents.iter().map(|v| (v[0], v[1], v[2]))) {
+    for (gx0, gx1, oy) in geo.grille.map(|(a, b)| (a, b, -LIFT)).into_iter().chain(geo.vents.iter().map(|v| (v[0], v[1], v[2]))) {
         let mut y = 30.0;
         while y <= 98.0 {
             let _ = write!(grille, r##"<rect x="{gx0}" y="{}" width="{}" height="4.2" rx="2.1" fill="#0b0c0d"/><path d="M{},{} h{}" stroke="rgba(255,255,255,.12)"/>"##, oy + y, gx1 - gx0, gx0 + 2.0, oy + y + 5.1, gx1 - gx0 - 4.0);
@@ -1438,7 +1464,7 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
     }
 
     let r = if rack { 3.0 } else { 12.0 };
-    let title = format!(r#"<text x="{x0}" y="33" font-size="{TITLE}">{}</text>"#, esc(&fit_title(&dev.name, IDW)));
+    let title = format!(r#"<text x="{x0}" y="{}" font-size="{TITLE}">{}</text>"#, 33.0 - LIFT, esc(&fit_title(&dev.name, IDW)));
     // HIDE: a small key at the left of the row under the LCD, an eye struck through; dimmed while
     // the device has cords (only an unused one can be hidden)
     let hide = {
@@ -1527,8 +1553,8 @@ fn port_tag(cx: f64, cy: f64, t: &str, f: &Fin) -> String {
 /// under the jacks go too.
 const KEY_ROW: f64 = 89.0 + KEY_H / 2.0;
 
-/// The LCD's four lines of text, as a document the size of the LCD's text area: the top one bold.
-pub fn lcd(lines: [&str; 4]) -> String {
+/// The LCD's three lines of text, as a document the size of the LCD's text area: the top one bold.
+pub fn lcd(lines: [&str; 3]) -> String {
     let (h, y1, step) = (LCD_H, 13.0, 13.5);
     let mut out = format!(r##"<svg xmlns="http://www.w3.org/2000/svg" width="{LCD_W}" height="{h}" viewBox="0 0 {LCD_W} {h}" font-family="Noto Sans Mono" fill="#3a2408" xml:space="preserve">"##);
     for (i, l) in lines.iter().enumerate() {
@@ -1587,25 +1613,15 @@ fn jack_defs() -> &'static str {
 const METAL: &str = r##"<radialGradient id="gChrome" cx=".35" cy=".3" r=".85"><stop offset="0" stop-color="#fff"/><stop offset=".4" stop-color="#b9bcc1"/><stop offset=".75" stop-color="#65686d"/><stop offset="1" stop-color="#a6a9ad"/></radialGradient>
 <radialGradient id="gHole" cx=".5" cy=".62" r=".6"><stop offset="0" stop-color="#000"/><stop offset=".7" stop-color="#0a0a0b"/><stop offset="1" stop-color="#3c3d40"/></radialGradient>"##;
 
-/// The nut and the washers of a mono and a MIDI jack (with `METAL`).
+/// What is inside a jack's coloured bushing (`jack_pic_ring`): a black bezel, the jack's nickel and
+/// the deep hole.
 fn jack_parts() -> String {
-    let hex: String = (0..6)
-        .map(|k| {
-            let a = (k as f64 * 60.0 + 30.0).to_radians();
-            format!("{:.2},{:.2} ", 15.0 * a.cos(), 15.0 * a.sin())
-        })
-        .collect();
-    format!(
-        r##"<linearGradient id="gNut" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f6f7f8"/><stop offset=".45" stop-color="#b6b9bd"/><stop offset="1" stop-color="#55585d"/></linearGradient>
-<radialGradient id="gWasher" cx=".4" cy=".35" r=".75"><stop offset="0" stop-color="#5e6166"/><stop offset="1" stop-color="#141517"/></radialGradient>
-<radialGradient id="gWasherMidi" cx=".4" cy=".35" r=".75"><stop offset="0" stop-color="#c8483a"/><stop offset="1" stop-color="#4a120d"/></radialGradient>
-<filter id="nutShadow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="1.2"/></filter>
-<polygon id="hexShape" points="{hex}"/>
-<g id="hex"><use href="#hexShape" fill="#000" opacity=".4" transform="translate(1.2,2.4)" filter="url(#nutShadow)"/><use href="#hexShape" fill="url(#gNut)" stroke="#43454a" stroke-width=".8"/></g>
-<g id="jack-mono"><use href="#hex"/><circle r="11.4" fill="url(#gWasher)"/><circle r="8.7" fill="url(#gChrome)" stroke="#2a2b2e" stroke-width=".8"/><circle r="5.5" fill="url(#gHole)"/></g>
-<g id="jack-midi"><use href="#hex"/><circle r="11.4" fill="url(#gWasherMidi)"/><circle r="8.7" fill="url(#gChrome)" stroke="#2a2b2e" stroke-width=".8"/><circle r="5.5" fill="url(#gHole)"/></g>
+    r##"<linearGradient id="gNickel" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff"/><stop offset=".45" stop-color="#b9bcc1"/><stop offset="1" stop-color="#55585d"/></linearGradient>
+<radialGradient id="gBezel" cx=".45" cy=".35" r=".8"><stop offset="0" stop-color="#2c2d30"/><stop offset="1" stop-color="#0c0c0d"/></radialGradient>
+<radialGradient id="gDeep" cx=".5" cy=".55" r=".6"><stop offset="0" stop-color="#000"/><stop offset=".8" stop-color="#050506"/><stop offset="1" stop-color="#262729"/></radialGradient>
+<g id="jack"><circle r="10.4" fill="url(#gBezel)"/><circle r="8.2" fill="url(#gNickel)"/><circle r="6.2" fill="url(#gDeep)"/></g>
 "##
-    )
+    .to_owned()
 }
 
 fn base64(data: &[u8]) -> String {

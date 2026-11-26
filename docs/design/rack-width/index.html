@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The rack's width</title>
+<!--
+  fill.py makes fill-a.png ... fill-e.png from fit.png: five ways to fill where the vents are.
+  The rack in a wide window (1800 units): now, every face stretched to the window, the room its
+  frames don't need filled with vents; and as wide as the widest device needs, the rails moved in
+  and the rack in the middle of the window. Both from the app's own rack_picture on its demo
+  graph: now.png at 1800 x 900, fit.png at 1200 x 900 (the demo's widest device, MEETING, in one
+  unit at that width). Open it and switch with the keys, or press 1 and 2.
+-->
+<style>
+  :root { --bg: #17181a; --ink: #d8dadd; --dim: #8d9095; --amber: #f0a64a; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 "Noto Sans", sans-serif; }
+  header { padding: 18px 24px 8px; max-width: 1600px; }
+  h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: 2px; color: var(--amber); }
+  p { margin: 4px 0; color: var(--dim); max-width: 1100px; }
+  .variants { display: flex; gap: 8px; margin: 12px 0 6px; flex-wrap: wrap; }
+  .variants button { background: #26282b; color: var(--ink); border: 1px solid #3a3c40; border-radius: 4px; padding: 6px 14px; font: inherit; cursor: pointer; }
+  .variants button.on { border-color: var(--amber); color: var(--amber); }
+  .stage { padding: 8px 24px 40px; }
+  /* the window, 1800 x 900 units, scaled to fit; its top panel's place is in the pictures */
+  .win { position: relative; width: 1800px; height: 900px; overflow: hidden; background: #17181a; border: 1px solid #000; border-radius: 6px; transform-origin: 0 0; }
+  .win .top { position: absolute; left: 0; right: 0; top: 0; height: 60px; background: #8a8d91; }
+  .win img { position: absolute; top: 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>THE RACK'S WIDTH</h1>
+  <p>A wide window. While every device fits one unit in a rack narrower than the window, the rack is only as wide as the widest device needs (in one unit), and stands in the middle of the window; the desk shows at both sides. Once a device would need a second unit in that width, or the window is narrower, it is as now: the rack fills the window.</p>
+  <div class="variants">
+    <button data-v="now">1 · NOW: AS WIDE AS THE WINDOW</button>
+    <button data-v="fit">2 · AS WIDE AS IT NEEDS, IN THE MIDDLE</button>
+  </div>
+  <p>Where a face's frames end, instead of the vents (all in the narrower rack, 2):</p>
+  <div class="variants">
+    <button data-v="fill-a">A · PLAIN METAL</button>
+    <button data-v="fill-b">B · NARROW DEVICE, A BLANK PANEL</button>
+    <button data-v="fill-c">C · TWO IN A UNIT</button>
+    <button data-v="fill-d">D · FRAMES STRETCHED</button>
+    <button data-v="fill-e">E · PLAIN, ITS KIND PRINTED</button>
+  </div>
+  <p id="what"></p>
+</header>
+<div class="stage">
+  <div class="win" id="win"><div class="top"></div><img id="pic" alt="the rack"></div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const WHAT = {
+  now: "Every face as wide as the window between the rails; what its frames don't take, vents.",
+  "fill-a": "The face's own metal where the vents were: nothing on it.",
+  "fill-b": "A device only as wide as its name, screen and frames need, with its own right edge and screws; beside it, to the rail, a black blank panel screwed to the rail, as in a real rack beside a half-width device.",
+  "fill-c": "As B, but narrow devices go side by side in one unit, in the rack's order, while they fit; a blank panel for what is left. The rack is shorter (here four units, not six); dragging a device moves it along the unit as well as up and down.",
+  "fill-d": "A device's frames share its width: a single frame goes all the way to the right ear, its meter at its end. (Stretched from the picture: the grain is not right, the idea is.)",
+  "fill-e": "As A, with what the device is printed small at the top right, as a model name on real gear.",
+  fit: "The rails moved in to the widest device (MEETING, its four frames in one unit), the rack in the middle. The other faces as wide as it, their vents shorter. Making the window narrower changes nothing until it is narrower than the rack; then the rack fills it, and devices wrap into more units as now.",
+};
+let v = "fit";
+function draw() {
+  document.querySelectorAll(".variants button[data-v]").forEach(b => b.classList.toggle("on", b.dataset.v === v));
+  $("what").textContent = WHAT[v];
+  $("pic").src = v + ".png";
+  $("pic").style.left = v === "now" ? "0px" : (1800 - 1200) / 2 + "px";
+}
+document.querySelectorAll(".variants button[data-v]").forEach(b => b.onclick = () => { v = b.dataset.v; draw(); });
+const KEYS = { "1": "now", "2": "fit", a: "fill-a", b: "fill-b", c: "fill-c", d: "fill-d", e: "fill-e" };
+addEventListener("keydown", e => {
+  const k = KEYS[e.key.toLowerCase()]; if (k) { v = k; draw(); }
+});
+function fit() {
+  const s = Math.min(1, (document.querySelector(".stage").clientWidth - 48) / 1800);
+  $("win").style.transform = `scale(${s})`;
+  $("win").parentElement.style.height = 900 * s + 48 + "px";
+}
+addEventListener("resize", fit);
+fit();
+draw();
+</script>
+</body>
+</html>

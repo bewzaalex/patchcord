@@ -34,6 +34,8 @@ pub enum Sel {
 /// The tabs below the graph.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Tab {
+    /// PipeWire's own state: its clock, quantum, load, drivers, version (it was ENGINE's strip)
+    Server,
     Top,
     Issues,
     Objects,
@@ -72,8 +74,10 @@ enum Hit {
     Legend,
     /// the legend window itself (or another card): a click there does nothing
     LegendWin,
-    /// the strip's i cell: the cells that didn't fit
-    Info,
+    /// FIND · SHOW: opens or closes its card
+    Find,
+    /// the card's ▲ ▼: the previous or the next block that matches
+    FindStep(i32),
     /// the scrollbar of the details (0) or the tables (1)
     Bar(usize),
     /// a port's LINK TO (LINK FROM) row: the link (output, input) it makes or takes away
@@ -319,20 +323,12 @@ const BPAD: f64 = 26.0;
 const BHEAD: f64 = 36.0;
 /// A band is laid out to fit a view this many times wider than high.
 const ASPECT: f64 = 2.2;
-/// how deep the overlay's bottom strip is: the legend's and diagnostics' keys
-const OVERLAY_BOTTOM: f64 = 40.0;
 
 // sizes of the window parts, in logical pixels
-const STRIP_H: f64 = 50.0;
 const BOTTOM_H: f64 = 250.0;
 const INSP_W: f64 = 380.0;
 const TABS_H: f64 = 30.0;
 const ROW_H: f64 = 19.0;
-const REPORT_W: f64 = 116.0;
-/// the strip's HEALTH cell, its i cell and DSP LOAD's curve
-const HEALTH_W: f64 = 112.0;
-const INFO_W: f64 = 30.0;
-const CURVE_W: f64 = 186.0;
 /// a window narrower than this has the details over the graph
 const NARROW: f64 = 700.0;
 // A block's colour is its kind's, as its frame's on the rack (ADR 0014: `face::kind_colour`); a
@@ -493,13 +489,13 @@ pub struct Engine {
     /// view's scale then, its size
     graph_want: Option<(u64, u64, f64, f64, f64)>,
     inbox: painter::Inbox,
-    strip: Option<(u64, Layer)>,
+    /// PipeWire's version, for SERVER
+    version: String,
     insp: Option<(u64, Layer)>,
     bottom: Option<(u64, Layer)>,
-    /// the graph's overlay: its top (the chips) and its bottom (the legend's and diagnostics'
-    /// keys), two strips, not a picture as big as the graph mostly empty
+    /// the graph's overlay: its keys along its top (FIND · SHOW, LEGEND, DIAGNOSTICS), a strip,
+    /// not a picture as big as the graph mostly empty
     overlay: Option<(u64, Layer)>,
-    overlay_b: Option<(u64, Layer)>,
     /// the legend window, while it is open
     legend: Option<(u64, Layer)>,
     /// what changes every moment on the graph (see `numbers`): by what it is, its picture
@@ -521,9 +517,10 @@ pub struct Engine {
     bottom_shut: bool,
     /// the legend is open over the graph
     legend_open: bool,
-    /// the i cell's card, and whether it is open
-    info: Option<(u64, Layer)>,
-    info_open: bool,
+    /// FIND · SHOW's card is open, what is typed in its field, and its picture
+    find_open: bool,
+    find: String,
+    find_card: Option<(u64, Layer)>,
     /// MAC addresses masked in names, for pictures others see
     pub private: bool,
     /// the ports of the jacks kept on in the cue, filled in its colour, with those linked into
@@ -536,7 +533,6 @@ pub struct Engine {
     /// the details and the tables being drawn on the painter's threads: what for, where
     insp_want: Option<(u64, [f64; 4])>,
     bottom_want: Option<(u64, [f64; 4])>,
-    strip_want: Option<(u64, [f64; 4])>,
     /// the bodies of the details and the tables, their scrollbars, a thumb in the hand (which,
     /// where the pointer took it, the scroll then), and the bars' pixels (track, thumb)
     bodies: [Body; 2],
@@ -595,7 +591,7 @@ impl Engine {
             view: View { x: 40.0, y: 140.0, s: 0.8 },
             fitted: false,
             sel: None,
-            tab: Tab::Top,
+            tab: Tab::Server,
             itab: ITab::Info,
             otype: "Node".into(),
             show: [true, true, true, false],
@@ -625,11 +621,10 @@ impl Engine {
             want_lay: None,
             graph_want: None,
             inbox: painter::Inbox::default(),
-            strip: None,
+            version: String::new(),
             insp: None,
             bottom: None,
             overlay: None,
-            overlay_b: None,
             legend: None,
             spent: Vec::new(),
             nums: HashMap::new(),
@@ -641,15 +636,15 @@ impl Engine {
             reveal: false,
             bottom_shut: true,
             legend_open: false,
-            info: None,
-            info_open: false,
+            find_open: false,
+            find: String::new(),
+            find_card: None,
             private: false,
             cue_kept: Vec::new(),
             port_hover: None,
             hover_pic: None,
             insp_want: None,
             bottom_want: None,
-            strip_want: None,
             bodies: Default::default(),
             bars: [None, None],
             bar_drag: None,
@@ -668,11 +663,10 @@ impl Engine {
             self.graph_layer = None;
             self.glide = None;
             self.view_to = None;
-            (self.strip, self.strip_want) = (None, None);
             (self.insp, self.insp_want) = (None, None);
             (self.bottom, self.bottom_want) = (None, None);
             self.bodies = Default::default();
-            (self.overlay, self.overlay_b) = (None, None);
+            (self.overlay, self.find_card) = (None, None);
             self.legend = None;
             self.nums.clear();
             // the graph first: the diagnostics below open on a click
@@ -1044,7 +1038,7 @@ impl Engine {
         self.xruns.retain(|id, _| alive.contains(id));
         self.params.retain(|id, _| alive.contains(id));
         self.asked.retain(|id| alive.contains(id));
-        self.issues = self.find_issues(graph, devices, settings);
+        self.issues = self.find_issues(graph);
         // pictures for others to see: no MAC addresses (Bluetooth devices are named by them)
         if self.private {
             for n in &mut self.model.nodes {
@@ -1074,12 +1068,14 @@ impl Engine {
     }
 
     /// What looks wrong, or is worth knowing, worst first.
-    fn find_issues(&self, graph: &Graph, devices: &[&Device], settings: &HashMap<String, String>) -> Vec<Issue> {
+    fn find_issues(&self, graph: &Graph) -> Vec<Issue> {
         let m = &self.model;
         let mut v = Vec::new();
         for n in &m.nodes {
             if n.state == "error" {
-                v.push(Issue { level: 2, tag: "ERROR", node: Some(n.id), title: format!("{} is in error", n.desc), hint: "PipeWire could not start it: its device may be busy or gone.".into() });
+                // PipeWire's own words for why, when it gives them
+                let why = graph.failed(n.id).filter(|w| !w.trim().is_empty()).map_or_else(|| "PipeWire gives no reason: its device may be busy or gone.".to_owned(), |w| format!("PipeWire says: {w}"));
+                v.push(Issue { level: 2, tag: "ERROR", node: Some(n.id), title: format!("{} is in error", n.desc), hint: why });
             }
             if let Some((x, at)) = self.xruns.get(&n.id)
                 && *x > 0
@@ -1096,7 +1092,8 @@ impl Engine {
         }
         for l in &m.links {
             if l.state == "error" {
-                v.push(Issue { level: 2, tag: "LINK", node: Some(l.out_node), title: format!("link {} is in error", l.id), hint: "Its two ends could not agree on a format.".into() });
+                let why = graph.failed(l.id).filter(|w| !w.trim().is_empty()).map_or_else(|| "PipeWire gives no reason: often its two ends could not agree on a format.".to_owned(), |w| format!("PipeWire says: {w}"));
+                v.push(Issue { level: 2, tag: "LINK", node: Some(l.out_node), title: format!("link {} is in error", l.id), hint: why });
             }
         }
         for g in &m.groups {
@@ -1117,61 +1114,6 @@ impl Engine {
                 }
             }
         }
-        // apps whose streams are linked to nothing (Patchcord's passive meters don't count)
-        let mut lone: BTreeMap<String, (usize, u32)> = BTreeMap::new();
-        for n in &m.nodes {
-            if n.kind == NKind::Stream && !n.system && !m.links.iter().any(|l| !l.passive && (l.out_node == n.id || l.in_node == n.id)) {
-                let app = graph.props_of(n.id).and_then(|p| p.get("application.name").cloned()).unwrap_or_else(|| n.desc.clone());
-                let e = lone.entry(app).or_insert((0, n.id));
-                e.0 += 1;
-            }
-        }
-        for (app, (k, id)) in lone {
-            v.push(Issue { level: 1, tag: "NO LINKS", node: Some(id), title: format!("{app}: {k} stream{} linked to nothing", if k == 1 { "" } else { "s" }), hint: "It plays nowhere or records silence. Usually a paused app; if not, its target is gone.".into() });
-        }
-        let quantum = settings.get("clock.quantum").and_then(|v| v.parse::<u64>().ok()).unwrap_or(1024);
-        for g in &m.groups {
-            if g.quantum >= quantum {
-                continue;
-            }
-            let asks = g.members.iter().filter_map(|id| {
-                let lat = graph.props_of(*id)?.get("node.latency")?.split_once('/').map(|(q, r)| (q.parse::<u64>().ok(), r.parse::<u64>().ok()))?;
-                let (Some(q), Some(r)) = lat else { return None };
-                Some((q * g.rate as u64 / r.max(1), *id))
-            });
-            // only the one that made it this small: what it asks for is the group's quantum
-            if let Some((q, id)) = asks.min().filter(|(q, _)| *q <= g.quantum + g.quantum / 50)
-                && let Some(n) = m.node(id)
-            {
-                let d = m.node(g.driver).map_or("?".into(), |n| n.desc.clone());
-                v.push(Issue { level: 0, tag: "QUANTUM", node: Some(id), title: format!("{} asks for {q} samples: {d} runs at quantum {} ({})", n.desc, g.quantum, ms(g.quantum, g.rate)), hint: "Lower latency for the whole group, and more wake-ups a second. Fine for recording.".into() });
-            }
-        }
-        for g in &m.groups {
-            let cards: HashSet<String> = g.members.iter().filter_map(|id| graph.props_of(*id)?.get("device.id").cloned()).collect();
-            if cards.len() > 1 {
-                let d = m.node(g.driver).map_or("?".into(), |n| n.desc.clone());
-                v.push(Issue { level: 0, tag: "ONE CLOCK", node: Some(g.driver), title: format!("{} devices run on one clock: {d}'s", cards.len()), hint: "Two devices never tick exactly together: the followers are resampled a tiny bit all the time to stay in step.".into() });
-            }
-        }
-        for d in devices {
-            if let Some(c) = &d.card
-                && c.profile().is_some_and(|p| p.name == "off")
-            {
-                v.push(Issue { level: 0, tag: "PROFILE OFF", node: None, title: format!("{}: profile Off, so it has no nodes", d.name), hint: "PROFILE on its face (DESK) turns it on.".into() });
-            }
-        }
-        let meters: Vec<&ENode> = m.nodes.iter().filter(|n| n.kind == NKind::Meter).collect();
-        if !meters.is_empty() {
-            let busy: i64 = meters.iter().filter_map(|n| m.timing.get(&n.id)).map(|t| t.busy_ns).sum();
-            v.push(Issue {
-                level: 0,
-                tag: "PATCHCORD",
-                node: Some(meters[0].id),
-                title: format!("Patchcord measures with {} meter nodes: {:.0} µs per cycle", meters.len(), busy as f64 / 1000.0),
-                hint: "Passive nodes and links: they follow what runs and wake nothing. They go with Patchcord.".into(),
-            });
-        }
         v.sort_by_key(|i| std::cmp::Reverse(i.level));
         v
     }
@@ -1179,8 +1121,179 @@ impl Engine {
     // ---------------- layout of the graph ----------------
 
     fn visible(&self, n: &ENode) -> bool {
+        (0..SHOW.len()).all(|i| self.show[i] || !self.shown_by(i, n))
+    }
+
+    /// Whether ALSO SHOW's switch `i` is what shows node `n` (PATCHCORD, MIDI, NOT RUNNING,
+    /// INTERNAL).
+    fn shown_by(&self, i: usize, n: &ENode) -> bool {
         let running = self.model.group_of.contains_key(&n.id);
-        (self.show[0] || !matches!(n.kind, NKind::Meter | NKind::Cue)) && (self.show[1] || n.kind != NKind::Midi) && (self.show[2] || running) && (self.show[3] || n.kind != NKind::Driver || running)
+        match i {
+            0 => matches!(n.kind, NKind::Meter | NKind::Cue),
+            1 => n.kind == NKind::Midi,
+            2 => !running,
+            _ => n.kind == NKind::Driver && !running,
+        }
+    }
+
+    // ---------------- FIND ----------------
+
+    /// Whether node `n` matches what is typed in FIND: its name, description, id, class, or a
+    /// port's name, whatever the case.
+    fn matches(&self, n: &ENode) -> bool {
+        let t = self.find.trim().to_lowercase();
+        !t.is_empty()
+            && (n.desc.to_lowercase().contains(&t) || n.name.to_lowercase().contains(&t) || n.id.to_string() == t || n.class.to_lowercase().contains(&t) || n.ins.iter().chain(&n.outs).any(|p| p.name.to_lowercase().contains(&t)))
+    }
+
+    /// The blocks FIND picks out, as they stand in the graph (top to bottom, left to right):
+    /// while its card is open, of the ones shown.
+    fn found(&self) -> Vec<u32> {
+        if !self.find_open {
+            return Vec::new();
+        }
+        let mut v: Vec<(f64, f64, u32)> = self.model.nodes.iter().filter(|n| self.visible(n) && self.matches(n)).filter_map(|n| self.lay.pos.get(&n.id).map(|&(x, y)| (y, x, n.id))).collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        v.into_iter().map(|(_, _, id)| id).collect()
+    }
+
+    /// Whether FIND's card is open: what is typed goes to its field.
+    pub fn finding(&self) -> bool {
+        self.on && self.find_open
+    }
+
+    /// Opens or closes FIND · SHOW's card (one card at a time: the legend closes).
+    pub fn set_find(&mut self, on: bool) {
+        self.find_open = on;
+        if on {
+            self.legend_open = false;
+        }
+        self.dirty = true;
+    }
+
+    /// What FIND's field has; changed, nothing is gone to yet.
+    pub fn find_text(&mut self) -> &mut String {
+        self.dirty = true;
+        &mut self.find
+    }
+
+    /// Goes to the next block FIND picks out (or the previous one, `d` -1): chosen, its details
+    /// open, the graph moved to show it.
+    pub fn find_step(&mut self, d: i32) {
+        let found = self.found();
+        if found.is_empty() {
+            return;
+        }
+        let at = match self.sel {
+            Some(Sel::Node(id)) => found.iter().position(|&f| f == id),
+            _ => None,
+        };
+        let n = found.len() as i32;
+        let next = match at {
+            Some(i) => (i as i32 + d).rem_euclid(n),
+            None if d < 0 => n - 1,
+            None => 0,
+        };
+        self.select(Some(Sel::Node(found[next as usize])));
+        self.reveal = true;
+    }
+
+    /// FIND · SHOW's card: the field (what is typed, a caret), how many match and which one
+    /// is chosen, ▲ ▼; what a switch hides that matches, with a key to show it; ALSO SHOW's
+    /// switches, each its light, name, what it shows and how many. Its SVG, size and keys (in it).
+    fn find_svg(&self) -> (String, f64, f64, Vec<(Hit, [f64; 4])>) {
+        const W: f64 = 380.0;
+        let mut o = String::new();
+        let mut hits = Vec::new();
+        let head = |o: &mut String, y: f64, t: &str, r: &str| {
+            let _ = write!(o, r##"<text x="14" y="{y}" font-size="9" font-weight="bold" letter-spacing="1.2" fill="#7d8085">{t}</text><text x="{}" y="{y}" font-size="9" fill="#7d8085" text-anchor="end">{r}</text>"##, W - 14.0);
+        };
+        head(&mut o, 22.0, "FIND", "Ctrl+F · Esc");
+        // the field, ready to type, a caret after what is typed
+        let fx = 14.0;
+        let fw = W - 14.0 - fx - 54.0 - 2.0 * 30.0;
+        let typed = cut(&self.find, ((fw - 24.0) / 7.2) as usize);
+        let _ = write!(
+            o,
+            r##"<rect x="{fx}" y="30" width="{fw}" height="24" rx="3" fill="#0e0f10" stroke="#e58f2c"/><text x="{}" y="46" font-size="12" fill="#e6e7e8" xml:space="preserve">{}<tspan fill="#e58f2c">▏</tspan></text>"##,
+            fx + 8.0,
+            esc(&typed)
+        );
+        if self.find.is_empty() {
+            let _ = write!(o, r##"<text x="{}" y="46" font-size="12" fill="#55585b">a name, an id, a class, a port</text>"##, fx + 14.0);
+        }
+        let found = self.found();
+        let at = match self.sel {
+            Some(Sel::Node(id)) => found.iter().position(|&f| f == id),
+            _ => None,
+        };
+        let cnt = if self.find.trim().is_empty() {
+            String::new()
+        } else if found.is_empty() {
+            "none".into()
+        } else {
+            format!("{} of {}", at.map_or("–".into(), |i| (i + 1).to_string()), found.len())
+        };
+        let _ = write!(o, r##"<text x="{}" y="46" font-size="11" fill="#a8abae" text-anchor="end">{cnt}</text>"##, fx + fw + 52.0);
+        for (k, (d, arrow)) in [(-1, "M-4,2 l4,-4 l4,4"), (1, "M-4,-2 l4,4 l4,-4")].into_iter().enumerate() {
+            let bx = W - 14.0 - 54.0 + 30.0 * k as f64 - 6.0 + 6.0;
+            let _ = write!(
+                o,
+                r##"<rect x="{bx}" y="30" width="24" height="24" rx="3" fill="#2a2b2e" stroke="#0b0b0c"/><path transform="translate({},42)" d="{arrow}" fill="none" stroke="#e6e7e8" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>"##,
+                bx + 12.0
+            );
+            hits.push((Hit::FindStep(d), [bx, 30.0, 24.0, 24.0]));
+        }
+        // what matches but a switch hides: said, and a key to show it
+        let off: Vec<&ENode> = self.model.nodes.iter().filter(|n| !self.visible(n) && self.matches(n)).collect();
+        let mut y = 72.0;
+        if off.is_empty() {
+            let t = if !self.find.trim().is_empty() && found.is_empty() { "nothing by that: names, ids, classes, ports" } else { "in names, ids, classes and ports' names" };
+            let _ = write!(o, r##"<text x="14" y="{y}" font-size="10.5" fill="#7d8085">{t}</text>"##);
+        } else {
+            let why: Vec<usize> = (0..SHOW.len()).filter(|&i| !self.show[i] && off.iter().any(|n| self.shown_by(i, n))).collect();
+            let t = format!("{} more hidden by {}", off.len(), why.iter().map(|&i| SHOW[i].0).collect::<Vec<_>>().join(", "));
+            let _ = write!(o, r##"<text x="14" y="{y}" font-size="10.5" fill="#7d8085">{}</text>"##, esc(&t));
+            let mut bx = 14.0;
+            y += 8.0;
+            for &i in &why {
+                let label = format!("SHOW {}", SHOW[i].0);
+                let bw = text::width(text::BOLD, &label, 9.0, 0.4) + 14.0;
+                let _ = write!(o, r##"<rect x="{bx}" y="{y}" width="{bw}" height="18" rx="3" fill="#2a2b2e" stroke="#0b0b0c"/><text x="{}" y="{}" font-family="Noto Sans" font-weight="bold" font-size="9" letter-spacing=".4" fill="#e6e7e8">{}</text>"##, bx + 7.0, y + 12.5, esc(&label));
+                hits.push((Hit::Show(i), [bx, y, bw, 18.0]));
+                bx += bw + 6.0;
+            }
+            y += 18.0;
+        }
+        // ALSO SHOW: a row a switch
+        y += 22.0;
+        head(&mut o, y, "ALSO SHOW", "");
+        y += 6.0;
+        let what = ["Patchcord's own signal meters", "MIDI nodes", "suspended devices, idle streams", "Dummy-Driver, Freewheel-Driver"];
+        for (i, (name, _)) in SHOW.iter().enumerate() {
+            let n = self.model.nodes.iter().filter(|n| self.shown_by(i, n)).count();
+            let _ = write!(
+                o,
+                r##"<path d="M14,{y} H{}" stroke="#26272a"/><circle cx="19" cy="{}" r="3.5" fill="{}"/><text x="30" y="{}" font-family="Noto Sans" font-weight="bold" font-size="10" letter-spacing=".5" fill="#e6e7e8">{name}</text><text x="134" y="{}" font-size="10.5" fill="#7d8085">{}</text><text x="{}" y="{}" font-size="11" fill="#a8abae" text-anchor="end">{n}</text>"##,
+                W - 14.0,
+                y + 13.0,
+                if self.show[i] { "#ff4a32" } else { "#3a1512" },
+                y + 17.0,
+                y + 17.0,
+                what[i],
+                W - 14.0,
+                y + 17.0
+            );
+            hits.push((Hit::Show(i), [14.0, y, W - 28.0, 26.0]));
+            y += 26.0;
+        }
+        let h = y + 10.0;
+        let svg = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{h}" viewBox="0 0 {W} {h}" font-family="Noto Sans Mono"><rect x=".5" y=".5" width="{}" height="{}" rx="6" fill="#1d1e21" stroke="#0b0b0c"/>{o}</svg>"##,
+            W - 1.0,
+            h - 1.0
+        );
+        (svg, W, h, hits)
     }
 
     fn layout(&self) -> Layout {
@@ -1571,6 +1684,8 @@ impl Engine {
             Some((Carry::Node(_), snap)) => snap,
             _ => None,
         };
+        // what FIND picks out: amber, as chosen; the rest of the graph fades
+        let found: HashSet<u32> = self.found().into_iter().collect();
         let any = carry.is_none() && self.sel.is_some() && (!focus.is_empty() || matches!(self.sel, Some(Sel::Link(_))));
         // what is chosen turns the LCD's amber: a node where it shows its colour (frame, header,
         // ports, the links out of it), a port as a whole, a link and the ports at its ends
@@ -1599,7 +1714,7 @@ impl Engine {
             } else {
                 (from, 1.6, r#" stroke-opacity=".45""#)
             };
-            let op = if carry.is_some() { 0.35 } else if any && !hl { 0.2 } else { 1.0 };
+            let op = if carry.is_some() { 0.35 } else if !found.is_empty() { if found.contains(&l.out_node) || found.contains(&l.in_node) { 1.0 } else { 0.2 } } else if any && !hl { 0.2 } else { 1.0 };
             let (stroke, width) = if self.sel == Some(Sel::Link(l.id)) {
                 (SEL.to_owned(), 2.6)
             } else if chosen_node(l.out_node) && l.state != "error" {
@@ -1613,7 +1728,7 @@ impl Engine {
             let Some(&(x, y)) = lay.pos.get(&n.id) else { continue };
             let nh = node_h(n);
             let on = focus.contains(&n.id);
-            let dim = (any && !on && !near.contains(&n.id)) || (carry.is_some() && !cand_nodes.contains(&n.id));
+            let dim = if !found.is_empty() && carry.is_none() { !found.contains(&n.id) } else { (any && !on && !near.contains(&n.id)) || (carry.is_some() && !cand_nodes.contains(&n.id)) };
             let running = m.group_of.contains_key(&n.id);
             let op = if dim { if carry.is_some() { 0.3 } else { 0.35 } } else if running { 1.0 } else { 0.72 };
             let xr = self.xruns.get(&n.id).is_some_and(|x| x.0 > 0);
@@ -1643,16 +1758,14 @@ impl Engine {
             let tag_s = cut(&tags.join(" · "), 26);
             let tag_w = if tags.is_empty() { 0.0 } else { text::width(text::BOLD, &tag_s, 8.5, 0.5) + 8.0 };
             let class_n = (((NW - 22.0 - tag_w) / 6.05) as usize).saturating_sub(n.id.to_string().len() + 3).max(4);
-            let timed = t.is_some() && running;
-            let busy = if numbers { t.filter(|_| running).map_or(String::new(), |t| format!("{:.0}µs", t.busy_ns as f64 / 1000.0)) } else { String::new() };
-            let picked = chosen_node(n.id) || carry_target == Some(n.id);
+            let picked = chosen_node(n.id) || carry_target == Some(n.id) || found.contains(&n.id);
             let c = if picked { SEL.to_owned() } else { hex(n.color) };
             // the head as a frame's band on the rack and in MIXER: the kind's colour across the
-            // block's top, the name on it in the band's lettering, the light at its left, the
-            // time at its right on a dark key (as GRAPH's on a band); under it, on the block,
-            // the id and class and the tags. Then the frame
+            // block's top, the name on it in the band's lettering, the light at its left; under
+            // it, on the block, the id and class and the tags. Then the frame (how long it works
+            // a cycle is in TOP, not here)
             let ink = if picked { SEL_TEXT } else if hex(n.color) == face::kind_colour("NO CLASS") { "#1d1e20" } else { "#f3efe6" };
-            let room = NW - 32.0 - if timed { 56.0 } else { 0.0 };
+            let room = NW - 32.0;
             let name = cut(&n.desc.to_uppercase(), (room / 8.4) as usize);
             let _ = write!(
                 o,
@@ -1667,13 +1780,6 @@ impl Engine {
                 n.id,
                 esc(&cut(&n.class, class_n)),
             );
-            if timed {
-                // the dark key the time goes on (the time itself a picture of its own: `numbers`)
-                let _ = write!(o, r##"<rect x="{}" y="5" width="48" height="14" rx="2.5" fill="#1b1c1e" stroke="#000" stroke-opacity=".45"/>"##, NW - 56.0);
-                if !busy.is_empty() {
-                    let _ = write!(o, r##"<text x="{}" y="16" text-anchor="end" font-family="Noto Sans Mono" font-size="10" fill="#5cff7a">{busy}</text>"##, NW - 13.0);
-                }
-            }
             if !tags.is_empty() {
                 let _ = write!(o, r##"<text x="{}" y="36" text-anchor="end" font-size="8.5" font-weight="bold" letter-spacing=".5" fill="{}">{}</text>"##, NW - 10.0, if xr { "#ff6a52" } else { "#e58f2c" }, esc(&tag_s));
             }
@@ -1734,23 +1840,11 @@ impl Engine {
             let x = BPAD + text::width(text::MONO_BOLD, "DRIVER", 12.0, 1.0) + text::width(text::MONO_BOLD, &format!("  {}  ", d.map_or("?", |n| n.desc.as_str())), 12.0, 0.0) + text::width(text::MONO, &band_rest(g, d), 12.0, 0.0);
             out.push(Num { key: format!("g{}", g.driver), x, y: y + 22.0, end: false, text: band_load(g), size: 12.0, fill: "#7d8085", alpha: 1.0 });
         }
-        let (focus, near) = self.focus();
-        let carrying = self.carry_hint().is_some();
-        let (_, cand_nodes) = self.carry_sets();
-        let any = !carrying && self.sel.is_some() && (!focus.is_empty() || matches!(self.sel, Some(Sel::Link(_))));
-        for n in &m.nodes {
-            let (Some(&(x, y)), Some(t)) = (lay.pos.get(&n.id), m.timing.get(&n.id)) else { continue };
-            if !m.group_of.contains_key(&n.id) {
-                continue;
-            }
-            let dim = (any && !focus.contains(&n.id) && !near.contains(&n.id)) || (carrying && !cand_nodes.contains(&n.id));
-            out.push(Num { key: format!("n{}", n.id), x: x + NW - 13.0, y: y + 16.0, end: true, text: format!("{:.0}µs", t.busy_ns as f64 / 1000.0), size: 10.0, fill: "#5cff7a", alpha: if dim { 0.35 } else { 1.0 } });
-        }
         out
     }
 
-    /// The window's parts, in logical pixels: (strip, graph, inspector, tabs) as [x, y, w, h].
-    fn areas(&self, w: f64, h: f64) -> [[f64; 4]; 4] {
+    /// The window's parts, in logical pixels: (graph, inspector, tabs) as [x, y, w, h].
+    fn areas(&self, w: f64, h: f64) -> [[f64; 4]; 3] {
         let top = panel::H;
         let bottom_h = if self.bottom_shut { 0.0 } else { BOTTOM_H.min(((h - top - panel::STATUS_H) * 0.4).max(120.0)) };
         let by = h - panel::STATUS_H - bottom_h;
@@ -1758,13 +1852,13 @@ impl Engine {
         // keeps the whole width
         let iw = if self.sel.is_none() { 0.0 } else { INSP_W.min(w * 0.5) };
         let gw = if w < NARROW { w } else { w - iw };
-        let gy = top + STRIP_H;
-        [[0.0, top, w, STRIP_H], [0.0, gy, gw, (by - gy).max(0.0)], [w - iw, gy, iw, (by - gy).max(0.0)], [0.0, by, w, bottom_h]]
+        let gy = top;
+        [[0.0, gy, gw, (by - gy).max(0.0)], [w - iw, gy, iw, (by - gy).max(0.0)], [0.0, by, w, bottom_h]]
     }
 
     /// Whether a window point (in pixels) is over the graph.
     fn in_graph(&self, p: (f64, f64), size: (f64, f64), dpi: f64) -> bool {
-        let [_, g, _, _] = self.areas(size.0 / dpi, size.1 / dpi);
+        let [g, _, _] = self.areas(size.0 / dpi, size.1 / dpi);
         let (x, y) = (p.0 / dpi, p.1 / dpi);
         x >= g[0] && x < g[0] + g[2] && y >= g[1] && y < g[1] + g[3]
     }
@@ -1774,7 +1868,10 @@ impl Engine {
     /// many of them are the graph's (the link in the hand goes over those, under the panels).
     pub fn sprites(&mut self, size: (u32, u32), dpi: f64, version: &str) -> (Vec<Pic<'_>>, usize) {
         let (fw, fh) = (size.0 as f64 / dpi, size.1 as f64 / dpi);
-        let [strip_a, graph_a, insp_a, bottom_a] = self.areas(fw, fh);
+        let [graph_a, insp_a, bottom_a] = self.areas(fw, fh);
+        if self.version != version {
+            version.clone_into(&mut self.version);
+        }
         self.spent.clear();
         self.glide_view();
         let mut t = Instant::now();
@@ -1784,7 +1881,7 @@ impl Engine {
         };
         // the graph: drawn again when what it shows changes, or sharp again after zooming
         let mut hsh = std::hash::DefaultHasher::new();
-        std::hash::Hash::hash(&(&self.model.links, self.sel, self.show, &self.cue_kept, self.carry_hint()), &mut hsh);
+        std::hash::Hash::hash(&(&self.model.links, self.sel, self.show, &self.cue_kept, self.carry_hint(), self.found()), &mut hsh);
         for n in &self.model.nodes {
             // (all that graph_svg draws of a node: its tags too)
             std::hash::Hash::hash(&(n.id, n.state, &n.ins, &n.outs, &n.desc, self.model.group_of.get(&n.id), self.xruns.get(&n.id).map(|x| x.0)), &mut hsh);
@@ -1875,51 +1972,33 @@ impl Engine {
                 }
             }
         }
-        // the strip, the inspector, the tabs and the graph's overlay: in window units
+        // the inspector, the tabs and the graph's overlay: in window units
         lap(&mut self.spent, "engine.reveal");
-        let (strip_svg, info_at, hidden) = self.strip_svg(strip_a[2], version);
-        let sig = hash_str(&strip_svg, dpi);
-        // it changes with the load, a few times a second: on the painter's threads after the first
-        if self.strip.is_none() {
-            self.strip = Some((sig, Layer { id: next_id(), pm: rasterize(&text::svg_options(), &strip_svg, dpi), x: strip_a[0], y: strip_a[1], w: strip_a[2], h: strip_a[3] }));
-        } else if self.strip.as_ref().is_some_and(|(s, _)| *s != sig) && self.strip_want.map(|w| w.0) != Some(sig) {
-            self.strip_want = Some((sig, strip_a));
-            self.inbox.ask(painter::key("strip", 0u8), sig, strip_svg, dpi);
-        }
         self.hits.clear();
-        // the i cell, and its card under it while open, over everything below the strip
-        match info_at {
-            Some([ix, iy, iw, ih]) => {
-                self.hits.push((Hit::Info, [strip_a[0] + ix, strip_a[1] + iy, iw, ih]));
-                if self.info_open {
-                    let (svg, w, h) = Self::info_svg(&hidden);
-                    let sig = hash_str(&svg, dpi);
-                    let x = (strip_a[0] + ix).min(fw - 6.0 - w).max(6.0);
-                    let y = strip_a[1] + STRIP_H - 4.0;
-                    if self.info.as_ref().is_none_or(|(s, _)| *s != sig) {
-                        self.info = Some((sig, Layer { id: next_id(), pm: rasterize(&text::svg_options(), &svg, dpi), x, y, w, h }));
-                    }
-                    if let Some((_, l)) = &mut self.info {
-                        (l.x, l.y) = (x, y);
-                    }
-                    self.hits.push((Hit::LegendWin, [x, y, w, h]));
-                } else {
-                    self.info = None;
-                }
+
+        let (ov, ov_hits, keys_h) = self.overlay_svg(graph_a);
+        {
+            let gw = graph_a[2].max(1.0);
+            let sh = keys_h.min(graph_a[3].max(1.0));
+            let sig = hash_str(&ov, dpi);
+            if self.overlay.as_ref().is_none_or(|(s, _)| *s != sig) {
+                self.overlay = Some((sig, Layer { id: next_id(), pm: rasterize(&text::svg_options(), &ov, dpi), x: graph_a[0], y: graph_a[1], w: gw, h: sh }));
             }
-            None => {
-                self.info_open = false;
-                self.info = None;
+            if let Some((_, l)) = &mut self.overlay {
+                (l.x, l.y) = (graph_a[0], graph_a[1]);
             }
         }
-        let info_hits = self.hits.len();
-        // the legend, over the graph's bottom left just above its key, made smaller to fit a small
-        // window
+        self.hits.extend(ov_hits.iter().cloned());
+        // the legend under its key, made smaller to fit a small window; FIND · SHOW's card under
+        // its key (one of them at a time)
+        let key_x = |k: &Hit| ov_hits.iter().find(|(h, _)| h == k).map_or(graph_a[0] + 12.0, |(_, r)| r[0]);
+        let (legend_x, find_x) = (key_x(&Hit::Legend), key_x(&Hit::Find));
+        let below = graph_a[1] + keys_h;
         if self.legend_open {
             let (lw, lh) = legend_size();
-            let s = ((graph_a[2] - 12.0) / lw).min((graph_a[3] - 48.0) / lh).clamp(0.2, 1.0);
+            let s = ((graph_a[0] + graph_a[2] - legend_x - 6.0) / lw).min((graph_a[3] - keys_h - 12.0) / lh).clamp(0.2, 1.0);
             let (w, h) = (lw * s, lh * s);
-            let (x, y) = (graph_a[0] + 6.0, graph_a[1] + graph_a[3] - 36.0 - h);
+            let (x, y) = (legend_x, below);
             let sig = hash_str(LEGEND_SVG, dpi * s);
             if self.legend.as_ref().is_none_or(|(sg, _)| *sg != sig) {
                 self.legend = Some((sig, Layer { id: next_id(), pm: rasterize(&text::svg_options(), LEGEND_SVG, dpi * s), x, y, w, h }));
@@ -1933,25 +2012,23 @@ impl Engine {
         } else {
             self.legend = None;
         }
-        lap(&mut self.spent, "engine.strip+legend");
-        // what of the graph the details leave in sight
-        let seen = if self.sel.is_some() { graph_a[2].min(insp_a[0] - graph_a[0]) } else { graph_a[2] };
-        let (ov, ov_hits, chips_h) = self.overlay_svg(graph_a, seen);
-        // its two strips: the same drawing, each through a window on it
-        let (gw, gh) = (graph_a[2].max(1.0), graph_a[3].max(1.0));
-        let (top_h, bot_h) = (chips_h.min(gh), OVERLAY_BOTTOM.min(gh));
-        let head = format!(r#"width="{gw}" height="{gh}" viewBox="0 0 {gw} {gh}""#);
-        for (layer, y0, sh) in [(&mut self.overlay, 0.0, top_h), (&mut self.overlay_b, gh - bot_h, bot_h)] {
-            let svg = ov.replacen(&head, &format!(r#"width="{gw}" height="{sh}" viewBox="0 {y0} {gw} {sh}""#), 1);
+        let mut card_hits = Vec::new();
+        if self.find_open {
+            let (svg, w, h, hs) = self.find_svg();
+            let (x, y) = (find_x, below);
             let sig = hash_str(&svg, dpi);
-            if layer.as_ref().is_none_or(|(s, _)| *s != sig) {
-                *layer = Some((sig, Layer { id: next_id(), pm: rasterize(&text::svg_options(), &svg, dpi), x: graph_a[0], y: graph_a[1] + y0, w: gw, h: sh }));
+            if self.find_card.as_ref().is_none_or(|(sg, _)| *sg != sig) {
+                self.find_card = Some((sig, Layer { id: next_id(), pm: rasterize(&text::svg_options(), &svg, dpi), x, y, w, h }));
             }
-            if let Some((_, l)) = layer {
-                (l.x, l.y) = (graph_a[0], graph_a[1] + y0);
+            if let Some((_, l)) = &mut self.find_card {
+                (l.x, l.y) = (x, y);
             }
+            card_hits.extend(hs.into_iter().map(|(k, [hx, hy, hw, hh])| (k, [x + hx, y + hy, hw, hh])));
+            card_hits.push((Hit::LegendWin, [x, y, w, h]));
+        } else {
+            self.find_card = None;
         }
-        self.hits.extend(ov_hits);
+
         lap(&mut self.spent, "engine.overlay");
         if self.sel.is_none() {
             (self.insp, self.insp_want) = (None, None);
@@ -1968,10 +2045,10 @@ impl Engine {
                 self.insp_want = Some((sig, insp_a));
                 self.inbox.ask(painter::key("details", 0u8), sig, isvg, dpi);
             }
-            // before the graph's own: in a narrow window the details lie over it; the i cell's
-            // card stays first
-            self.hits.splice(info_hits..info_hits, ihits.into_iter().chain([(Hit::LegendWin, insp_a)]));
+            // before the graph's own: in a narrow window the details lie over it
+            self.hits.splice(0..0, ihits.into_iter().chain([(Hit::LegendWin, insp_a)]));
         }
+        self.hits.splice(0..0, card_hits);
         lap(&mut self.spent, "engine.details");
         if self.bottom_shut {
             (self.bottom, self.bottom_want) = (None, None);
@@ -1991,7 +2068,7 @@ impl Engine {
         }
         lap(&mut self.spent, "engine.tables");
         // the same picture may sit elsewhere after the window or a neighbour changed size
-        for (l, at) in [(&mut self.strip, strip_a), (&mut self.insp, insp_a), (&mut self.bottom, bottom_a)] {
+        for (l, at) in [(&mut self.insp, insp_a), (&mut self.bottom, bottom_a)] {
             if let Some((_, l)) = l {
                 (l.x, l.y) = (at[0], at[1]);
             }
@@ -2034,7 +2111,7 @@ impl Engine {
             out.push((l, l.x * v.s + v.x, l.y * v.s + v.y, l.w * v.s, l.h * v.s, None, 1.0));
         }
         let graph_end = out.len();
-        for l in [&self.overlay, &self.overlay_b, &self.legend, &self.strip].into_iter().flatten().map(|(_, l)| l) {
+        for l in [&self.overlay, &self.legend, &self.find_card].into_iter().flatten().map(|(_, l)| l) {
             out.push((l, l.x * dpi, l.y * dpi, l.w * dpi, l.h * dpi, None, 1.0));
         }
         // the details and the tables: each its frame, then its body slid to where it is
@@ -2052,9 +2129,6 @@ impl Engine {
                     out.push((px, r[0] * dpi, r[1] * dpi, r[2] * dpi, r[3] * dpi, None, 1.0));
                 }
             }
-        }
-        if let Some((_, l)) = &self.info {
-            out.push((l, l.x * dpi, l.y * dpi, l.w * dpi, l.h * dpi, None, 1.0));
         }
         (out, graph_end)
     }
@@ -2107,7 +2181,7 @@ impl Engine {
     /// The GPU has these pictures' pixels now: they are let go. Returns how many bytes.
     pub fn uploaded(&mut self, has: impl Fn(u64) -> bool) -> usize {
         let mut freed = 0;
-        let parts = [self.graph_layer.as_mut().map(|(_, _, l)| l), self.strip.as_mut().map(|(_, l)| l), self.insp.as_mut().map(|(_, l)| l), self.bottom.as_mut().map(|(_, l)| l), self.overlay.as_mut().map(|(_, l)| l), self.overlay_b.as_mut().map(|(_, l)| l), self.legend.as_mut().map(|(_, l)| l), self.info.as_mut().map(|(_, l)| l), self.hover_pic.as_mut().map(|(_, l)| l), self.glide.as_mut().map(|g| &mut g.old)];
+        let parts = [self.graph_layer.as_mut().map(|(_, _, l)| l), self.insp.as_mut().map(|(_, l)| l), self.bottom.as_mut().map(|(_, l)| l), self.overlay.as_mut().map(|(_, l)| l), self.find_card.as_mut().map(|(_, l)| l), self.legend.as_mut().map(|(_, l)| l), self.hover_pic.as_mut().map(|(_, l)| l), self.glide.as_mut().map(|g| &mut g.old)];
         let bodies = self.bodies.iter_mut().filter_map(|b| b.layer.as_mut().map(|(_, _, l)| l));
         for l in self.nums.values_mut().map(|(_, l)| l).chain(parts.into_iter().flatten()).chain(bodies) {
             if has(l.id) {
@@ -2117,8 +2191,9 @@ impl Engine {
         freed
     }
 
-    /// ENGINE's strip `w` wide: its SVG, where its i cell is (in the strip) and what is behind it.
-    fn strip_svg(&self, w: f64, version: &str) -> (String, Option<[f64; 4]>, Vec<(String, String)>) {
+    /// SERVER's rows: what PipeWire itself is doing (it was ENGINE's strip): each a name, its
+    /// value now and what it means.
+    fn server_rows(&self) -> Vec<(&'static str, String, &'static str)> {
         let m = &self.model;
         let ports: usize = m.nodes.iter().map(|n| n.ins.len() + n.outs.len()).sum();
         let get = |name: &str, key: &str| self.meta.iter().find(|((id, s, k), _)| *s == 0 && k == key && self.meta_name(*id) == name).map(|(_, (_, v))| v.clone());
@@ -2132,175 +2207,78 @@ impl Engine {
         let load = self.load.back().copied().unwrap_or(0.0);
         let session = self.objects.iter().find(|o| o.0 == "Client" && o.2.to_lowercase().contains("wireplumber")).map_or("—".into(), |_| "WirePlumber".to_owned());
         let cnt = |lv: u8| self.issues.iter().filter(|i| i.level == lv).count();
-        // what matters most first: the clock, the quantum, the load, the xruns
-        let cells: Vec<(String, String)> = vec![
-            ("CLOCK".into(), format!("{rate} Hz{}", forced[0].as_ref().map_or(String::new(), |f| format!(" · forced {f}")))),
-            ("QUANTUM".into(), format!("{q} · {qmin}–{qmax}{}", forced[1].as_ref().map_or(String::new(), |f| format!(" · forced {f}")))),
-            ("DSP LOAD".into(), format!("{:.1}%", load * 100.0)),
-            ("XRUNS".into(), xr.to_string()),
-            ("DRIVERS".into(), format!("{} running", m.groups.len())),
-            ("SERVER".into(), format!("PipeWire {version}")),
-            ("SESSION".into(), session),
-            ("ALLOWED".into(), cut(allowed.trim_matches(|c| c == '[' || c == ']').trim(), 22)),
-            ("OBJECTS".into(), format!("{} · {} nodes · {ports} ports · {} links", self.objects.len(), m.nodes.len(), m.links.len())),
-        ];
-        // in this order while there is room (DSP LOAD with its curve when that fits too), the rest
-        // behind the i cell; nothing under HEALTH, however narrow the window
-        let cw = |k: &str, v: &str| text::width(text::MONO_BOLD, v, 12.0, 0.0).max(text::width(text::MONO_BOLD, k, 9.0, 1.2)) + 20.0;
-        let room = w - 12.0 - HEALTH_W - 10.0;
-        let all = 12.0 + CURVE_W + cells.iter().map(|(k, v)| cw(k, v) + 10.0).sum::<f64>();
-        let (room, curve) = if all <= room { (room, true) } else { (room - INFO_W - 10.0, false) };
-        let mut shown: Vec<(&str, &str, bool)> = Vec::new();
-        let mut hidden = Vec::new();
-        let mut x = 12.0;
-        for (k, v) in &cells {
-            let w = cw(k, v);
-            if hidden.is_empty() && x + w <= room {
-                // the curve too, if it still leaves room for the rest of what matters first
-                let with = k == "DSP LOAD" && (curve || x + w + CURVE_W + cells.iter().skip(3).take(1).map(|(k, v)| cw(k, v) + 10.0).sum::<f64>() <= room);
-                shown.push((k, v, with));
-                x += w + 10.0 + if with { CURVE_W } else { 0.0 };
-            } else {
-                hidden.push((k.clone(), v.clone()));
-            }
-        }
-        let mut o = String::new();
-        let mut x = 12.0;
-        for (k, v, with_curve) in shown {
-            let cw = cw(k, v) + if with_curve { CURVE_W } else { 0.0 };
-            let _ = write!(
-                o,
-                r##"<rect x="{}" y="8" width="{}" height="36" rx="4" fill="#0c0c0d"/><rect x="{x}" y="10" width="{cw}" height="32" rx="3" fill="url(#lcd)"/><text x="{}" y="22" font-size="9" letter-spacing="1.2" fill="#3a2408" opacity=".65">{k}</text><text x="{}" y="37" font-size="12" fill="#3a2408" xml:space="preserve">{}</text>"##,
-                x - 2.0,
-                cw + 4.0,
-                x + 10.0,
-                x + 10.0,
-                esc(v)
-            );
-            if with_curve {
-                // the busiest group's load over the last 45 seconds
-                let top = self.load.iter().copied().fold(0.01, f32::max) as f64 * 1.2;
-                let px = x + cw - 190.0;
-                let pts: Vec<String> = self.load.iter().enumerate().map(|(j, v)| format!("{:.1},{:.1}", px + j as f64 * 2.0, 39.0 - *v as f64 / top * 24.0)).collect();
-                if pts.len() > 1 {
-                    let _ = write!(o, r##"<polyline points="{}" fill="none" stroke="#3a2408" stroke-width="1.4"/>"##, pts.join(" "));
-                }
-            }
-            x += cw + 10.0;
-        }
-        // the rest behind i: its card drops under it
-        let info = (!hidden.is_empty()).then(|| {
-            let _ = write!(
-                o,
-                r##"<rect x="{}" y="8" width="{}" height="36" rx="4" fill="#0c0c0d"/><rect x="{x}" y="10" width="{INFO_W}" height="32" rx="3" fill="url(#lcd)"{}/><text x="{}" y="32" font-family="Noto Sans" font-weight="bold" font-size="17" fill="#3a2408" text-anchor="middle">i</text>"##,
-                x - 2.0,
-                INFO_W + 4.0,
-                if self.info_open { r##" stroke="#3a2408" stroke-width="2""## } else { "" },
-                x + INFO_W / 2.0
-            );
-            [x, 10.0, INFO_W, 32.0]
-        });
-        // health: errors, warnings, notes
-        let hx = w - HEALTH_W - 12.0;
-        let _ = write!(
-            o,
-            r##"<rect x="{}" y="8" width="{}" height="36" rx="4" fill="#0c0c0d"/><rect x="{hx}" y="10" width="{HEALTH_W}" height="32" rx="3" fill="url(#lcd)"/><text x="{}" y="22" font-size="9" letter-spacing="1.2" fill="#3a2408" opacity=".65">HEALTH</text>"##,
-            hx - 2.0,
-            HEALTH_W + 4.0,
-            hx + 10.0
-        );
-        for (j, (lv, c)) in [(2u8, "#ff4a32"), (1, "#ffb02e"), (0, "#5fd4ff")].iter().enumerate() {
-            let cx = hx + 16.0 + j as f64 * 32.0;
-            let _ = write!(o, r##"<circle cx="{cx}" cy="33" r="4" fill="{c}" stroke="#3a2408" stroke-opacity=".5"/><text x="{}" y="37" font-size="12" fill="#3a2408">{}</text>"##, cx + 8.0, cnt(*lv));
-        }
-        let svg = format!(
-            r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{STRIP_H}" viewBox="0 0 {w} {STRIP_H}" font-family="Noto Sans Mono" font-weight="bold"><defs><linearGradient id="lcd" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f7bb62"/><stop offset="1" stop-color="#e58f2c"/></linearGradient></defs><rect width="{w}" height="{STRIP_H}" fill="#1a1b1d"/><path d="M0,{} H{w}" stroke="#000"/>{o}</svg>"##,
-            STRIP_H - 0.5
-        );
-        (svg, info, hidden)
-    }
-
-    /// The i cell's card: the strip's cells that didn't fit, one a line, as on the LCD.
-    fn info_svg(cells: &[(String, String)]) -> (String, f64, f64) {
-        let kw = cells.iter().map(|(k, _)| text::width(text::MONO_BOLD, k, 9.0, 1.2)).fold(0.0, f64::max) + 16.0;
-        let vw = cells.iter().map(|(_, v)| text::width(text::MONO_BOLD, v, 12.0, 0.0)).fold(0.0, f64::max);
-        let (w, h) = (14.0 + kw + vw + 14.0, 12.0 + cells.len() as f64 * 22.0 + 6.0);
-        let mut o = String::new();
-        for (i, (k, v)) in cells.iter().enumerate() {
-            let y = 12.0 + i as f64 * 22.0 + 14.0;
-            let _ = write!(o, r##"<text x="14" y="{}" font-size="9" letter-spacing="1.2" fill="#3a2408" opacity=".65">{k}</text><text x="{}" y="{y}" font-size="12" fill="#3a2408" xml:space="preserve">{}</text>"##, y - 1.0, 14.0 + kw, esc(v));
-        }
-        let svg = format!(
-            r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" font-family="Noto Sans Mono" font-weight="bold"><defs><linearGradient id="lcd" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f7bb62"/><stop offset="1" stop-color="#e58f2c"/></linearGradient></defs><rect width="{w}" height="{h}" rx="5" fill="#0c0c0d"/><rect x="2" y="2" width="{}" height="{}" rx="4" fill="url(#lcd)"/>{o}</svg>"##,
-            w - 4.0,
-            h - 4.0
-        );
-        (svg, w, h)
+        vec![
+            ("CLOCK", format!("{rate} Hz{}", forced[0].as_ref().map_or(String::new(), |f| format!(" · forced {f}"))), "the sample rate the graph runs at (clock.rate)"),
+            ("QUANTUM", format!("{q} · {qmin}–{qmax}{}", forced[1].as_ref().map_or(String::new(), |f| format!(" · forced {f}"))), "samples a cycle, and the least and most it may be: larger is safer, smaller is quicker"),
+            ("DSP LOAD", format!("{:.1}%", load * 100.0), "how much of its cycle the busiest driver spends working; the last 45 seconds"),
+            ("XRUNS", xr.to_string(), "cycles missed since ENGINE opened: a click or a gap in the sound"),
+            ("DRIVERS", format!("{} running", m.groups.len()), "devices (or the dummy driver) that clock a group of nodes: see TOP"),
+            ("SERVER", format!("PipeWire {}", self.version), "the PipeWire this runs on"),
+            ("SESSION", session, "the session manager: what links new streams and keeps settings"),
+            ("ALLOWED", cut(allowed.trim_matches(|c| c == '[' || c == ']').trim(), 60), "rates the clock may switch to (clock.allowed-rates)"),
+            ("OBJECTS", format!("{} · {} nodes · {ports} ports · {} links", self.objects.len(), m.nodes.len(), m.links.len()), "everything PipeWire lists: see OBJECTS"),
+            ("HEALTH", format!("{} · {}", cnt(2), cnt(1)), "errors and warnings found: see ISSUES"),
+        ]
     }
 
     fn meta_name(&self, id: u32) -> String {
         self.objects.iter().find(|o| o.1 == id && o.0 == "Metadata").map_or_else(|| id.to_string(), |o| o.2.clone())
     }
 
-    /// The SHOW chips over the graph's top left corner, and the keys to the legend and the diagnostics at its bottom.
-    /// `seen`: how much of its width the details leave in sight.
-    /// (And how deep its chips go: its top strip.)
-    fn overlay_svg(&self, a: [f64; 4], seen: f64) -> (String, Vec<(Hit, [f64; 4])>, f64) {
-        let (w, h) = (a[2].max(1.0), a[3].max(1.0));
-        let seen = seen.clamp(1.0, w);
+    /// The keys over the graph's top left corner: FIND · SHOW (and how many blocks its switches
+    /// hide), LEGEND, DIAGNOSTICS (how many issues, its arrow the way a click moves the tables).
+    /// Its SVG, where its keys are, and how deep it is.
+    fn overlay_svg(&self, a: [f64; 4]) -> (String, Vec<(Hit, [f64; 4])>, f64) {
+        const KH: f64 = 24.0;
+        let w = a[2].max(1.0);
         let mut o = String::new();
         let mut hits = Vec::new();
-        let _ = write!(o, r##"<text x="12" y="25" font-size="9" letter-spacing="1.2" fill="#7d8085">ALSO SHOW</text>"##);
-        let (mut x, mut y) = (84.0, 10.0);
-        for (i, (name, _)) in SHOW.iter().enumerate() {
-            let cw = text::width(text::BOLD, name, 10.0, 0.5) + 30.0;
-            // what doesn't fit goes on a row below
-            if x > 84.0 && x + cw > seen - 12.0 {
-                (x, y) = (84.0, y + 28.0);
+        let key = |o: &mut String, x: f64, kw: f64, on: bool| {
+            let _ = write!(o, r##"<rect x="{x}" y="10" width="{kw}" height="{KH}" rx="4" fill="{}" stroke="#0b0b0c"/>"##, if on { "#34363a" } else { "#2a2b2e" });
+            if on {
+                let _ = write!(o, r##"<rect x="{}" y="10.75" width="{}" height="{}" rx="3.5" fill="none" stroke="#e58f2c" stroke-width="1.2"/>"##, x + 0.75, kw - 1.5, KH - 1.5);
             }
-            let _ = write!(
-                o,
-                r##"<rect x="{x}" y="{y}" width="{cw}" height="22" rx="4" fill="#2a2b2e" stroke="#0b0b0c"/><circle cx="{}" cy="{}" r="3" fill="{}"/><text x="{}" y="{}" font-size="10" letter-spacing=".5" fill="#e6e7e8" font-family="Noto Sans" font-weight="bold">{name}</text>"##,
-                x + 10.0,
-                y + 11.0,
-                if self.show[i] { "#ff4a32" } else { "#3a1512" },
-                x + 19.0,
-                y + 15.0
-            );
-            hits.push((Hit::Show(i), [a[0] + x, a[1] + y, cw, 22.0]));
-            x += cw + 8.0;
-        }
-        let ly = h - 14.0;
-        // the diagnostics below, put away: a key to bring them back, level with the legend
-        if self.bottom_shut {
-            // what is below, and how much is wrong
-            let label = match self.issues.len() {
-                0 => "DIAGNOSTICS".to_owned(),
-                1 => "DIAGNOSTICS · 1 ISSUE".to_owned(),
-                n => format!("DIAGNOSTICS · {n} ISSUES"),
-            };
-            let cw = text::width(text::BOLD, &label, 10.0, 0.5) + 36.0;
-            let cx = (seen - cw - 12.0).max(118.0);
-            let _ = write!(
-                o,
-                r##"<rect x="{cx}" y="{}" width="{cw}" height="24" rx="4" fill="#2a2b2e" stroke="#0b0b0c"/><path d="M{},{} l5,-5 l5,5" fill="none" stroke="#9a9da1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><text x="{}" y="{}" font-size="10" letter-spacing=".5" fill="#e6e7e8" font-family="Noto Sans" font-weight="bold">{label}</text>"##,
-                ly - 16.0,
-                cx + 10.0,
-                ly - 1.5,
-                cx + 26.0,
-                ly
-            );
-            hits.push((Hit::Bottom, [a[0] + cx, a[1] + ly - 16.0, cw, 24.0]));
-        }
-        // the legend: a key to open it, level with the diagnostics' key
-        let _ = write!(
-            o,
-            r##"<g transform="translate(6,{})"><rect width="104" height="24" rx="4" fill="{}" stroke="#0b0b0c"/><circle cx="14" cy="12" r="7" fill="none" stroke="#9a9da1" stroke-width="1.4"/><text x="14" y="15.5" font-family="Noto Sans" font-weight="bold" font-size="9.5" fill="#e6e7e8" text-anchor="middle">?</text><text x="28" y="16" font-family="Noto Sans" font-weight="bold" font-size="10" letter-spacing=".5" fill="#e6e7e8">LEGEND</text></g>"##,
-            ly - 16.0,
-            if self.legend_open { "#3a3b3f" } else { "#2a2b2e" }
-        );
-        hits.push((Hit::Legend, [a[0] + 6.0, a[1] + ly - 16.0, 104.0, 24.0]));
-        (format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" font-family="Noto Sans Mono">{o}</svg>"#), hits, y + 26.0)
+        };
+        let label = |o: &mut String, x: f64, t: &str, fill: &str| {
+            let _ = write!(o, r##"<text x="{x}" y="26" font-family="Noto Sans" font-weight="bold" font-size="10" letter-spacing=".5" fill="{fill}">{}</text>"##, esc(t));
+        };
+        let tw = |t: &str| text::width(text::BOLD, t, 10.0, 0.5);
+        let mut x = 12.0;
+        // FIND · SHOW: and what its switches hide
+        let hidden = self.model.nodes.iter().filter(|n| !self.visible(n)).count();
+        let more = if hidden > 0 { format!(" · {hidden} HIDDEN") } else { String::new() };
+        let kw = KEY_TEXT + tw("FIND · SHOW") + tw(&more) + 12.0;
+        key(&mut o, x, kw, self.find_open);
+        o.push_str(&key_icon(x, 10.0, ICON_FIND));
+        label(&mut o, x + KEY_TEXT, "FIND · SHOW", "#e6e7e8");
+        label(&mut o, x + KEY_TEXT + tw("FIND · SHOW"), &more, "#e58f2c");
+        hits.push((Hit::Find, [a[0] + x, a[1] + 10.0, kw, KH]));
+        x += kw + 8.0;
+        // LEGEND
+        let kw = KEY_TEXT + tw("LEGEND") + 12.0;
+        key(&mut o, x, kw, self.legend_open);
+        o.push_str(&key_icon(x, 10.0, ICON_LEGEND));
+        label(&mut o, x + KEY_TEXT, "LEGEND", "#e6e7e8");
+        hits.push((Hit::Legend, [a[0] + x, a[1] + 10.0, kw, KH]));
+        x += kw + 8.0;
+        // DIAGNOSTICS: how much is wrong, and an arrow: down while the tables show (a click puts
+        // them away), up while they are away (a click brings them up)
+        let issues = match self.issues.len() {
+            0 => String::new(),
+            1 => " · 1 ISSUE".to_owned(),
+            n => format!(" · {n} ISSUES"),
+        };
+        let kw = KEY_TEXT + tw("DIAGNOSTICS") + tw(&issues) + 26.0;
+        key(&mut o, x, kw, false);
+        o.push_str(&key_icon(x, 10.0, ICON_DIAGNOSTICS));
+        label(&mut o, x + KEY_TEXT, "DIAGNOSTICS", "#e6e7e8");
+        label(&mut o, x + KEY_TEXT + tw("DIAGNOSTICS"), &issues, "#e58f2c");
+        let cx = x + kw - 16.0;
+        let d = if self.bottom_shut { format!("M{},{} l3.5,-3.5 l3.5,3.5", cx - 3.5, 24.0) } else { format!("M{},{} l3.5,3.5 l3.5,-3.5", cx - 3.5, 20.0) };
+        let _ = write!(o, r##"<path d="{d}" fill="none" stroke="#e6e7e8" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>"##);
+        hits.push((Hit::Bottom, [a[0] + x, a[1] + 10.0, kw, KH]));
+        let h = 10.0 + KH + 6.0;
+        (format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" font-family="Noto Sans Mono">{o}</svg>"#), hits, h)
     }
 
     /// The inspector: what is selected, with its tabs.
@@ -2412,7 +2390,7 @@ impl Engine {
                         heading(&mut body, &mut y, "ON THE DESK");
                         let desk = match (&n.desk, n.kind) {
                             (_, NKind::Meter) => "Patchcord's own: a meter (the LEDs in a frame). Passive: it follows what runs and wakes nothing. Not on the desk.".to_owned(),
-                            (_, NKind::Cue) if n.name == CUE_NODE => "Patchcord's cue, its in side: what you listen to (CUE, or Alt over a jack on the desk) comes in here on passive links. It wakes nothing: what is asleep stays silent. Not on the desk.".to_owned(),
+                            (_, NKind::Cue) if n.name == CUE_NODE => "Patchcord's cue, its in side: what you listen to (CUE, a click on a jack or a port) comes in here. Its links wake what they come from while it is listened to (a mic asleep), and it sleeps again after. Not on the desk.".to_owned(),
                             (_, NKind::Cue) => "Patchcord's cue, its out side: what you listen to plays from here into the default output, at the CUE LEVEL. Not on the desk.".to_owned(),
                             (_, NKind::Driver) => "A clock of PipeWire itself, for nodes without a device. Not on the desk.".to_owned(),
                             (Some((_, name, labels, hidden)), _) => format!("{name} · {}{}", labels.join(" + "), if *hidden { " · hidden on the desk" } else { "" }),
@@ -2701,28 +2679,18 @@ impl Engine {
         hits.push((Hit::Close, [a[0] + w - 34.0, a[1] + 8.0, 30.0, 30.0]));
         let mut top = 51.0;
         if !tabs.is_empty() {
-            let _ = write!(head, r##"<rect y="51" width="{w}" height="28" fill="#1a1b1d"/><path d="M0,79.5 H{w}" stroke="#000"/>"##);
-            let mut x = 10.0;
-            for t in &tabs {
-                let name = match t {
-                    ITab::Info => "INFO",
-                    ITab::Conn => "CONN",
-                    ITab::Props => "PROPS",
-                    ITab::Params => "PARAMS",
-                    ITab::Timing => "TIMING",
-                };
-                let tw = text::width(text::BOLD, name, 10.0, 0.6) + 24.0;
-                let on = *t == self.itab;
-                let _ = write!(
-                    head,
-                    r##"<rect x="{x}" y="57" width="{tw}" height="23" rx="3" fill="{}"/>{}<text x="{}" y="73" font-family="Noto Sans" font-weight="bold" font-size="10" letter-spacing=".6" fill="{}" text-anchor="middle">{name}</text>"##,
-                    if on { "#2e3034" } else { "#232427" },
-                    if on { format!(r##"<rect x="{x}" y="57" width="{tw}" height="2" fill="#e58f2c"/>"##) } else { String::new() },
-                    x + tw / 2.0,
-                    if on { "#e6e7e8" } else { "#9a9da1" }
-                );
+            let name = |t: &ITab| match t {
+                ITab::Info => "INFO",
+                ITab::Conn => "CONN",
+                ITab::Props => "PROPS",
+                ITab::Params => "PARAMS",
+                ITab::Timing => "TIMING",
+            };
+            let names: Vec<(&str, bool)> = tabs.iter().map(|t| (name(t), *t == self.itab)).collect();
+            // the chosen tab opens into the details under it
+            let at = tab_row(&mut head, 51.0, 80.0, w, &names, "#17181a");
+            for (t, (x, tw)) in tabs.iter().zip(at) {
                 hits.push((Hit::ITab(*t), [a[0] + x, a[1] + 57.0, tw, 23.0]));
-                x += tw + 4.0;
             }
             top = 80.0;
         }
@@ -2762,41 +2730,30 @@ impl Engine {
         let (w, h) = (a[2].max(1.0), a[3].max(1.0));
         let m = &self.model;
         let mut hits = Vec::new();
-        let mut head = format!(r##"<rect width="{w}" height="{TABS_H}" fill="#1a1b1d"/><path d="M0,.5 H{w} M0,{} H{w}" stroke="#000"/>"##, TABS_H - 0.5);
-        let mut x = 10.0;
-        for (t, name) in [(Tab::Top, "TOP".to_owned()), (Tab::Issues, format!("ISSUES {}", self.issues.len())), (Tab::Objects, "OBJECTS".into()), (Tab::Metadata, "METADATA".into()), (Tab::Events, "EVENTS".into())] {
-            let tw = text::width(text::BOLD, &name, 10.0, 0.6) + 24.0;
-            let on = t == self.tab;
-            let _ = write!(
-                head,
-                r##"<rect x="{x}" y="6" width="{tw}" height="24" rx="3" fill="{}"/>{}<text x="{}" y="22" font-family="Noto Sans" font-weight="bold" font-size="10" letter-spacing=".6" fill="{}" text-anchor="middle">{}</text>"##,
-                if on { "#2e3034" } else { "#232427" },
-                if on { format!(r##"<rect x="{x}" y="6" width="{tw}" height="2" fill="#e58f2c"/>"##) } else { String::new() },
-                x + tw / 2.0,
-                if on { "#e6e7e8" } else { "#9a9da1" },
-                esc(&name)
-            );
-            hits.push((Hit::Tab(t), [a[0] + x, a[1] + 6.0, tw, 24.0]));
-            x += tw + 4.0;
+        // (the colour right under the chosen tab: the tables' head band; OBJECTS has none)
+        let under = if self.tab == Tab::Objects { "#131416" } else { "#1a1b1d" };
+        let mut head = String::new();
+        let tabs = [(Tab::Server, "SERVER".to_owned()), (Tab::Top, "TOP".to_owned()), (Tab::Issues, format!("ISSUES {}", self.issues.len())), (Tab::Objects, "OBJECTS".into()), (Tab::Metadata, "METADATA".into()), (Tab::Events, "EVENTS".into())];
+        let names: Vec<(&str, bool)> = tabs.iter().map(|(t, n)| (n.as_str(), *t == self.tab)).collect();
+        let at = tab_row(&mut head, 0.0, TABS_H, w, &names, under);
+        let _ = write!(head, r##"<path d="M0,.5 H{w}" stroke="#000"/>"##);
+        for ((t, _), (x, tw)) in tabs.iter().zip(&at) {
+            hits.push((Hit::Tab(*t), [a[0] + x, a[1] + 6.0, *tw, TABS_H - 6.0]));
         }
-        // puts the tabs away (DIAGNOSTICS, by the legend, brings them back)
-        let tx = w - 32.0;
+        let x = at.last().map_or(10.0, |(x, tw)| x + tw + 4.0);
+        // (DIAGNOSTICS over the graph puts the tabs away and brings them back)
+        let tx = w - 8.0;
+        // a report for a bug ticket: a key as DIAGNOSTICS' over the graph (and FIND's, LEGEND's),
+        // with the panel's SAVE disk before its name
+        let rw = KEY_TEXT + text::width(text::BOLD, "SAVE REPORT", 10.0, 0.5) + 12.0;
+        let rx = (tx - rw).max(x + 6.0);
         let _ = write!(
             head,
-            r##"<rect x="{tx}" y="6" width="24" height="24" rx="3" fill="#232427"/><path d="M{},15 l5,5 l5,-5" fill="none" stroke="#9a9da1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"##,
-            tx + 7.0
+            r##"<rect x="{rx}" y="4" width="{rw}" height="24" rx="4" fill="#2a2b2e" stroke="#0b0b0c"/>{}<text x="{}" y="20" font-family="Noto Sans" font-weight="bold" font-size="10" letter-spacing=".5" fill="#e6e7e8">SAVE REPORT</text>"##,
+            key_icon(rx, 4.0, super::panel::icon(super::panel::Key::Save)),
+            rx + KEY_TEXT
         );
-        hits.push((Hit::Bottom, [a[0] + tx, a[1] + 6.0, 24.0, 24.0]));
-        // a report for a bug ticket, a key as on the panel, where the diagnostics are
-        let rx = (tx - 10.0 - REPORT_W).max(x + 6.0);
-        let _ = write!(
-            head,
-            r##"<rect x="{}" y="4" width="{}" height="26" rx="4" fill="#050506" stroke="#55585b" stroke-width="1"/><rect x="{rx}" y="6" width="{REPORT_W}" height="22" rx="3" fill="#262729" stroke="#070708"/><text x="{}" y="21" font-family="Noto Sans" font-weight="bold" font-size="10" letter-spacing=".4" fill="#e6e7e8" text-anchor="middle">SAVE REPORT</text>"##,
-            rx - 2.0,
-            REPORT_W + 4.0,
-            rx + REPORT_W / 2.0
-        );
-        hits.push((Hit::Report, [a[0] + rx, a[1] + 4.0, REPORT_W, 26.0]));
+        hits.push((Hit::Report, [a[0] + rx, a[1] + 4.0, rw, 24.0]));
         // the body: a table head (fixed) and rows (scrolled); rows that select carry a Sel
         let mut thead = String::new();
         let mut body = String::new();
@@ -2804,6 +2761,54 @@ impl Engine {
         let mut y = 0.0;
         let sel_row = |s: Option<Sel>| s.is_some() && s == self.sel;
         match self.tab {
+            Tab::Server => {
+                let rows = self.server_rows();
+                // three columns, each as wide as its widest text, one gap between them; every row
+                // as high as the others, DSP LOAD's curve inside its own
+                const GAP: f64 = 28.0;
+                const RH: f64 = 26.0;
+                let name_w = rows.iter().map(|(k, ..)| text::width(text::MONO_BOLD, k, 10.0, 1.1)).fold(0.0, f64::max);
+                // (HEALTH's value is drawn as "N ERRORS   N WARNINGS")
+                let shown = |k: &str, v: &str| if k == "HEALTH" { v.split_once(" · ").map_or_else(|| v.to_owned(), |(e, w)| format!("{e} ERRORS   {w} WARNINGS")) } else { v.to_owned() };
+                let value_w = |k: &str, v: &str| text::width(text::MONO_BOLD, &shown(k, v), 12.0, 0.0);
+                let widest = rows.iter().map(|(k, v, _)| value_w(k, v)).fold(0.0, f64::max);
+                let (nx, vx) = (14.0, 14.0 + name_w + GAP);
+                let wx = vx + widest + GAP;
+                for (c, cx) in [("NAME", nx), ("NOW", vx), ("WHAT IT IS", wx)] {
+                    let _ = write!(thead, r##"<text x="{cx}" y="14" font-size="11" fill="#7d8085">{c}</text>"##);
+                }
+                for (k, v, what) in rows {
+                    let ty = y + RH / 2.0 + 4.0;
+                    let _ = write!(
+                        body,
+                        r##"<text x="{nx}" y="{ty}" font-size="10" font-weight="bold" letter-spacing="1.1" fill="#e58f2c">{k}</text><text x="{wx}" y="{ty}" font-size="11" fill="#7d8085">{}</text>"##,
+                        esc(&cut(what, ((w - wx - 10.0) / 6.6).max(10.0) as usize))
+                    );
+                    if k == "HEALTH" {
+                        // errors and warnings, each counted in its word's colour, as ISSUES has them
+                        let mut x = vx;
+                        for ((c, word), n) in [("#ff5a42", "ERRORS"), ("#ffb02e", "WARNINGS")].iter().zip(v.split(" · ")) {
+                            let t = format!("{n} {word}");
+                            let _ = write!(body, r##"<text x="{x}" y="{ty}" font-size="12" font-weight="bold" fill="{c}">{t}</text>"##);
+                            x += text::width(text::MONO_BOLD, &t, 12.0, 0.0) + text::width(text::MONO_BOLD, "   ", 12.0, 0.0);
+                        }
+                    } else {
+                        let _ = write!(body, r##"<text x="{vx}" y="{ty}" font-size="12" font-weight="bold" fill="#e6e7e8" xml:space="preserve">{}</text>"##, esc(&v));
+                    }
+                    // DSP LOAD's curve: the busiest driver's load over 45 seconds, from just after
+                    // its value to where the widest value ends
+                    if k == "DSP LOAD" && self.load.len() > 1 {
+                        let px = vx + text::width(text::MONO_BOLD, &v, 12.0, 0.0) + 14.0;
+                        let (pw, ph) = ((vx + widest - px).max(120.0), RH - 8.0);
+                        let top = self.load.iter().copied().fold(0.01, f32::max) as f64 * 1.2;
+                        let step = pw / 89.0;
+                        let pts: Vec<String> = self.load.iter().enumerate().map(|(j, l)| format!("{:.1},{:.1}", px + j as f64 * step, y + 4.0 + ph - *l as f64 / top * ph)).collect();
+                        let _ = write!(body, r##"<rect x="{px}" y="{}" width="{pw}" height="{ph}" fill="#1f2023"/><polyline points="{}" fill="none" stroke="#e58f2c" stroke-width="1.4"/>"##, y + 4.0, pts.join(" "));
+                    }
+                    let _ = write!(body, r##"<path d="M0,{} H{w}" stroke="#1c1d20"/>"##, y + RH);
+                    y += RH;
+                }
+            }
             Tab::Top => {
                 let cols = top_columns(w);
                 for &(c, cx, right) in &cols {
@@ -2882,25 +2887,22 @@ impl Engine {
                     y = 24.0;
                 }
                 for i in &self.issues {
-                    let (c, tc) = match i.level {
-                        2 => ("#ff4a32", "#ff6a52"),
-                        1 => ("#ffb02e", "#ffb02e"),
-                        _ => ("#5fd4ff", "#5fd4ff"),
-                    };
+                    // how bad, in a word of its colour; then what it is about
+                    let (word, c) = if i.level >= 2 { ("ERROR", "#ff5a42") } else { ("WARNING", "#ffb02e") };
                     let sel = i.node.map(Sel::Node);
                     if sel_row(sel) {
                         let _ = write!(body, r##"<rect y="{y}" width="{w}" height="40" fill="#2a2618"/>"##);
                     }
                     let _ = write!(
                         body,
-                        r##"<circle cx="18" cy="{}" r="4" fill="{c}"/><text x="32" y="{}" font-family="Noto Sans" font-weight="bold" font-size="10" letter-spacing=".6" fill="{tc}">{}</text><text x="140" y="{}" font-size="11.5" fill="#e6e7e8">{}</text><text x="140" y="{}" font-size="10.5" fill="#7d8085">{}</text><path d="M0,{} H{w}" stroke="#1c1d20"/>"##,
-                        y + 14.0,
+                        r##"<text x="14" y="{}" font-family="Noto Sans" font-weight="bold" font-size="10" letter-spacing=".8" fill="{c}">{word}</text><text x="92" y="{}" font-family="Noto Sans" font-weight="bold" font-size="10" letter-spacing=".6" fill="#a8abae">{}</text><text x="200" y="{}" font-size="11.5" fill="#e6e7e8">{}</text><text x="200" y="{}" font-size="10.5" fill="#7d8085">{}</text><path d="M0,{} H{w}" stroke="#1c1d20"/>"##,
+                        y + 18.0,
                         y + 18.0,
                         i.tag,
                         y + 17.0,
-                        esc(&cut(&i.title, ((w - 150.0) / 7.0) as usize)),
+                        esc(&cut(&i.title, ((w - 210.0) / 7.0) as usize)),
                         y + 32.0,
-                        esc(&cut(&i.hint, ((w - 150.0) / 6.4) as usize)),
+                        esc(&cut(&i.hint, ((w - 210.0) / 6.4) as usize)),
                         y + 40.0
                     );
                     rows.push((sel, y, 40.0));
@@ -2908,8 +2910,9 @@ impl Engine {
                 }
             }
             Tab::Objects => {
-                // the types on the left, the chosen type's objects on the right
-                let mut ty = 0.0;
+                // the types on the left, the chosen type's objects on the right, under their heads
+                let mut ty = 20.0;
+                let _ = write!(thead, r##"<text x="14" y="14" font-size="11" fill="#7d8085">TYPE</text>"##);
                 for t in OBJECT_TYPES {
                     let k = self.objects.iter().filter(|o| o.0 == t).count();
                     if k == 0 {
@@ -2928,7 +2931,29 @@ impl Engine {
                     hits.push((Hit::OType(t.to_owned()), [a[0] + 6.0, a[1] + TABS_H + 4.0 + ty, 158.0, 19.0]));
                     ty += 19.0;
                 }
-                for o in self.objects.iter().filter(|o| o.0 == self.otype) {
+                // three columns as wide as their widest text, one gap between them
+                const GAP: f64 = 28.0;
+                let mine: Vec<&(String, u32, String, String)> = self.objects.iter().filter(|o| o.0 == self.otype).collect();
+                let tw = |t: &str| text::width(text::MONO, t, 11.0, 0.0);
+                let id_w = mine.iter().map(|o| tw(&o.1.to_string())).fold(tw("ID"), f64::max);
+                let room = w - 172.0 - 14.0 - id_w - 2.0 * GAP;
+                let name_w = mine.iter().map(|o| tw(&o.2)).fold(tw("NAME"), f64::max).min(room * 0.6);
+                let (ix, nx) = (172.0 + 14.0 + id_w, 172.0 + 14.0 + id_w + GAP);
+                let dx = nx + name_w + GAP;
+                let (name_head, more_head) = match self.otype.as_str() {
+                    "Node" => ("NAME", "CLASS"),
+                    "Port" => ("NODE:PORT", "DIRECTION"),
+                    "Link" => ("OUTPUT → INPUT", "STATE"),
+                    "Client" => ("APPLICATION", "API"),
+                    "Device" => ("NAME", "DESCRIPTION"),
+                    _ => ("NAME", ""),
+                };
+                let _ = write!(
+                    thead,
+                    r##"<text x="{ix}" y="14" font-size="11" fill="#7d8085" text-anchor="end">ID</text><text x="{nx}" y="14" font-size="11" fill="#7d8085">{}</text><text x="{dx}" y="14" font-size="11" fill="#7d8085">{more_head}</text>"##,
+                    esc(name_head)
+                );
+                for o in mine {
                     let sel = Some(match o.0.as_str() {
                         "Node" => Sel::Node(o.1),
                         "Port" => Sel::Port(o.1),
@@ -2938,16 +2963,17 @@ impl Engine {
                     if sel_row(sel) {
                         let _ = write!(body, r##"<rect x="172" y="{y}" width="{}" height="{ROW_H}" fill="#2a2618"/>"##, w - 172.0);
                     }
+                    // (a client that gives no name: a dash, not an empty row)
+                    let (name, fill) = if o.2.trim().is_empty() { ("—".to_owned(), "#55585b") } else { (cut(&o.2, (name_w / 6.6).max(10.0) as usize), "#e6e7e8") };
                     let _ = write!(
                         body,
-                        r##"<text x="230" y="{}" font-size="11" fill="#a8abae" text-anchor="end">{}</text><text x="244" y="{}" font-size="11" fill="#e6e7e8" xml:space="preserve">{}</text><text x="{}" y="{}" font-size="11" fill="#7d8085" xml:space="preserve">{}</text>"##,
+                        r##"<text x="{ix}" y="{}" font-size="11" fill="#a8abae" text-anchor="end">{}</text><text x="{nx}" y="{}" font-size="11" fill="{fill}" xml:space="preserve">{}</text><text x="{dx}" y="{}" font-size="11" fill="#7d8085" xml:space="preserve">{}</text>"##,
                         y + 14.0,
                         o.1,
                         y + 14.0,
-                        esc(&cut(&o.2, ((w * 0.62 - 260.0) / 6.6).max(10.0) as usize)),
-                        w * 0.62,
+                        esc(&name),
                         y + 14.0,
-                        esc(&cut(&o.3, ((w * 0.38 - 16.0) / 6.6).max(6.0) as usize))
+                        esc(&cut(&o.3, ((w - dx - 10.0) / 6.6).max(6.0) as usize))
                     );
                     rows.push((sel, y, ROW_H));
                     y += ROW_H;
@@ -3003,7 +3029,7 @@ impl Engine {
                 }
             }
         }
-        let thead_h = if matches!(self.tab, Tab::Top | Tab::Metadata) { 20.0 } else { 0.0 };
+        let thead_h = if matches!(self.tab, Tab::Server | Tab::Top | Tab::Objects | Tab::Metadata) { 20.0 } else { 0.0 };
         let top = TABS_H + 4.0 + thead_h;
         let body_h = h - top;
         let sc = self.scroll[1].clamp(0.0, (y + 8.0 - body_h).max(0.0));
@@ -3079,9 +3105,15 @@ impl Engine {
                 Hit::Desk(key) => return Some(Action::Desk(key)),
                 Hit::Report => return Some(Action::Report),
                 Hit::Bottom => self.bottom_shut = !self.bottom_shut,
-                Hit::Legend => self.legend_open = !self.legend_open,
+                Hit::Legend => {
+                    self.legend_open = !self.legend_open;
+                    if self.legend_open {
+                        self.find_open = false;
+                    }
+                }
+                Hit::Find => self.set_find(!self.find_open),
+                Hit::FindStep(d) => self.find_step(d),
                 Hit::LegendWin => {}
-                Hit::Info => self.info_open = !self.info_open,
                 // a port's LINK TO row: links it there, or takes the link away
                 Hit::LinkTo(o, i) => {
                     let l = vec![(o, i)];
@@ -3208,7 +3240,7 @@ impl Engine {
         if !self.carrying() {
             return false;
         }
-        let [_, g, _, _] = self.areas(size.0 as f64 / dpi, size.1 as f64 / dpi);
+        let [g, _, _] = self.areas(size.0 as f64 / dpi, size.1 as f64 / dpi);
         let (x0, y0, x1, y1) = (g[0] * dpi, g[1] * dpi, (g[0] + g[2]) * dpi, (g[1] + g[3]) * dpi);
         let edge = 48.0 * dpi;
         let push = |v: f64, lo: f64, hi: f64| if v < lo + edge { ((lo + edge - v) / edge).min(1.0) } else if v > hi - edge { -((v - (hi - edge)) / edge).min(1.0) } else { 0.0 };
@@ -3298,6 +3330,12 @@ impl Engine {
     }
 
     /// The chosen link, as (output port, input port): what Delete takes away.
+    /// Whether a link (output port, input port) is Patchcord's own: into one of its meters, or
+    /// into or out of its cue. Those aren't taken away from ENGINE.
+    pub fn patchcords(&self, (o, i): (u32, u32)) -> bool {
+        [o, i].iter().any(|p| self.model.port_node.get(p).and_then(|n| self.model.node(*n)).is_some_and(|n| matches!(n.kind, NKind::Meter | NKind::Cue)))
+    }
+
     pub fn chosen_link(&self) -> Option<(u32, u32)> {
         let Some(Sel::Link(id)) = self.sel else { return None };
         self.model.links.iter().find(|l| l.id == id).map(|l| (l.out_port, l.in_port))
@@ -3361,14 +3399,17 @@ impl Engine {
         Some(((x + 60.0) * self.view.s + self.view.x, (y + 12.0) * self.view.s + self.view.y))
     }
 
-    /// Opens the strip's i card (for pictures without a window).
-    pub fn open_info(&mut self) {
-        self.info_open = true;
-    }
-
     /// The ? key: opens or closes the legend.
     pub fn toggle_legend(&mut self) {
         self.legend_open = !self.legend_open;
+        if self.legend_open {
+            self.find_open = false;
+        }
+    }
+
+    /// D: shows or puts away the diagnostics below the graph.
+    pub fn toggle_bottom(&mut self) {
+        self.bottom_shut = !self.bottom_shut;
     }
 
     /// The frame round port `id` where a click would listen to it (red: it would feed back), in
@@ -3451,7 +3492,7 @@ impl Engine {
 
     /// The wheel at window pixel `p`: zooms the graph, or scrolls the inspector or the tabs.
     pub fn wheel(&mut self, p: (f64, f64), f: f64, size: (u32, u32), dpi: f64) {
-        let [_, _, insp, bottom] = self.areas(size.0 as f64 / dpi, size.1 as f64 / dpi);
+        let [_, insp, bottom] = self.areas(size.0 as f64 / dpi, size.1 as f64 / dpi);
         let (lx, ly) = (p.0 / dpi, p.1 / dpi);
         let inside = |a: [f64; 4]| lx >= a[0] && lx < a[0] + a[2] && ly >= a[1] && ly < a[1] + a[3];
         let step = if f > 1.0 { -60.0 } else if f < 1.0 { 60.0 } else { 0.0 };
@@ -3516,7 +3557,7 @@ impl Engine {
                 return;
             }
         }
-        for (key, want, layer) in [("details", &mut self.insp_want, &mut self.insp), ("tables", &mut self.bottom_want, &mut self.bottom), ("strip", &mut self.strip_want, &mut self.strip)] {
+        for (key, want, layer) in [("details", &mut self.insp_want, &mut self.insp), ("tables", &mut self.bottom_want, &mut self.bottom)] {
             if let Some((sig, [x, y, w, h])) = *want
                 && sig == done.sig
                 && done.key == painter::key(key, 0u8)
@@ -3535,7 +3576,7 @@ impl Engine {
 
     /// Fits the graph into its part of the window.
     pub fn fit(&mut self, size: (u32, u32), dpi: f64) {
-        let [_, g, _, _] = self.areas(size.0 as f64 / dpi, size.1 as f64 / dpi);
+        let [g, _, _] = self.areas(size.0 as f64 / dpi, size.1 as f64 / dpi);
         self.lay = self.layout();
         // there as the desk goes: gliding, the graph drawn sharp again once it is there
         self.view_to = Some((self.fitted_view(g, dpi), Instant::now()));
@@ -3582,7 +3623,7 @@ impl Engine {
         let (w, h) = (self.lay.w.max(10.0), self.lay.h.max(10.0));
         let (gap, title, top) = (60.0, 34.0, 110.0);
         let mut o = String::new();
-        let (ov, ..) = self.overlay_svg([0.0, 0.0, 2.0 * w + gap, 80.0], 2.0 * w + gap);
+        let (ov, ..) = self.overlay_svg([0.0, 0.0, 2.0 * w + gap, 80.0]);
         let _ = write!(o, r#"<g transform="translate(30,20)">{ov}</g>"#);
         for (i, (name, sel)) in [("NOTHING SELECTED", None), ("A NODE SELECTED", Some(Sel::Node(node))), ("A PORT SELECTED", Some(Sel::Port(port))), ("A LINK SELECTED", Some(Sel::Link(link)))].into_iter().enumerate() {
             self.sel = sel;
@@ -3609,11 +3650,12 @@ impl Engine {
             self.sel = Some(Sel::Node(n.id));
         }
         self.tab = match tab {
+            Some("top") => Tab::Top,
             Some("issues") => Tab::Issues,
             Some("objects") => Tab::Objects,
             Some("metadata") => Tab::Metadata,
             Some("events") => Tab::Events,
-            _ => Tab::Top,
+            _ => Tab::Server,
         };
         self.itab = match itab {
             Some("conn") => ITab::Conn,
@@ -3636,11 +3678,12 @@ impl Engine {
         let (hit, _) = self.hits.iter().find(|(_, [x, y, w, h])| lx >= *x && lx <= x + w && ly >= *y && ly <= y + h)?;
         Some(match hit {
             Hit::Show(i) => format!("{}: {}", SHOW[*i].0, SHOW[*i].1),
-            Hit::Bottom => if self.bottom_shut { "show the diagnostics: TOP, ISSUES, OBJECTS, METADATA, EVENTS" } else { "hide the diagnostics" }.into(),
+            Hit::Bottom => if self.bottom_shut { "show the diagnostics: SERVER, TOP, ISSUES, OBJECTS, METADATA, EVENTS (D)" } else { "put the diagnostics away (D)" }.into(),
+            Hit::Find => if self.find_open { "close FIND · SHOW (Esc)" } else { "find a block by its name, id, class or a port; what else the graph shows (Ctrl+F)" }.into(),
+            Hit::FindStep(d) => if *d < 0 { "the previous one (Shift+Enter, ↑)" } else { "the next one (Enter, ↓)" }.into(),
             Hit::Legend => if self.legend_open { "close the legend (? or Esc)" } else { "how to read the graph: colours, lights, tags, links (?)" }.into(),
             Hit::Close => "close the details (choosing something opens them again)".into(),
             Hit::Report => "save what PipeWire has to a text file for a bug report, without names, addresses or what plays".into(),
-            Hit::Info => if self.info_open { "close the card" } else { "the rest: what the strip has no room for" }.into(),
             Hit::Tab(_) => "click: show this table".into(),
             _ => return None,
         })
@@ -3665,7 +3708,10 @@ impl Engine {
         match self.graph_hit(w)? {
             Sel::Port(_) => Some("drag: link it to another port · click: its details, where it can go".into()),
             Sel::Node(id) if self.lay.pos.get(&id).is_some_and(|&(_, ny)| w.1 - ny <= HEAD_H) => Some("drag the head onto another block: all its channels, FL to FL, FR to FR · click: its details".into()),
-            Sel::Link(_) => Some("click: choose it · Delete: take it away".into()),
+            Sel::Link(id) => {
+                let ours = self.model.links.iter().find(|l| l.id == id).is_some_and(|l| self.patchcords((l.out_port, l.in_port)));
+                Some(if ours { "Patchcord's own link (a signal meter or the cue): it stays" } else { "click: choose it · Delete: take it away" }.into())
+            }
             _ => None,
         }
     }
@@ -3727,9 +3773,60 @@ fn top_columns(w: f64) -> [(&'static str, f64, bool); 12] {
     place(&on)
 }
 
+/// Where a key's name starts over the graph and in the tables' row: after its icon.
+const KEY_TEXT: f64 = 28.0;
+// ENGINE's keys' icons, on the panel's 24-unit grid, 16 units wide as the panel's (4 to 20)
+const ICON_FIND: &str = r#"<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 4.5 4.5"/>"#;
+const ICON_LEGEND: &str = r#"<circle cx="12" cy="12" r="8"/><path d="M9.6 9.6a2.5 2.5 0 1 1 3.4 2.3c-.6.3-1 .8-1 1.5v.7"/><path d="M12 17.2v.1"/>"#;
+const ICON_DIAGNOSTICS: &str = r#"<path d="M4 12h3.5l2-5.5 4 11 2-5.5H20"/>"#;
+
+/// An icon on a key 24 high whose left edge is at `x`, top at `y`: 16 units square, its grid's
+/// 4 to 20 in the key's first 32 units, as light as the key's name.
+fn key_icon(x: f64, y: f64, icon: &str) -> String {
+    format!(r##"<g transform="translate({},{}) scale(.6667)" fill="none" stroke="#e6e7e8" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">{icon}</g>"##, x + 7.0, y + 4.0)
+}
+
+/// A row of tabs from `y0` to `y1`, `w` wide, drawn into `o`: real tabs, the chosen one of a piece
+/// with what it shows (`under`, the colour right below it, and no line under it), the others
+/// standing back, darker, on a line between them and the content. Where each tab is (x, width).
+fn tab_row(o: &mut String, y0: f64, y1: f64, w: f64, tabs: &[(&str, bool)], under: &str) -> Vec<(f64, f64)> {
+    let top = y0 + 6.0;
+    let _ = write!(o, r##"<rect y="{y0}" width="{w}" height="{}" fill="#0e0f10"/>"##, y1 - y0);
+    let mut at = Vec::new();
+    let mut chosen = (0.0, 0.0);
+    let mut x = 10.0;
+    for &(name, on) in tabs {
+        let tw = text::width(text::BOLD, name, 10.0, 0.6) + 24.0;
+        if on {
+            chosen = (x, tw);
+        }
+        let (l, r) = (x + 0.5, x + tw - 0.5);
+        let _ = write!(
+            o,
+            r##"<path d="M{l},{y1} V{} A4,4 0 0 1 {},{top} H{} A4,4 0 0 1 {r},{} V{y1}" fill="{}" stroke="#000"/>{}<text x="{}" y="{}" font-family="Noto Sans" font-weight="bold" font-size="10" letter-spacing=".6" fill="{}" text-anchor="middle">{}</text>"##,
+            top + 4.0,
+            l + 4.0,
+            r - 4.0,
+            top + 4.0,
+            if on { under } else { "#1c1d20" },
+            if on { format!(r##"<path d="M{},{} H{}" stroke="#e58f2c" stroke-width="2"/>"##, x + 3.0, top + 1.5, x + tw - 3.0) } else { String::new() },
+            x + tw / 2.0,
+            (top + y1) / 2.0 + 3.5,
+            if on { "#f3efe6" } else { "#8d9095" },
+            esc(name)
+        );
+        at.push((x, tw));
+        x += tw + 4.0;
+    }
+    // the line under the tabs, but not under the chosen one: it opens into its content
+    let _ = write!(o, r##"<path d="M0,{y} H{} M{},{y} H{w}" stroke="#000"/>"##, chosen.0 + 0.5, chosen.0 + chosen.1 - 0.5, y = y1 - 0.5);
+    at
+}
+
 /// What a tab of the diagnostics shows, for the status bar while the pointer is over it.
 fn tab_hint(t: &Tab) -> &'static str {
     match t {
+        Tab::Server => "SERVER: what PipeWire itself is doing: its clock, quantum, load, xruns, drivers, version",
         Tab::Top => "TOP: as pw-top: each driver and the nodes it clocks; the last half second's cycles, averaged, with the peak",
         Tab::Issues => "ISSUES: what looks wrong or is worth knowing, worst first",
         Tab::Objects => "OBJECTS: every object PipeWire lists",
@@ -4002,7 +4099,7 @@ impl Engine {
             let _ = writeln!(o, "none");
         }
         for i in &self.issues {
-            let _ = writeln!(o, "[{}] {}: {}\n      {}", ["info", "warn", "ERROR"][i.level as usize], i.tag, r.text(&i.title), i.hint);
+            let _ = writeln!(o, "[{}] {}: {}\n      {}", if i.level >= 2 { "ERROR" } else { "WARNING" }, i.tag, r.text(&i.title), i.hint);
         }
         rule(&mut o, "GRAPH (nodes, their ports and links)");
         for n in &m.nodes {
@@ -4131,6 +4228,63 @@ mod tests {
         (e, lay, g)
     }
 
+    /// ISSUES has only what is wrong: nothing on a quiet graph (an app linked to nothing, a card
+    /// Off, Patchcord's meters aren't issues), and a node in error with PipeWire's own reason.
+    #[test]
+    fn issues_are_only_what_is_wrong() {
+        let out: &[(u32, &str, &str)] = &[(11, "out", "output_FL"), (12, "out", "output_FR")];
+        let (mut e, _, mut g) = laid_with(&[(10, "Lonely App", "Stream/Output/Audio", out)], &[]);
+        assert!(e.issues.is_empty(), "{:?}", e.issues.iter().map(|i| i.tag).collect::<Vec<_>>());
+        let p = g.props_of(10).cloned().unwrap_or_default();
+        g.apply(&Event::Info { id: 10, props: p, state: Some("error") });
+        g.apply(&Event::Failed { id: 10, why: "Device or resource busy".into() });
+        e.dirty = true;
+        e.build(&g, &[], &HashSet::new(), &HashMap::new());
+        let i = e.issues.first().expect("the error");
+        assert_eq!((i.level, i.tag), (2, "ERROR"));
+        assert_eq!(i.hint, "PipeWire says: Device or resource busy");
+    }
+
+    /// FIND picks out the blocks that match (a name, an id, a class, a port's name), shown ones
+    /// only, top to bottom; Enter goes through them and round; one a switch hides is said, with
+    /// a key to show it.
+    #[test]
+    fn find_picks_out_goes_round_and_says_what_is_hidden() {
+        let out: &[(u32, &str, &str)] = &[(11, "out", "output_FL"), (12, "out", "output_FR")];
+        let inp: &[(u32, &str, &str)] = &[(21, "in", "input_FL"), (22, "in", "input_FR")];
+        let sink: &[(u32, &str, &str)] = &[(31, "in", "playback_FL"), (32, "in", "playback_FR")];
+        let meter: &[(u32, &str, &str)] = &[(41, "in", "input_FL"), (42, "in", "input_FR")];
+        let (mut e, lay) = laid(&[(10, "Teams for Linux", "Stream/Output/Audio", out), (20, "Teams for Linux", "Stream/Input/Audio", inp), (30, "Speakers", "Audio/Sink", sink), (40, "patchcord-meter-7", "Stream/Input/Audio", meter)], &[]);
+        e.show = [true; 4];
+        e.lay = e.layout();
+        let _ = lay;
+        e.set_find(true);
+        e.find_text().push_str("teams");
+        assert_eq!(e.found().len(), 2);
+        let first = e.found()[0];
+        e.find_step(1);
+        assert_eq!(e.sel, Some(Sel::Node(first)));
+        e.find_step(1);
+        e.find_step(1);
+        assert_eq!(e.sel, Some(Sel::Node(first)), "round again");
+        // by a port's name, by id, whatever the case
+        e.find = "PLAYBACK_FL".into();
+        assert_eq!(e.found(), [30]);
+        e.find = "30".into();
+        assert_eq!(e.found(), [30]);
+        // Patchcord's meter, with PATCHCORD off: not picked out, and the card says so
+        e.show[0] = false;
+        e.find = "meter".into();
+        assert!(e.found().is_empty());
+        let (svg, ..) = e.find_svg();
+        assert!(svg.contains("1 more hidden by PATCHCORD") && svg.contains("SHOW PATCHCORD"), "{svg}");
+        e.show[0] = true;
+        assert_eq!(e.found(), [40]);
+        // closed, it picks out nothing
+        e.set_find(false);
+        assert!(e.found().is_empty());
+    }
+
     /// Links made in ENGINE: a port takes one only from the other way, of its kind, on another
     /// block, and not one it has; a block's head links all its channels, in order where no
     /// channel names match, mono to both, leaving out what is there.
@@ -4247,7 +4401,7 @@ mod tests {
         let (mut e, _, _, _) = busy();
         e.bottom_shut = false;
         e.sel = Some(Sel::Node(100));
-        for tab in [Tab::Top, Tab::Issues, Tab::Objects, Tab::Metadata, Tab::Events] {
+        for tab in [Tab::Server, Tab::Top, Tab::Issues, Tab::Objects, Tab::Metadata, Tab::Events] {
             e.tab = tab;
             // the first frames draw; the rest only check
             for _ in 0..3 {

@@ -534,7 +534,9 @@ impl Mixer {
                     };
                     let port = scene.port_sections(di).into_iter().find(|p| p.group == gi).and_then(|p| p.ports.iter().find(|c| Some(c.index) == p.current).map(|c| c.description.clone()));
                     let jacks: Vec<&String> = d.defs.iter().filter(|j| j.group == gi).map(|j| &j.key).collect();
-                    let cue = !jacks.is_empty() && jacks.iter().all(|k| pins.contains(k));
+                    // lit when any of it is heard: a jack of it, or a port of one (kept on in the
+                    // rack, in ENGINE or here)
+                    let cue = pins.iter().any(|p| scene.cue_jack(p).is_some_and(|j| jacks.iter().any(|k| k.as_str() == j)));
                     let two = g.stereo || g.ports.len() == 2;
                     let chans = g.stereo && mix.is_some() && self.chans.contains(&(dev.key.clone(), gi));
                     let held = match &self.drag {

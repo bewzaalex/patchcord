@@ -10,7 +10,8 @@ use super::text::{self, esc};
 use crate::graph::{Card, PortChoice};
 
 /// height of the top panel; its shadow falls a little below
-pub const H: f64 = 64.0;
+/// the panel's height: 8 above its keys, 8 under its groups' names (2026-11-26; it was 64)
+pub const H: f64 = 60.0;
 const SHADOW: f64 = 10.0;
 pub const STATUS_H: f64 = 22.0;
 
@@ -80,7 +81,7 @@ impl Key {
             Key::Hidden => "Hidden devices: click to show them again (a device's HIDE key, or H over it, hides an unused one)",
             Key::Lcd => "Presets",
             Key::Defaults => "The default output and input, where new apps play and record: click to choose others or find them",
-            Key::Cue => "Listen (cue): CUE mode on/off: hover a jack to hear it, click to keep it on, patch through its hole, or hold Alt over it; in ENGINE click a port",
+            Key::Cue => "Listen (cue): CUE mode on/off: click a jack to listen to it (it wakes if asleep), again to stop; patch through its hole; in ENGINE click a port",
             Key::CueLevel => "How loud the cue is: drag up/down or turn the wheel",
             Key::More => "The keys the window is too narrow for",
         }
@@ -103,7 +104,7 @@ pub struct State {
     pub lcd: [String; 2],
     /// the defaults screen's lines: the default output's name and the default input's
     pub defaults: [String; 2],
-    /// the CUE key's LED (lit in CUE mode, blinking while probing with Alt) and the cue's level,
+    /// the CUE key's LED (lit in CUE mode) and the cue's level,
     /// 0…100
     pub cue_led: bool,
     pub cue_level: u8,
@@ -379,23 +380,30 @@ pub fn port_menu(sections: &[PortSection], dpi: f64) -> (Layer, Vec<(ProfileHit,
     (Layer { id: next_id(), pm: rasterize(&text::svg_options(), &svg, dpi), x: 0.0, y: 0.0, w, h }, hits)
 }
 
-// icons on a 24-unit grid, drawn with round 2-unit strokes
+// icons on a 24-unit grid, drawn with round 2-unit strokes, each 16 units wide (4 to 20), so
+// they look one size on their keys
 const ICONS: &[(Key, &str)] = &[
     (Key::Undo, r#"<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>"#),
     (Key::Redo, r#"<path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>"#),
-    (Key::Save, r#"<path d="M5 3h11l3 3v15H5z"/><path d="M8 3v5h7V3"/><path d="M8 21v-7h8v7"/>"#),
-    (Key::Lock, r#"<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>"#),
-    (Key::Align, r#"<path d="M4 3v18"/><rect x="7.5" y="5" width="12" height="5" rx="1"/><rect x="7.5" y="14" width="7.5" height="5" rx="1"/>"#),
-    (Key::Arrange, r#"<rect x="3.5" y="4" width="7" height="5" rx="1"/><rect x="3.5" y="15" width="7" height="5" rx="1"/><rect x="13.5" y="9.5" width="7" height="5" rx="1"/><path d="M10.5 6.5h1.5v11h-1.5M12 12h1.5"/>"#),
+    (Key::Save, r#"<path d="M4 3h12l4 4v14H4z"/><path d="M7.5 3v5h8V3"/><path d="M7.5 21v-7h9v7"/>"#),
+    (Key::Lock, r#"<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M7.5 11V8a4.5 4.5 0 0 1 9 0v3"/>"#),
+    (Key::Align, r#"<path d="M4 3v18"/><rect x="7.5" y="5" width="12.5" height="5" rx="1"/><rect x="7.5" y="14" width="7.5" height="5" rx="1"/>"#),
+    (Key::Arrange, r#"<rect x="4" y="4" width="6.5" height="5" rx="1"/><rect x="4" y="15" width="6.5" height="5" rx="1"/><rect x="13.5" y="9.5" width="6.5" height="5" rx="1"/><path d="M10.5 6.5h1.5v11h-1.5M12 12h1.5"/>"#),
     (Key::Fit, r#"<path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/>"#),
-    (Key::Flow, r#"<path d="M3 17c3-6 6-6 9 0s6 6 9 0"/><path d="M4 7h14"/><path d="m15 4 3 3-3 3"/>"#),
-    (Key::Hidden, r#"<path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6z"/><circle cx="12" cy="12" r="2.6"/><path d="M4 20 20 4"/>"#),
-    (Key::Cue, r#"<path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="4.5" height="7" rx="1.5"/><rect x="16.5" y="14" width="4.5" height="7" rx="1.5"/>"#),
+    (Key::Flow, r#"<path d="M4 17c2.7-6 5.3-6 8 0s5.3 6 8 0"/><path d="M5 7h12"/><path d="m14 4 3 3-3 3"/>"#),
+    (Key::Hidden, r#"<path d="M4 12s3.1-6 8-6 8 6 8 6-3.1 6-8 6-8-6-8-6z"/><circle cx="12" cy="12" r="2.4"/><path d="M5 19 19 5"/>"#),
+    (Key::Cue, r#"<path d="M5 15v-3a7 7 0 0 1 14 0v3"/><rect x="4" y="14" width="4.5" height="7" rx="1.5"/><rect x="15.5" y="14" width="4.5" height="7" rx="1.5"/>"#),
 ];
 
-const KEY_Y: f64 = 10.0;
+/// A key's icon on the 24-unit grid (as on the panel), for a key drawn elsewhere: ENGINE's SAVE
+/// REPORT has SAVE's disk.
+pub fn icon(k: Key) -> &'static str {
+    ICONS.iter().find(|(i, _)| *i == k).map_or("", |(_, s)| s)
+}
+
+const KEY_Y: f64 = 8.0;
 /// the knobs' centre line, a little low so the label above the cords switch clears the edge
-const KNOB_Y: f64 = 30.0;
+const KNOB_Y: f64 = 29.0;
 const KEY_H: f64 = 30.0;
 const LABEL: &str = "#26272a";
 
@@ -558,7 +566,7 @@ impl Panel {
         let mut rects = Vec::new();
         let mut x = 18.0;
         for p in parts {
-            // the screen against the right edge, as wide as there is room for
+            // the screen against the right edge, as wide as its text (less when there is no room)
             let at = if p == Part::Lcd { w - 18.0 - lcd_w } else { x };
             let (s, r, pw) = self.part(p, at, attached, lcd_w);
             o += &s;
@@ -607,7 +615,8 @@ impl Panel {
             let room = w - 18.0 - used;
             if room >= LCD_MIN {
                 parts.push(Part::Lcd);
-                return (parts, true, Vec::new(), room.min(600.0));
+                // as wide as its text, against the right edge; narrower only when there's no room
+                return (parts, true, Vec::new(), room.min(self.lcd_want().0));
             }
         }
         let used = |parts: &[Part], attached: bool| {
@@ -655,8 +664,8 @@ impl Panel {
                 // the maker's name, pressed into the metal
                 let _ = write!(
                     o,
-                    r##"<g transform="translate({x},34) scale(1.06,1)" font-size="26" font-weight="900" letter-spacing="1"><text y="1" fill="#fff" opacity=".35">PATCHCORD</text><text fill="#2a2b2e">PATCHCORD</text></g>{sub}"##,
-                    sub = SECTION.text(x, 50.0, LABEL, "start", "PC-1 · PIPEWIRE PATCHBAY")
+                    r##"<g transform="translate({x},32) scale(1.06,1)" font-size="26" font-weight="900" letter-spacing="1"><text y="1" fill="#fff" opacity=".35">PATCHCORD</text><text fill="#2a2b2e">PATCHCORD</text></g>{sub}"##,
+                    sub = SECTION.text(x, 48.0, LABEL, "start", "PIPEWIRE PATCHBAY")
                 );
                 text::width(text::BLACK, "PATCHCORD", 26.0, 1.0) * 1.06
             }
@@ -690,7 +699,7 @@ impl Panel {
                     rects.push((Key::CablesAt(i as u8), [lx, ky + dy - 6.0, w, 11.0]));
                 }
                 o.push_str(&knob_svg(kx, ky, SWITCH[st.cables.min(2) as usize], ""));
-                o.push_str(&SECTION.text(kx, 54.0, LABEL, "middle", "CABLES"));
+                o.push_str(&SECTION.text(kx, 52.0, LABEL, "middle", "CABLES"));
                 rects.push((Key::Cables, [kx - 16.0, ky - 16.0, 32.0, 32.0]));
                 88.0
             }
@@ -716,7 +725,7 @@ impl Panel {
                     pw = kx + 19.0 * 1.15 + rw + 2.0 - x;
                 }
                 if pw > 0.0 {
-                    o.push_str(&SECTION.text(x + pw / 2.0, 54.0, LABEL, "middle", "VIEW"));
+                    o.push_str(&SECTION.text(x + pw / 2.0, 52.0, LABEL, "middle", "VIEW"));
                 }
                 // how many are hidden, small in the HIDDEN key's corner
                 if st.hidden > 0
@@ -750,7 +759,7 @@ impl Panel {
                 o.push_str(&knob_svg(lx, ly, deg, &scale).replace("#ffb02e", "#5fd4ff"));
                 rects.push((Key::CueLevel, [lx - 18.0, ly - 18.0, 36.0, 36.0]));
                 let pw = lx + 18.0 - x;
-                o.push_str(&SECTION.text(x + pw / 2.0, 54.0, LABEL, "middle", "CUE · LEVEL"));
+                o.push_str(&SECTION.text(x + pw / 2.0, 52.0, LABEL, "middle", "CUE · LEVEL"));
                 pw
             }
             // the screen in two halves, the default output and input on the left, the preset and
@@ -767,6 +776,14 @@ impl Panel {
         [format!("OUT ▸ {}", self.state.defaults[0]), format!("IN  ▸ {}", self.state.defaults[1])]
     }
 
+    /// How wide the screen wants to be: each of its halves as wide as its longest line (the two
+    /// halves alike), within LCD_MIN and 600. It is never wider than its text needs.
+    fn lcd_want(&self) -> (f64, f64, f64) {
+        let half = |lines: &[String; 2]| lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as f64 * 6.95 + 28.0;
+        let (hd, hp) = (half(&self.defaults_lines()), half(&self.state.lcd));
+        ((2.0 * hd.max(hp)).clamp(LCD_MIN, 600.0), hd, hp)
+    }
+
     /// MORE's drop-down: the folded groups under the panel `w` wide, as they look on it, in as
     /// many rows as they need, against the right edge. Its SVG, where its keys are (in the
     /// window) and where it is.
@@ -775,9 +792,7 @@ impl Panel {
         const ROW: f64 = 60.0;
         let maxw = (w - 12.0).max(160.0);
         // the screen whole while it fits, as wide as its longest line needs; else its halves
-        let half = |lines: &[String; 2]| lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as f64 * 6.95 + 28.0;
-        let (hd, hp) = (half(&self.defaults_lines()), half(&self.state.lcd));
-        let joined = (2.0 * hd.max(hp)).clamp(LCD_MIN, 600.0);
+        let (joined, hd, hp) = self.lcd_want();
         let mut items: Vec<(Part, f64)> = Vec::new();
         for &p in &self.folded {
             match p {
@@ -865,7 +880,7 @@ fn group(st: &State, o: &mut String, rects: &mut Vec<(Key, [f64; 4])>, x0: f64, 
         x += kw;
     }
     if !label.is_empty() {
-        o.push_str(&SECTION.text((x0 + x) / 2.0, 54.0, LABEL, "middle", label));
+        o.push_str(&SECTION.text((x0 + x) / 2.0, 52.0, LABEL, "middle", label));
     }
     x - x0
 }

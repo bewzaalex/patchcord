@@ -8,8 +8,10 @@ Status: accepted · 2026-11-19
   in the rack. When it is too wide, in this order: the logo goes, then groups fold from the right
   into MORE ▾. MIXER·RACK·ENGINE never fold. A click off MORE's drop-down closes it and does what it does where it lands (a jack heard in
   CUE mode at once, a plug taken): it isn't spent on closing (2026-11-23).
-- ENGINE's strip shows CLOCK, QUANTUM, DSP LOAD, XRUNS, HEALTH first, and the rest behind an "i"
-  cell. SAVE REPORT is on DIAGNOSTICS' tab row.
+- ENGINE has no strip over its graph (2026-11-26; it showed CLOCK, QUANTUM, DSP LOAD, XRUNS,
+  HEALTH first and the rest behind an "i" cell): all of it is DIAGNOSTICS' first tab, SERVER, one
+  row each with what it means, so the graph has the whole height. SAVE REPORT is on DIAGNOSTICS'
+  tab row.
 - When the status bar's two texts meet, the hints on the right go first.
 
 ## Links

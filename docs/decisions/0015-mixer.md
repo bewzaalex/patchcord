@@ -14,7 +14,8 @@ rounds (channels and buses, masters, KDE's lists) before this shape.
 RACK's views: ADR 0016).
 - Its key is the first of LAYOUT's on the top panel (2026-11-25; it was right of DESK); the
   keyboard key is M.
-- It is remembered across restarts (`mixer = on` in settings.txt).
+- It is remembered across restarts (`mixer = on` in settings.txt), and so is ENGINE (`engine = on`,
+  2026-11-26): Patchcord opens on the screen it was closed on.
 - Every LAYOUT key shows its own screen and has its own keyboard key: M MIXER, R RACK, E ENGINE.
   Pressed again it stays there: no key goes back and forth between two screens.
 

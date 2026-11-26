@@ -287,6 +287,8 @@ pub struct Graph {
     /// nodes and devices whose full properties have arrived
     info: HashSet<u32>,
     state: HashMap<u32, &'static str>,
+    /// why a node or a link is in error, as PipeWire says it
+    failed: HashMap<u32, String>,
     /// when each node appeared: streams show only once they have lived a little
     born: HashMap<u32, Instant>,
     /// each card's profiles and the one it is in, by device
@@ -348,6 +350,7 @@ impl Graph {
                 self.profiles.remove(id);
                 self.info.remove(id);
                 self.state.remove(id);
+                self.failed.remove(id);
                 self.objects.remove(id).is_some()
             }
             Event::Info { id, props, state } => {
@@ -356,9 +359,13 @@ impl Graph {
                 p.extend(props.iter().map(|(k, v)| (k.clone(), v.clone())));
                 let new = self.info.insert(*id);
                 let changed_state = state.is_some_and(|s| self.state.insert(*id, s) != Some(s));
+                if state.is_some_and(|s| s != "error") {
+                    self.failed.remove(id);
+                }
                 let after = (p.get("media.class").cloned(), p.get("node.description").cloned(), p.get("stream.monitor").cloned());
                 new || changed_state || before != after
             }
+            Event::Failed { id, why } => self.failed.insert(*id, why.clone()).as_deref() != Some(why.as_str()),
             Event::Levels(_) | Event::Setting { .. } | Event::Version(_) | Event::Meta { .. } | Event::Profile(_) | Event::Param { .. } => false,
             Event::Synced => {
                 self.synced = true;
@@ -432,6 +439,11 @@ impl Graph {
     }
 
     /// An object's properties.
+    /// Why a node or a link is in error, as PipeWire says it.
+    pub fn failed(&self, id: u32) -> Option<&str> {
+        self.failed.get(&id).map(String::as_str)
+    }
+
     pub fn props_of(&self, id: u32) -> Option<&Props> {
         self.props(id)
     }
@@ -1294,9 +1306,10 @@ mod tests {
         // balanced: the six take two units of three, in columns; what takes sound in first (the
         // INPUT, at the top-left), what sends it out (the outputs) after it, on to the next unit
         let ((_, h), at) = crate::ui::face_layout(d);
-        assert_eq!(h, 256.0);
+        let u = crate::ui::DEV_H;
+        assert_eq!(h, 2.0 * u);
         // (the seventh group: the INPUT's MONITOR, inside its frame)
-        assert_eq!(at.iter().map(|a| a.1).collect::<Vec<_>>(), [0.0, 0.0, 0.0, 128.0, 128.0, 128.0, 0.0]);
+        assert_eq!(at.iter().map(|a| a.1).collect::<Vec<_>>(), [0.0, 0.0, 0.0, u, u, u, 0.0]);
         assert_eq!((at[1].0, at[2].0), (at[4].0, at[5].0));
         // (the INPUT in OUTPUT 3's column, against its left edge; OUTPUT 3 against its right: the
         // INPUT, with its MONITOR, is the wider)
@@ -1320,10 +1333,11 @@ mod tests {
         }
         let d = &g.devices()[0];
         let ((_, h), at) = crate::ui::face_layout(d);
-        assert_eq!(h, 256.0);
+        let unit = crate::ui::DEV_H;
+        assert_eq!(h, 2.0 * unit);
         let row = |u: f64| d.groups.iter().zip(&at).filter(|(_, a)| a.1 == u).map(|(g, _)| g.label.as_str()).collect::<Vec<_>>();
         assert_eq!(row(0.0), ["INPUT 1", "INPUT 2", "OUTPUT 1", "OUTPUT 2"]);
-        assert_eq!(row(128.0), ["OUTPUT 3", "OUTPUT 4", "OUTPUT 5", "OUTPUT 6"]);
+        assert_eq!(row(unit), ["OUTPUT 3", "OUTPUT 4", "OUTPUT 5", "OUTPUT 6"]);
         // sound flows left to right: the inputs first, the outputs at the right
         let x = |l: &str| d.groups.iter().zip(&at).find(|(g, _)| g.label == l).map(|(_, a)| a.0).unwrap();
         assert!(x("INPUT 1") < x("INPUT 2") && x("INPUT 2") < x("OUTPUT 1"));

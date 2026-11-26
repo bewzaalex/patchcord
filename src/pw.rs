@@ -167,6 +167,8 @@ pub enum Event {
     Removed(u32),
     /// A node's or device's full properties, and a node's state ("running", "idle", …).
     Info { id: u32, props: Props, state: Option<&'static str> },
+    /// Why a node or a link is in error, as PipeWire says it (sent with its "error" state).
+    Failed { id: u32, why: String },
     /// A card's profiles (in PipeWire's order) and the one it is in.
     Profiles { id: u32, list: Vec<Profile>, current: Option<u32> },
     /// A card's ports (`all`, in PipeWire's order) and the ones in use, with their volumes.
@@ -409,8 +411,8 @@ fn mix_param(volumes: Vec<f32>, mute: bool) -> Option<Vec<u8>> {
 }
 
 /// The cue: two streams of Patchcord's, made while something is listened to. The recording
-/// one (`CUE_NODE`) takes in what is heard on passive links, as a meter does: it runs on the
-/// clock of what it hears when that runs, and wakes nothing. The playing one (`CUE_OUT`) plays
+/// one (`CUE_NODE`) takes in what is heard on active links: what is listened to wakes, and it
+/// runs on the clock of what it hears. The playing one (`CUE_OUT`) plays
 /// into the default output on that output's clock. Between them a little buffer: the playing
 /// side takes from it what it has and plays silence when it has nothing, so it never waits on
 /// the other (PipeWire's loopback did: its playing side, made to wait for its recording side,
@@ -507,9 +509,9 @@ impl Cue {
                 "media.category" => "Capture",
                 "node.name" => CUE_NODE,
                 "node.description" => "Patchcord cue in",
-                // it only listens: never keeps anything awake, never moved by the session
+                // never moved by the session; not passive: a passive node makes every link into it
+                // passive, and what is listened to must wake (ADR 0009)
                 "stream.monitor" => "true",
-                "node.passive" => "true",
                 "node.dont-reconnect" => "true",
             };
             let stream = pw::stream::StreamRc::new(core.clone(), CUE_NODE, props)?;
@@ -551,7 +553,11 @@ impl Cue {
             let listener = stream
                 .add_local_listener_with_user_data(())
                 .state_changed(failed(&self.failed))
-                .process(move |stream, _| {
+                .process({
+                    // the level it played at last: a change goes over a whole cycle, not at once
+                    // (a step at a cycle's edge clicks, and a turned knob crackles)
+                    let mut was: Option<f32> = None;
+                    move |stream, _| {
                     let Some(mut buffer) = stream.dequeue_buffer() else { return };
                     let asked = buffer.requested() as usize;
                     let Some(d) = buffer.datas_mut().first_mut() else { return };
@@ -576,8 +582,11 @@ impl Cue {
                         } else if b.playing && b.frames.len() < n {
                             b.playing = false;
                         }
-                        let g = f32::from_bits(level.load(std::sync::atomic::Ordering::Relaxed));
+                        let to = f32::from_bits(level.load(std::sync::atomic::Ordering::Relaxed));
+                        let from = was.unwrap_or(to);
+                        was = Some(to);
                         for i in 0..n {
+                            let g = from + (to - from) * (i + 1) as f32 / n as f32;
                             let f = if b.playing { b.frames.pop_front().unwrap_or([0.0; 2]) } else { [0.0; 2] };
                             bytes[i * 8..i * 8 + 4].copy_from_slice(&(f[0] * g).to_le_bytes());
                             bytes[i * 8 + 4..i * 8 + 8].copy_from_slice(&(f[1] * g).to_le_bytes());
@@ -588,6 +597,7 @@ impl Cue {
                     *c.offset_mut() = 0;
                     *c.stride_mut() = 8;
                     *c.size_mut() = (n * 8) as u32;
+                    }
                 })
                 .register()?;
             let pod = stereo_format()?;
@@ -620,8 +630,9 @@ impl Cue {
             if self.links.contains_key(&(op, ip)) {
                 continue;
             }
-            // passive: listening never makes anything play
-            if let Ok(l) = make_link(core, (on, op), (inn, ip), Linked::Passive) {
+            // active: what is listened to wakes, as a cord into it would (a mic asleep), and
+            // sleeps again when it is let go (ADR 0009)
+            if let Ok(l) = make_link(core, (on, op), (inn, ip), Linked::Active) {
                 self.links.insert((op, ip), l);
             }
         }
@@ -635,8 +646,10 @@ fn pod_bytes(obj: spa::pod::Object) -> Option<Vec<u8>> {
 
 /// How a link of Patchcord's is made.
 enum Linked {
-    /// it only listens (the cue, a meter): never keeps anything awake
+    /// it only listens (a meter): never keeps anything awake
     Passive,
+    /// it wakes what it comes from while it is there (the cue), and goes with Patchcord
+    Active,
     /// a cord: it stays after Patchcord quits
     Lingering,
 }
@@ -652,6 +665,7 @@ fn make_link(core: &pw::core::CoreRc, (on, op): (u32, u32), (inn, ip): (u32, u32
     match how {
         Linked::Passive => props.insert("link.passive", "true"),
         Linked::Lingering => props.insert("object.linger", "true"),
+        Linked::Active => {}
     }
     core.create_object::<pw::link::Link>("link-factory", &props)
 }
@@ -724,6 +738,45 @@ struct Meter {
     /// and come back with new ids while its format is set up, so this keeps the latest of each.
     ports: BTreeMap<u32, u32>,
     peaks: Rc<RefCell<Vec<f32>>>,
+    /// one of its links was taken away (in ENGINE, or by another program): when to see which
+    /// are missing, a moment later, and make those again while what it measures is there
+    relink: Option<Instant>,
+}
+
+impl Meter {
+    /// Links its ports, channel by channel, to what it measures, once it has a port for each
+    /// (again if they changed). A meter never keeps a device awake: its links are passive.
+    fn link(&mut self, core: &pw::core::CoreRc) {
+        let Some(me) = self.node else { return };
+        let now: Vec<u32> = self.ports.values().copied().collect();
+        if now.len() != self.targets.len() || now == self.linked {
+            return;
+        }
+        self.links.clear();
+        self.linked = now.clone();
+        for (&(tn, tp), &mine) in self.targets.iter().zip(&now) {
+            if let Ok(l) = make_link(core, (tn, tp), (me, mine), Linked::Passive) {
+                self.links.push(l);
+            }
+        }
+    }
+
+    /// Makes again the links it should have and hasn't (`have`: every link's output and input
+    /// port), leaving the ones there as they are.
+    fn mend(&mut self, core: &pw::core::CoreRc, have: &HashMap<u32, (u32, u32)>) {
+        let Some(me) = self.node else { return };
+        let mine: Vec<u32> = self.ports.values().copied().collect();
+        if mine.len() != self.targets.len() {
+            return;
+        }
+        for (&(tn, tp), &p) in self.targets.iter().zip(&mine) {
+            if !have.values().any(|&(o, i)| o == tp && i == p)
+                && let Ok(l) = make_link(core, (tn, tp), (me, p), Linked::Passive)
+            {
+                self.links.push(l);
+            }
+        }
+    }
 }
 
 fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
@@ -748,6 +801,10 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
     let profiler_id: Rc<std::cell::Cell<Option<u32>>> = Default::default();
     let profiler: Rc<RefCell<Option<Profiler>>> = Default::default();
     let inspect: Rc<RefCell<std::collections::HashSet<u32>>> = Default::default();
+    // every link's output and input port, and every port there is: a meter's link gone is made
+    // again while what it measures is there
+    let link_in: Rc<RefCell<HashMap<u32, (u32, u32)>>> = Default::default();
+    let ports_now: Rc<RefCell<std::collections::HashSet<u32>>> = Default::default();
 
     let _registry_listener = registry
         .add_listener_local()
@@ -762,6 +819,8 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
             let cue = cue.clone();
             let profiler_id = profiler_id.clone();
             let inspect = inspect.clone();
+            let link_in = link_in.clone();
+            let ports_now = ports_now.clone();
             move |g| {
                 // every metadata, for ENGINE; the "settings" one (the clock rate and quantum) and
                 // the "default" one (the default output and input) for the panel too
@@ -852,6 +911,9 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                                         pw::node::NodeState::Error(_) => "error",
                                     };
                                     ev.send(Event::Info { id, props: info.props().map(props_of).unwrap_or_default(), state: Some(state) });
+                                    if let pw::node::NodeState::Error(why) = info.state() {
+                                        ev.send(Event::Failed { id, why: why.to_owned() });
+                                    }
                                 })
                                 .register();
                             if app {
@@ -935,27 +997,19 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                                 c.reconcile(&core);
                             }
                         }
+                        ports_now.borrow_mut().insert(id);
                         for m in meters.borrow_mut().values_mut() {
-                            if let Some(me) = m.node
-                                && m.node == node
-                                && input
-                            {
+                            if m.node.is_some() && m.node == node && input {
                                 m.ports.insert(index, id);
-                                let now: Vec<u32> = m.ports.values().copied().collect();
-                                if now.len() == m.targets.len() && now != m.linked {
-                                    m.links.clear();
-                                    m.linked = now.clone();
-                                    for (&(tn, tp), &mine) in m.targets.iter().zip(&now) {
-                                        // a meter never keeps a device awake
-                                        if let Ok(l) = make_link(&core, (tn, tp), (me, mine), Linked::Passive) {
-                                            m.links.push(l);
-                                        }
-                                    }
-                                }
+                                m.link(&core);
                             }
                         }
                     }
                     Kind::Link => {
+                        let port = |k: &str| props.get(k).and_then(|p| p.parse::<u32>().ok());
+                        if let (Some(o), Some(i)) = (port("link.output.port"), port("link.input.port")) {
+                            link_in.borrow_mut().insert(id, (o, i));
+                        }
                         // its state (active, paused…) and full properties (passive or not), for ENGINE
                         if let Ok(link) = registry.bind::<pw::link::Link, _>(g) {
                             let ev = events.clone();
@@ -972,6 +1026,9 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                                         pw::link::LinkState::Error(_) => "error",
                                     };
                                     ev.send(Event::Info { id, props: info.props().map(props_of).unwrap_or_default(), state: Some(state) });
+                                    if let pw::link::LinkState::Error(why) = info.state() {
+                                        ev.send(Event::Failed { id, why: why.to_owned() });
+                                    }
                                 })
                                 .register();
                             bound.borrow_mut().insert(id, Bound { _listener: Box::new(l), proxy: Box::new(link) });
@@ -1003,8 +1060,18 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
             let meters = meters.clone();
             let cue = cue.clone();
             let inspect = inspect.clone();
+            let link_in = link_in.clone();
+            let ports_now = ports_now.clone();
             move |id| {
                 bound.borrow_mut().remove(&id);
+                ports_now.borrow_mut().remove(&id);
+                // a link into a meter gone: the meter is linked again (on the next tick, once
+                // what went with it has gone too)
+                if let Some((_, p)) = link_in.borrow_mut().remove(&id) {
+                    for m in meters.borrow_mut().values_mut().filter(|m| m.ports.values().any(|&q| q == p)) {
+                        m.relink = Some(Instant::now() + Duration::from_millis(300));
+                    }
+                }
                 // (ids come back: a new node at this one isn't inspected)
                 inspect.borrow_mut().remove(&id);
                 {
@@ -1078,7 +1145,19 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
         let stale = stale.clone();
         let bound = bound.clone();
         let profiler = profiler.clone();
+        let ports_now = ports_now.clone();
+        let link_in = link_in.clone();
         move |_| {
+            // a meter whose link was taken away: what is missing linked again, while what it
+            // measures is there (gone, the rack measures something else, or nothing)
+            let now = Instant::now();
+            for m in meters.borrow_mut().values_mut().filter(|m| m.relink.is_some_and(|t| t <= now)) {
+                m.relink = None;
+                let alive = ports_now.borrow();
+                if m.targets.iter().all(|(_, tp)| alive.contains(tp)) && m.ports.values().all(|p| alive.contains(p)) {
+                    m.mend(&core, &link_in.borrow());
+                }
+            }
             // a side of the cue went wrong while something is heard: it is made again
             {
                 let mut c = cue.borrow_mut();
@@ -1161,7 +1240,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
             }
             Cmd::Meter { id, ports, channels } => match meter(&core, id, &channels) {
                 Ok((stream, listener, peaks)) => {
-                    meters.borrow_mut().insert(id, Meter { _stream: stream, _listener: listener, targets: ports, node: None, ports: BTreeMap::new(), links: Vec::new(), linked: Vec::new(), peaks });
+                    meters.borrow_mut().insert(id, Meter { _stream: stream, _listener: listener, targets: ports, node: None, ports: BTreeMap::new(), links: Vec::new(), linked: Vec::new(), peaks, relink: None });
                 }
                 Err(e) => events.send(Event::Error(format!("cannot start meter: {e}"))),
             },

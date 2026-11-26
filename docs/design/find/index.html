@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Patchcord · find and show in ENGINE</title>
+<!--
+  ENGINE's ALSO SHOW chips (PATCHCORD, MIDI, NOT RUNNING, INTERNAL) become one key over the graph,
+  FIND · SHOW, and a card under it: a search field, and the four switches with what each is and
+  how many nodes it shows. On a made-up graph in ENGINE's measures and colours (engine.rs:
+  graph_svg; colours as ADR 0014). Not wired to PipeWire.
+    - Ctrl+F (or the key) opens the card, the field ready to type; Esc closes it
+    - typing picks out the blocks that match (name, id, class, a port's name), amber, the rest dim;
+      Enter or the arrows go to the next or the previous one: chosen and in view
+    - a match hidden by a switch is said under the field, with a key to show it
+    - the key says what is hidden while the card is shut: FIND · SHOW · 17 HIDDEN
+  Beside it, the graph's two other keys, moved up from its bottom: LEGEND (?) opens the legend's
+  card, DIAGNOSTICS (D) shows or puts away the tables below, its arrow saying which way a click
+  moves them, the issues counted on it. One card open at a time.
+-->
+<style>
+  @font-face { font-family: "Noto Sans"; font-weight: 700; src: url(../../../assets/fonts/NotoSans-Bold.ttf); }
+  @font-face { font-family: "Noto Sans Mono"; font-weight: 400; src: url(../../../assets/fonts/NotoSansMono-Regular.ttf); }
+  @font-face { font-family: "Noto Sans Mono"; font-weight: 700; src: url(../../../assets/fonts/NotoSansMono-Bold.ttf); }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1b1c1e; }
+  body { display: flex; flex-direction: column; user-select: none; font-family: "Noto Sans", sans-serif; }
+  #field { flex: 1; position: relative; overflow: hidden; }
+  #graph { position: absolute; left: 0; top: 0; }
+  /* the keys over the graph's top left, as ENGINE's keys */
+  #keys { position: absolute; left: 12px; top: 10px; display: flex; gap: 8px; }
+  .key { height: 24px; display: flex; align-items: center; gap: 8px; padding: 0 12px;
+    background: #2a2b2e; border: 1px solid #0b0b0c; border-radius: 4px; color: #e6e7e8; font: 700 10px "Noto Sans"; letter-spacing: .5px; cursor: default; }
+  .key.on { background: #34363a; box-shadow: inset 0 0 0 1px #e58f2c; }
+  .key .n { color: #e58f2c; }
+  .key svg { flex: none; }
+  /* DIAGNOSTICS' arrow: down while the tables show (a click puts them away, down), up while
+     they are put away (a click brings them up) */
+  .key .chev { transform: rotate(180deg); }
+  .key.lit .chev { transform: none; }
+  /* the legend's card (ENGINE's legend, short here) */
+  #legend { position: absolute; top: 40px; width: 300px; background: #1d1e21; border: 1px solid #0b0b0c; border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.5); padding: 12px 14px; color: #c9cbcd; font: 11px "Noto Sans Mono", monospace; display: none; }
+  #legend.open { display: block; }
+  #legend h4 { margin: 0 0 8px; font: 700 9px "Noto Sans Mono"; letter-spacing: 1.2px; color: #7d8085; }
+  #legend div { display: flex; align-items: center; gap: 8px; height: 19px; }
+  #legend span.sw { width: 22px; height: 10px; border-radius: 2px; }
+  /* the tables below the graph, as ENGINE's */
+  #diag { height: 230px; flex: none; background: #17181a; border-top: 1px solid #000; display: none; }
+  #diag.open { display: block; }
+  #diag .tabs { height: 30px; background: #1a1b1d; border-bottom: 1px solid #000; display: flex; gap: 4px; padding: 6px 10px 0; box-sizing: border-box; }
+  #diag .tabs span { height: 24px; padding: 0 12px; display: flex; align-items: center; background: #232427; color: #9a9da1; font: 700 10px "Noto Sans"; letter-spacing: .6px; border-radius: 3px 3px 0 0; }
+  #diag .tabs span.on { background: #2e3034; color: #e6e7e8; box-shadow: inset 0 2px 0 #e58f2c; }
+  #diag p { margin: 14px; color: #7d8085; font: 11px "Noto Sans Mono"; }
+  /* the card: ENGINE's legend card */
+  #card { position: absolute; left: 12px; top: 40px; width: 380px; background: #1d1e21; border: 1px solid #0b0b0c; border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.5); padding: 12px 14px 10px; color: #c9cbcd; font: 11px "Noto Sans Mono", monospace; display: none; }
+  #card.open { display: block; }
+  #card h4 { margin: 0 0 6px; font: 700 9px "Noto Sans Mono"; letter-spacing: 1.2px; color: #7d8085; display: flex; justify-content: space-between; }
+  #card h4 span { letter-spacing: 0; }
+  .find { display: flex; gap: 6px; align-items: center; }
+  .find input { flex: 1; height: 24px; background: #0e0f10; border: 1px solid #3a3c40; border-radius: 3px; color: #e6e7e8; font: 12px "Noto Sans Mono"; padding: 0 8px; outline: none; }
+  .find input:focus { border-color: #e58f2c; }
+  .find .cnt { min-width: 54px; text-align: right; color: #a8abae; }
+  .btn { height: 24px; min-width: 24px; display: inline-flex; align-items: center; justify-content: center; padding: 0 6px; background: #2a2b2e;
+    border: 1px solid #0b0b0c; border-radius: 3px; color: #e6e7e8; font: 700 10px "Noto Sans"; cursor: default; }
+  .btn:hover { background: #34363a; }
+  .hint { color: #7d8085; margin: 5px 0 0; min-height: 15px; }
+  .hint .btn { height: 18px; font-size: 9px; margin-left: 6px; }
+  .rows { margin-top: 12px; }
+  .row { display: grid; grid-template-columns: 14px 104px 1fr 26px; align-items: center; height: 26px; border-top: 1px solid #26272a; cursor: default; }
+  .row:hover { background: #232427; }
+  .row .led { width: 7px; height: 7px; border-radius: 50%; margin-left: 2px; }
+  .row b { font: 700 10px "Noto Sans"; letter-spacing: .5px; color: #e6e7e8; }
+  .row i { font-style: normal; color: #7d8085; font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .c { text-align: right; color: #a8abae; }
+  #status { height: 22px; flex: none; background: #0e0f10; border-top: 1px solid #000; display: flex; justify-content: space-between;
+    align-items: center; padding: 0 12px; font: 12px "Noto Sans Mono", monospace; }
+  #status .l { color: #7d8085; } #status .r { color: #a8abae; }
+</style>
+</head>
+<body>
+<div id="field">
+  <svg id="graph" xmlns="http://www.w3.org/2000/svg" font-family="Noto Sans"></svg>
+  <div id="keys">
+  <div class="key" id="key"><svg width="12" height="12" viewBox="0 0 12 12"><circle cx="5" cy="5" r="3.6" fill="none" stroke="#e6e7e8" stroke-width="1.6"/><path d="M7.7,7.7 L11,11" stroke="#e6e7e8" stroke-width="1.8" stroke-linecap="round"/></svg>FIND · SHOW<span class="n" id="hid"></span></div>
+  <div class="key" id="legkey">? LEGEND</div>
+  <div class="key lit" id="diagkey">DIAGNOSTICS<span class="n">· 2 ISSUES</span><svg class="chev" width="10" height="10" viewBox="0 0 10 10"><path d="M1.5,3.5 L5,7 L8.5,3.5" fill="none" stroke="#e6e7e8" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+  </div>
+  <div id="legend">
+    <h4>LEGEND · ?</h4>
+    <div><span class="sw" style="background:#007c7d"></span>a sink: sound goes in to be heard</div>
+    <div><span class="sw" style="background:#206ea6"></span>a source: sound comes from it</div>
+    <div><span class="sw" style="background:#7e5a42"></span>an app's output</div>
+    <div><span class="sw" style="background:#427935"></span>an app's input</div>
+    <div><span class="sw" style="background:#934c7e"></span>MIDI</div>
+    <div><span class="sw" style="background:#695ca6"></span>a monitor: a copy of what plays</div>
+    <div style="color:#7d8085">… the whole legend, as now</div>
+  </div>
+  <div id="card">
+    <h4>FIND <span>Ctrl+F · Esc</span></h4>
+    <div class="find"><input id="q" placeholder="a name, an id, a class, a port" spellcheck="false"><span class="cnt" id="cnt"></span><span class="btn" id="prev">▲</span><span class="btn" id="next">▼</span></div>
+    <div class="hint" id="hint">in names, ids, classes and ports' names</div>
+    <div class="rows">
+      <h4>ALSO SHOW</h4>
+      <div id="rows"></div>
+    </div>
+  </div>
+</div>
+<div id="diag" class="open"><div class="tabs"><span class="on">SERVER</span><span>TOP</span><span>ISSUES 2</span><span>OBJECTS</span><span>METADATA</span><span>EVENTS</span></div><p>the tables, as now</p></div>
+<div id="status"><span class="l" id="sl">MOCKUP · nothing here reaches PipeWire</span><span class="r">Ctrl+F: find · Enter / ▼: next · ?: legend · D: diagnostics · Esc: close</span></div>
+<script>
+"use strict";
+const NW = 244, NH0 = 40, PR = 15, COLW = NW + 110, NGAP = 14, BPAD = 26, BHEAD = 36;
+const SEL = "#f7bb62";
+const KIND = { SINK: "#007c7d", SOURCE: "#206ea6", PLAY: "#7e5a42", REC: "#427935", MIDI: "#934c7e", DRIVER: "#4a4c50" };
+const ROLE = { MIDI: "#934c7e", MONITOR: "#695ca6", PLAYBACK: "#007c7d", CAPTURE: "#206ea6", OUTPUT: "#7e5a42", INPUT: "#427935" };
+const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+const portY = (i) => NH0 + i * PR + PR / 2 + 2;
+const nodeH = (n) => NH0 + Math.max(n.ins.length, n.outs.length, 1) * PR + 8;
+const P = (name, role) => ({ name, role });
+const st = (pre, role) => [P(pre + "_FL", role), P(pre + "_FR", role)];
+// what a switch shows: patchcord (meters), midi, idle (not running), internal (PipeWire's own drivers)
+const SHOW = [
+  ["patchcord", "PATCHCORD", "Patchcord's own signal meters"],
+  ["midi", "MIDI", "MIDI nodes"],
+  ["idle", "NOT RUNNING", "suspended devices, idle streams"],
+  ["internal", "INTERNAL", "Dummy-Driver, Freewheel-Driver"],
+];
+let show = { patchcord: false, midi: true, idle: true, internal: false };
+// a made-up graph: band (0 running, 1 MIDI, 2 not running, 3 internal), column
+const N = (id, name, cls, kind, band, col, ins, outs, f = {}) => ({ id, name, cls, kind, band, col, ins, outs, ...f });
+const NODES = [
+  N(60, "Firefox", "Stream/Output/Audio", "PLAY", 0, 0, [], st("output", "OUTPUT")),
+  N(155, "Teams for Linux", "Stream/Output/Audio", "PLAY", 0, 0, [], st("output", "OUTPUT")),
+  N(65, "fooyin", "Stream/Output/Audio", "PLAY", 0, 0, [], st("output", "OUTPUT")),
+  N(51, "Ryzen HD Audio Controller Analog Stereo", "Audio/Sink", "SINK", 0, 1, st("playback", "PLAYBACK"), st("monitor", "MONITOR"), { tag: "DRIVER" }),
+  N(293, "Teams for Linux", "Stream/Input/Audio", "REC", 0, 2, st("input", "INPUT"), []),
+  N(222, "Patchcord signal meter", "Stream/Input/Audio", "REC", 0, 2, st("input", "INPUT"), [], { patchcord: true }),
+  N(234, "Patchcord signal meter", "Stream/Input/Audio", "REC", 0, 2, st("input", "INPUT"), [], { patchcord: true }),
+  N(260, "Patchcord signal meter", "Stream/Input/Audio", "REC", 0, 2, st("input", "INPUT"), [], { patchcord: true }),
+  N(46, "Midi-Bridge", "Midi/Bridge", "MIDI", 1, 0, [P("Midi Through:Port-0", "MIDI")], [P("Midi Through:Port-0", "MIDI"), P("Hydrogen:Midi-In", "MIDI")], { midi: true }),
+  N(50, "BLE MIDI 1", "Midi/Bridge", "MIDI", 1, 1, [P("in", "MIDI")], [P("out", "MIDI")], { midi: true }),
+  N(315, "JLab GO Work 2", "Audio/Sink", "SINK", 2, 0, [P("playback_MONO", "PLAYBACK")], [P("monitor_MONO", "MONITOR")], { idle: true }),
+  N(433, "JLab GO Work 2", "Audio/Source", "SOURCE", 2, 0, [], [P("capture_MONO", "CAPTURE")], { idle: true }),
+  N(45, "Ryzen HD Audio Controller Analog Stereo", "Audio/Source", "SOURCE", 2, 1, [], st("capture", "CAPTURE"), { idle: true }),
+  N(154, "fooyin", "Stream/Output/Audio", "PLAY", 2, 1, [], st("output", "OUTPUT"), { idle: true }),
+  N(30, "Dummy-Driver", "", "DRIVER", 3, 0, [], [], { internal: true }),
+  N(31, "Freewheel-Driver", "", "DRIVER", 3, 1, [], [], { internal: true }),
+];
+const BANDS = ["DRIVER  Ryzen HD Audio Controller Analog Stereo", "MIDI", "NOT RUNNING", "INTERNAL"];
+const LINKS = [[60, 0, 51, 0], [60, 1, 51, 1], [155, 0, 51, 0], [155, 1, 51, 1], [51, 0, 222, 0], [51, 1, 222, 1], [51, 0, 293, 0], [51, 1, 293, 1]];
+const shown = (n) => SHOW.every(([k]) => !n[k] || show[k]);
+let POS = {}, view = { x: 0, y: 0 }, chosen = null;
+function layout() {
+  POS = {};
+  let y = 50;
+  const boxes = [];
+  BANDS.forEach((b, bi) => {
+    const ns = NODES.filter((n) => n.band === bi && shown(n));
+    if (!ns.length) return;
+    const cols = {};
+    for (const n of ns) (cols[n.col] = cols[n.col] || []).push(n);
+    let bh = 0;
+    for (const [c, cs] of Object.entries(cols)) {
+      let ny = y + BHEAD;
+      for (const n of cs) { POS[n.id] = [BPAD + c * COLW, ny]; ny += nodeH(n) + NGAP; }
+      bh = Math.max(bh, ny - y);
+    }
+    bh += BPAD - NGAP;
+    boxes.push([b, y, bh]);
+    y += bh + 24;
+  });
+  return boxes;
+}
+const q = document.getElementById("q");
+const term = () => q.value.trim().toLowerCase();
+const hits = (n) => { const t = term(); return t && [n.name, String(n.id), n.cls, ...n.ins.map((p) => p.name), ...n.outs.map((p) => p.name)].some((s) => s.toLowerCase().includes(t)); };
+const open = () => document.getElementById("card").classList.contains("open");
+function draw() {
+  const boxes = layout();
+  const g = document.getElementById("graph"), f = document.getElementById("field");
+  g.setAttribute("width", f.clientWidth); g.setAttribute("height", f.clientHeight);
+  const found = open() && term() ? NODES.filter((n) => shown(n) && hits(n)) : [];
+  const o = [`<g transform="translate(${view.x},${view.y})">`];
+  for (const [b, y, h] of boxes) {
+    o.push(`<rect x="10" y="${y}" width="${3 * COLW + 10}" height="${h}" rx="10" fill="#202124" stroke="#2c2e31"/>`);
+    const [w0, ...rest] = b.split("  ");
+    o.push(`<text x="${BPAD + 10}" y="${y + 22}" font-family="Noto Sans Mono" font-weight="700" font-size="12" fill="#e58f2c" letter-spacing="1">${esc(w0)}<tspan fill="#e6e7e8" letter-spacing="0">${rest.length ? "  " + esc(rest.join(" ")) : ""}</tspan></text>`);
+  }
+  for (const [a, ai, b, bi] of LINKS) {
+    if (!POS[a] || !POS[b]) continue;
+    const [ax, ay] = POS[a], [bx, by] = POS[b];
+    const p = [ax + NW, ay + portY(ai)], r = [bx, by + portY(bi)], d = Math.max(Math.abs(r[0] - p[0]) / 2, 50);
+    const dim = found.length && !found.some((n) => n.id === a || n.id === b);
+    o.push(`<path d="M${p[0]},${p[1]} C${p[0] + d},${p[1]} ${r[0] - d},${r[1]} ${r[0]},${r[1]}" fill="none" stroke="${ROLE[node(a).outs[ai].role]}" stroke-width="2" opacity="${dim ? 0.2 : 0.9}"/>`);
+  }
+  for (const n of NODES) {
+    if (!POS[n.id]) continue;
+    const [x, y] = POS[n.id], h = nodeH(n);
+    const isHit = found.includes(n), dim = found.length && !isHit, picked = chosen === n.id;
+    const c = picked || isHit ? SEL : KIND[n.kind];
+    const ink = picked || isHit ? "#3a2408" : "#f3efe6";
+    o.push(`<g transform="translate(${x + 10},${y})" opacity="${dim ? 0.3 : 1}"><rect width="${NW}" height="${h}" rx="6" fill="#1d1e21" stroke="${c}" stroke-width="${picked ? 2.5 : 1.5}"/>`);
+    o.push(`<path d="M0,24 V6 A6,6 0 0 1 6,0 H${NW - 6} A6,6 0 0 1 ${NW},6 V24 Z" fill="${c}"/><circle cx="12" cy="12" r="4" fill="${n.band === 0 ? "#5cff7a" : "#3a3c40"}" stroke="#0f1011" stroke-width="1.2"/>`);
+    const name = n.name.toUpperCase();
+    o.push(`<text x="22" y="16" font-size="11" font-weight="700" letter-spacing="1" fill="${ink}">${esc(name.length > 26 ? name.slice(0, 25) + "…" : name)}</text>`);
+    o.push(`<text x="12" y="36" font-family="Noto Sans Mono" font-size="10" fill="#7d8085">${n.id} · ${esc(n.cls || "no class")}</text>`);
+    if (n.tag) o.push(`<text x="${NW - 10}" y="36" text-anchor="end" font-size="8.5" font-weight="700" fill="#e58f2c">${n.tag}</text>`);
+    if (n.patchcord) o.push(`<text x="${NW - 10}" y="36" text-anchor="end" font-size="8.5" font-weight="700" fill="#e58f2c">PATCHCORD</text>`);
+    n.ins.forEach((p, i) => o.push(`<circle cx="0" cy="${portY(i)}" r="4" fill="${ROLE[p.role]}" stroke="#0f1011"/><text x="12" y="${portY(i) + 4}" font-family="Noto Sans Mono" font-size="10.5" fill="#c9cbcd">${esc(p.name)}</text>`));
+    n.outs.forEach((p, i) => o.push(`<circle cx="${NW}" cy="${portY(i)}" r="4" fill="${ROLE[p.role]}" stroke="#0f1011"/><text x="${NW - 12}" y="${portY(i) + 4}" text-anchor="end" font-family="Noto Sans Mono" font-size="10.5" fill="#c9cbcd">${esc(p.name)}</text>`));
+    o.push(`</g>`);
+  }
+  o.push("</g>");
+  g.innerHTML = o.join("");
+  // the key: what is hidden, while the card is shut
+  const hidden = NODES.filter((n) => !shown(n)).length;
+  document.getElementById("hid").textContent = hidden ? `· ${hidden} HIDDEN` : "";
+  document.getElementById("key").classList.toggle("on", open());
+  // the field: how many, and which one; matches a switch hides
+  const all = term() ? NODES.filter(hits) : [];
+  const off = all.filter((n) => !shown(n));
+  const at = found.findIndex((n) => n.id === chosen);
+  document.getElementById("cnt").textContent = term() ? (found.length ? `${at < 0 ? "–" : at + 1} of ${found.length}` : "none") : "";
+  const hint = document.getElementById("hint");
+  if (off.length) {
+    const why = SHOW.filter(([k]) => off.some((n) => n[k] && !show[k]));
+    hint.innerHTML = `${off.length} more hidden by ${why.map(([, l]) => l).join(", ")}` + why.map(([k, l]) => `<span class="btn" data-k="${k}">SHOW ${l}</span>`).join("");
+    hint.querySelectorAll(".btn").forEach((b) => (b.onclick = () => { show[b.dataset.k] = true; draw(); }));
+  } else hint.textContent = term() && !found.length ? "nothing by that: names, ids, classes, ports" : "in names, ids, classes and ports' names";
+  document.getElementById("rows").innerHTML = SHOW.map(([k, l, what]) => {
+    const n = NODES.filter((x) => x[k]).length;
+    return `<div class="row" data-k="${k}"><span class="led" style="background:${show[k] ? "#ff4a32" : "#3a1512"}"></span><b>${l}</b><i>${what}</i><span class="c">${n}</span></div>`;
+  }).join("");
+  document.querySelectorAll(".row").forEach((r) => (r.onclick = () => { show[r.dataset.k] = !show[r.dataset.k]; draw(); }));
+  document.getElementById("sl").textContent = chosen ? `${node(chosen).name} · #${chosen} chosen, its details would open` : "MOCKUP · nothing here reaches PipeWire";
+}
+const node = (id) => NODES.find((n) => n.id === id);
+function step(d) {
+  const found = NODES.filter((n) => shown(n) && hits(n));
+  if (!found.length) return;
+  const i = found.findIndex((n) => n.id === chosen);
+  chosen = found[(i + d + found.length) % found.length].id;
+  layout();
+  // in view: the chosen block brought to the field's middle, at once (no gliding in a mockup)
+  const f = document.getElementById("field"), [x, y] = POS[chosen];
+  view.x = Math.min(0, f.clientWidth / 2 - (x + NW / 2));
+  view.y = Math.min(0, f.clientHeight / 2 - y);
+  draw();
+}
+function setLegend(on) {
+  const l = document.getElementById("legend"), k = document.getElementById("legkey");
+  if (on) setOpen(false);
+  l.style.left = k.offsetLeft + 12 + "px";
+  l.classList.toggle("open", on);
+  k.classList.toggle("on", on);
+}
+function setDiag(on) {
+  document.getElementById("diag").classList.toggle("open", on);
+  document.getElementById("diagkey").classList.toggle("lit", on);
+  draw();
+}
+function setOpen(on) {
+  if (on) setLegend(false);
+  document.getElementById("card").classList.toggle("open", on);
+  if (on) { q.focus(); q.select(); } else { q.blur(); }
+  draw();
+}
+document.getElementById("key").onclick = () => setOpen(!open());
+document.getElementById("legkey").onclick = () => setLegend(!document.getElementById("legend").classList.contains("open"));
+document.getElementById("diagkey").onclick = () => setDiag(!document.getElementById("diag").classList.contains("open"));
+q.oninput = () => { chosen = null; draw(); };
+document.getElementById("next").onclick = () => step(1);
+document.getElementById("prev").onclick = () => step(-1);
+addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") { e.preventDefault(); setOpen(true); }
+  else if (e.key === "Escape") { setOpen(false); setLegend(false); }
+  else if (e.key === "Enter" && open()) step(e.shiftKey ? -1 : 1);
+  else if (e.key === "ArrowDown" && open()) { e.preventDefault(); step(1); }
+  else if (e.key === "ArrowUp" && open()) { e.preventDefault(); step(-1); }
+  // (typed into the field, ? and D are letters)
+  else if (document.activeElement === q) return;
+  else if (e.key === "?") setLegend(!document.getElementById("legend").classList.contains("open"));
+  else if (e.key === "d" || e.key === "D") setDiag(!document.getElementById("diag").classList.contains("open"));
+});
+addEventListener("resize", draw);
+draw();
+</script>
+</body>
+</html>

@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hiding the top panel</title>
+<!--
+  The top panel hidden, so the rack, MIXER or ENGINE get the whole window. Three ways to bring it
+  back, side by side: pick one with the keys above the window, then press P or use the mouse as
+  the variant says. The panel is the app's own (panel.png, from
+  `PATCHCORD_MIXER_PANEL=panel.png PATCHCORD_MIXER_PANEL_W=1520 PATCHCORD_MIXER_PANEL_SCREEN=rails
+  cargo test mixer_panel -- --ignored`); the rack under it is the README's screenshot without its
+  panel. Nothing moves in steps: the panel is there or not (principles: no animation).
+-->
+<style>
+  :root { --bg: #17181a; --ink: #d8dadd; --dim: #8d9095; --amber: #f0a64a; --metal: #a9acb0; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 "Noto Sans", sans-serif; }
+  header { padding: 18px 24px 8px; max-width: 1600px; }
+  h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: 2px; color: var(--amber); }
+  p { margin: 4px 0; color: var(--dim); max-width: 1100px; }
+  .variants { display: flex; gap: 8px; margin: 12px 0 6px; flex-wrap: wrap; }
+  .variants button { background: #26282b; color: var(--ink); border: 1px solid #3a3c40; border-radius: 4px; padding: 6px 14px; font: inherit; cursor: pointer; }
+  .variants button.on { border-color: var(--amber); color: var(--amber); }
+  #what { min-height: 3em; }
+  .stage { padding: 8px 24px 40px; }
+  /* the window, 1520 x 900 units, scaled to fit */
+  .win { position: relative; width: 1520px; height: 900px; overflow: hidden; background: #1c1d1f; border: 1px solid #000; border-radius: 6px; transform-origin: 0 0; }
+  .content { position: absolute; left: 0; right: 0; bottom: 22px; overflow: hidden; background: #1c1d1f url(rack.png) no-repeat 0 0 / 1520px auto; }
+  .panel { position: absolute; left: 0; top: 0; width: 1520px; height: 70px; background: url(panel.png) 0 0 / 1520px 70px; z-index: 3; }
+  .panel.over { box-shadow: 0 6px 14px rgba(0,0,0,.55); }
+  /* A's edge: the panel's metal, 6 units */
+  .edge { position: absolute; left: 0; top: 0; width: 100%; height: 6px; z-index: 2; cursor: default;
+          background: linear-gradient(#b9bcc0, #8e9195); border-bottom: 1px solid #000; }
+  /* B's slim bar: the panel's metal, a key, the LCD's two lines small */
+  .slim { position: absolute; left: 0; top: 0; width: 100%; height: 24px; z-index: 2; display: flex; align-items: center; gap: 14px; padding: 0 10px;
+          background: linear-gradient(#b4b7bb, #9a9da1); border-bottom: 1px solid #000; font: bold 11px "Noto Sans Mono", monospace; }
+  .slim .key { background: #1b1c1e; color: #e6e7e8; border-radius: 3px; padding: 2px 8px; letter-spacing: 1px; cursor: default; box-shadow: 0 1px 0 rgba(255,255,255,.3) inset, 0 1px 2px #000; }
+  .slim .lcd { margin-left: auto; background: #f0a64a; color: #3a2405; padding: 1px 8px; border-radius: 2px; letter-spacing: .5px; }
+  .status { position: absolute; left: 0; right: 0; bottom: 0; height: 22px; background: #141516; color: var(--dim); font: 12px "Noto Sans Mono", monospace; padding: 3px 10px; border-top: 1px solid #000; white-space: nowrap; overflow: hidden; }
+  .notes { max-width: 1100px; color: var(--dim); }
+  .notes b { color: var(--ink); }
+</style>
+</head>
+<body>
+<header>
+  <h1>HIDING THE TOP PANEL</h1>
+  <p>The panel hidden gives the rack, MIXER or ENGINE the whole window. P hides it and brings it back in every variant; they differ in what stays when it's hidden, and what the mouse can do.</p>
+  <div class="variants">
+    <button data-v="A">A · AN EDGE, THE PANEL OVER IT</button>
+    <button data-v="B">B · A SLIM BAR</button>
+    <button data-v="C">C · NOTHING, P ONLY</button>
+    <button id="toggle">P · HIDE / SHOW</button>
+  </div>
+  <p id="what"></p>
+</header>
+<div class="stage">
+  <div class="win" id="win">
+    <div class="content" id="content"></div>
+    <div class="edge" id="edge" hidden></div>
+    <div class="slim" id="slim" hidden><span class="key" id="slimkey">PANEL ▾</span><span style="color:#2a2b2e">P</span><span class="lcd">OUT ▸ JLab GO Work 2 · IN ▸ Ryzen HD Audio · 48 kHz · 1024</span></div>
+    <div class="panel" id="panel"></div>
+    <div class="status" id="status"></div>
+  </div>
+</div>
+<div class="stage notes">
+  <p><b>In all three:</b> the choice is remembered across restarts (<code>panel = hidden</code> in settings.txt). The keys keep working with the panel hidden (M, R, E, L, F…), and what a key changes is said in the status bar, as now. A narrow window folds the panel into MORE as before (ADR 0011); hiding is on top of that.</p>
+  <p><b>Not here:</b> the panel sliding in or out; the panel showing by itself when the pointer nears the top in B and C (it would cover the rack's first unit while you patch it).</p>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const WHAT = {
+  A: "Hidden: a 6-unit edge of the panel's metal along the top. The pointer on the edge shows the panel over the content (the content doesn't move); off the panel, it goes again. A click on the edge, or P, pins it: the content moves down under it.",
+  B: "Hidden: a bar 24 units high in the panel's metal: a PANEL key and, at the right, the LCD's lines small (the defaults, the clock). A click on the key, or P, brings the whole panel back.",
+  C: "Hidden: nothing; the whole window is content. Only P brings the panel back; the status bar says so once, when it is hidden.",
+};
+let v = "A", shown = true, peek = false;
+function draw() {
+  document.querySelectorAll(".variants button[data-v]").forEach(b => b.classList.toggle("on", b.dataset.v === v));
+  $("what").textContent = WHAT[v];
+  const top = shown ? 60 : v === "A" ? 6 : v === "B" ? 24 : 0;
+  $("content").style.top = top + "px";
+  $("edge").hidden = !(v === "A" && !shown);
+  $("slim").hidden = !(v === "B" && !shown);
+  const over = v === "A" && !shown && peek;
+  $("panel").style.display = shown || over ? "block" : "none";
+  $("panel").classList.toggle("over", over);
+  $("status").textContent = shown ? "Hide the panel: P"
+    : v === "A" ? (over ? "The panel, over the rack · click the edge or P: keep it" : "Panel hidden · the top edge: show it · P: bring it back")
+    : v === "B" ? "Panel hidden · PANEL or P: bring it back"
+    : "Panel hidden · P: bring it back";
+}
+function toggle() { shown = !shown; peek = false; draw(); }
+document.querySelectorAll(".variants button[data-v]").forEach(b => b.onclick = () => { v = b.dataset.v; peek = false; draw(); });
+$("toggle").onclick = toggle;
+addEventListener("keydown", e => { if (e.key === "p" || e.key === "P") toggle(); });
+$("edge").onmouseenter = () => { peek = true; draw(); };
+$("edge").onclick = () => { shown = true; peek = false; draw(); };
+$("panel").onmouseleave = () => { if (peek) { peek = false; draw(); } };
+$("panel").onclick = () => { if (peek) { shown = true; peek = false; draw(); } };
+$("slimkey").onclick = () => { shown = true; draw(); };
+function fit() {
+  const w = Math.min(1520, document.querySelector(".stage").clientWidth - 48);
+  const s = w / 1520;
+  $("win").style.transform = `scale(${s})`;
+  $("win").parentElement.style.height = 900 * s + 48 + "px";
+}
+addEventListener("resize", fit);
+fit();
+draw();
+</script>
+</body>
+</html>

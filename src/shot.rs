@@ -716,9 +716,6 @@ fn render_engine(path: &str, opts: &[String]) -> Result<(), String> {
     if opts.iter().any(|o| o == "legend") {
         eng.toggle_legend();
     }
-    if opts.iter().any(|o| o == "info") {
-        eng.open_info();
-    }
     // the params, if asked for, come back from PipeWire
     for c in eng.outbox.drain(..) {
         conn.send(c);
