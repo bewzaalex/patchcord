@@ -3123,7 +3123,16 @@ fn prepare_dev(d: &mut DevView, n: usize, c: &DevCtx, inbox: &mut painter::Inbox
         links
     } else {
         let wide = format!("{usage}  {links}");
-        if wide.chars().count() <= face::LCD_CH { wide } else { format!("{usage} {links}") }
+        let narrow = format!("{usage} {links}");
+        // (a card with no nodes: NO INPUTS OR OUTPUTS says it, NO NODES before it ran off the
+        // screen)
+        if wide.chars().count() <= face::LCD_CH {
+            wide
+        } else if narrow.chars().count() <= face::LCD_CH {
+            narrow
+        } else {
+            links
+        }
     };
     let text = format!("{kind}\n{carries}\n{third}");
     let x = d.geo.left + LCD_X;
