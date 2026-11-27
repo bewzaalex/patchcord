@@ -386,6 +386,73 @@ pub fn paint(f: Finish, w: f64, h: f64, r: f64) -> (Skin, &'static str) {
     (Skin { w, h, r, base: hex(f.base), noise: f.noise as f32 }, f.print)
 }
 
+/// A face's vents as a fine honeycomb (docs/design/vents, variant 1): small hexagons on the face's
+/// own grid, not each unit's, so where the free space runs on from one unit into the next the
+/// holes run on with it and a multi-unit device reads as one. In each unit the field is as high
+/// as the frames, its first and last rows touching their top and bottom; between two units' fields
+/// two rows more. Only whole holes: a hole an edge would cut is left out. `pitch`: a unit's.
+fn honeycomb(geo: &Geometry, pitch: f64) -> String {
+    const R: f64 = 5.2;
+    // a frame's top and bottom in its unit's own numbers, and how many rows apart they are
+    const TOP: f64 = 18.0;
+    const BOTTOM: f64 = 110.0;
+    const ROWS: usize = 8;
+    const BETWEEN: usize = 3;
+    let spans: Vec<[f64; 3]> = geo.grille.map(|(a, b)| [a, b, -LIFT]).into_iter().chain(geo.vents.iter().copied()).collect();
+    if spans.is_empty() {
+        return String::new();
+    }
+    // each span as high as a frame, and where two spans one above the other overlap, the room
+    // between them too
+    let mut rects: Vec<[f64; 4]> = spans.iter().map(|v| [v[0], v[2] + TOP, v[1], v[2] + BOTTOM]).collect();
+    for v in &spans {
+        for w in spans.iter().filter(|w| (w[2] - v[2] - pitch).abs() < 1.0) {
+            let (x0, x1) = (v[0].max(w[0]), v[1].min(w[1]));
+            if x1 - x0 > 2.0 * R {
+                rects.push([x0, v[2] + BOTTOM - 1.0, x1, w[2] + TOP + 1.0]);
+            }
+        }
+    }
+    // the rows, from the first unit's down to the last's
+    let first = spans.iter().map(|v| v[2]).fold(f64::MAX, f64::min);
+    let units = spans.iter().map(|v| ((v[2] - first) / pitch).round() as usize).max().unwrap_or(0) + 1;
+    let step = (BOTTOM - TOP - 2.0 * R) / ROWS as f64;
+    let gap = (pitch - (BOTTOM - TOP) + 2.0 * R) / BETWEEN as f64;
+    let mut rows = Vec::new();
+    for u in 0..units {
+        let y = first + u as f64 * pitch + TOP + R;
+        rows.extend((0..=ROWS).map(|j| y + j as f64 * step));
+        if u + 1 < units {
+            let last = y + ROWS as f64 * step;
+            rows.extend((1..BETWEEN).map(|j| last + j as f64 * gap));
+        }
+    }
+    let on = |x: f64, y: f64| rects.iter().any(|r| r[0] <= x && x <= r[2] && r[1] - 0.01 <= y && y <= r[3] + 0.01);
+    let dx = R * 3f64.sqrt() + 2.4;
+    let (x_min, x_max) = rects.iter().fold((f64::MAX, f64::MIN), |(a, b), r| (a.min(r[0]), b.max(r[2])));
+    // the hexagon's corners round its middle (a point up)
+    let corners: Vec<(f64, f64)> = (0..6).map(|k| (30.0 + 60.0 * k as f64).to_radians()).map(|a| (R * a.cos(), R * a.sin())).collect();
+    let mut d = String::new();
+    for (j, &y) in rows.iter().enumerate() {
+        let off = if j % 2 != 0 { dx / 2.0 } else { 0.0 };
+        let mut i = ((x_min - off) / dx).floor() as i64;
+        while i as f64 * dx + off <= x_max {
+            let x = i as f64 * dx + off;
+            let fits = on(x, y) && [(-R, -R), (R, -R), (-R, R), (R, R)].iter().all(|(a, b)| on(x + a, y + b));
+            if fits {
+                for (k, (a, b)) in corners.iter().enumerate() {
+                    let _ = write!(d, "{}{:.1},{:.1}", if k == 0 { "M" } else { "L" }, x + a, y + b);
+                }
+                d.push('Z');
+            }
+            i += 1;
+        }
+    }
+    // each hole's light edge (the light from the top left catches its far rim), then the holes
+    // over it so only the rim shows
+    format!(r##"<path d="{d}" fill="none" stroke="rgba(255,255,255,.12)" transform="translate(.4,.9)"/><path d="{d}" fill="#0b0c0d"/>"##)
+}
+
 /// How many jacks a mult shows for `count` cords: one each, and a free one.
 pub fn slots(count: usize) -> usize {
     count + 1
@@ -977,7 +1044,9 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
             }
             let (k, m) = (row.left.len(), row.right.len());
             let a = if k > 0 { cx[k - 1] + cw[k - 1] + 10.0 } else { x0 };
-            let b = if m > 0 { cx[cw.len() - m] - 10.0 } else { right };
+            // (to where its first output starts: it sits at its column's right edge, its column
+            // may be wider)
+            let b = if m > 0 { row.right.iter().map(|&g| geo.groups[g].0).fold(f64::MAX, f64::min) - 10.0 } else { right };
             if u > 0 && k == 0 {
                 geo.vents.push([ear + PAD, b, oy]);
             } else {
@@ -1408,7 +1477,7 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
             };
             let _ = write!(
                 body,
-                r#"<rect x="{fx}" y="18" width="{fw}" height="92" rx="6" fill="rgba(0,0,0,.15)" stroke="rgba(0,0,0,.3)"/><path d="M{},110.6 h{}" stroke="rgba(255,255,255,.14)"/>"#,
+                r#"<rect x="{fx}" y="18" width="{fw}" height="92" rx="6" fill="none" stroke="rgba(0,0,0,.3)"/><path d="M{},110.6 h{}" stroke="rgba(255,255,255,.14)"/>"#,
                 fx + 6.0,
                 fw - 12.0,
             );
@@ -1487,16 +1556,9 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
         let sig = if sections(dev, gi).len() > 1 { String::new() } else { SMALL.text(mx + 7.0, 31.0, ink, "middle", "SIG") };
         let _ = write!(body, r#"<g transform="translate(0,{oy})">{sig}{}</g>"#, Leds::strip(mx, 0.0, cols, accents).dark());
     }
-    // the slots of a rack unit's vents: between a 1U device's inputs and outputs in a rack, and
-    // wherever a multi-unit face has nothing to show
-    let mut grille = String::new();
-    for (gx0, gx1, oy) in geo.grille.map(|(a, b)| (a, b, -LIFT)).into_iter().chain(geo.vents.iter().map(|v| (v[0], v[1], v[2]))) {
-        let mut y = 30.0;
-        while y <= 98.0 {
-            let _ = write!(grille, r##"<rect x="{gx0}" y="{}" width="{}" height="4.2" rx="2.1" fill="#0b0c0d"/><path d="M{},{} h{}" stroke="rgba(255,255,255,.12)"/>"##, oy + y, gx1 - gx0, gx0 + 2.0, oy + y + 5.1, gx1 - gx0 - 4.0);
-            y += 9.5;
-        }
-    }
+    // the vents: between a 1U device's inputs and outputs in a rack, and wherever a multi-unit
+    // face has nothing to show (docs/design/vents, variant 1)
+    let grille = honeycomb(&geo, if rack { RACK_U } else { DEV_H });
 
     let r = if rack { 3.0 } else { 12.0 };
     let title = format!(r#"<text x="{x0}" y="{}" font-size="{TITLE}">{}</text>"#, 33.0 - LIFT, esc(&fit_title(&dev.name, IDW)));
@@ -1543,7 +1605,13 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
                     r##"<g transform="translate({sx},{sy}) scale({big})"><use href="#screwHead"/><use href="#screwCross" fill="#fff" fill-opacity=".55" transform="translate(.45,.45) rotate({a})"/><use href="#screwCross" fill="#2a2b2f" transform="rotate({a})"/></g>"##
                 )
             })
-            .collect()
+            .collect::<String>()
+            // a line printed down each side from one screw to the other, a little room round
+            // their heads (the idea of a border round the face, its sides only: docs/ROADMAP.md)
+            + &{
+                let (y0, y1) = (sy + RACK_SCREW_R + 3.0, h - sy - RACK_SCREW_R - 3.0);
+                format!(r#"<path d="M{inset},{y0} V{y1} M{},{y0} V{y1}" stroke="{}" stroke-width=".9"/>"#, w - inset, f.print)
+            }
     };
     // paint: solid base and its texture, put under the drawing (`Skin`)
     let under = Skin { w, h, r, base: hex(f.base), noise: f.noise as f32 };

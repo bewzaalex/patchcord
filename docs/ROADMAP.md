@@ -20,7 +20,8 @@ ships; what was turned down goes under **Not now** with the ADR that says why.
 - **A printed border round a rack face**: a line through its four screws' middles, as the tags
   are outlined, broken wherever something is on the face (its name, screen, keys, frames, vents,
   the screws), a little room round each: the face reads as one piece of gear. Tried 2026-11-27
-  (an SVG mask with a hole round each thing, `face_border`) and put away for now.
+  (an SVG mask with a hole round each thing, `face_border`) and put away for now; its sides
+  only, a line down each from screw to screw, are in since the same day.
 - **One look for RACK and MIXER**: MIXER found its own forms (frames on the module's edge with a
   two-line band, clear lit keys, amber LCDs for choices, titles between rules, keys that don't
   latch); bring the rack's faces to the same, or settle where they differ and why. Mockups first.

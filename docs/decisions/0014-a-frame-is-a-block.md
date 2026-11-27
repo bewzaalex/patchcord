@@ -40,7 +40,9 @@ sink is a sink). The frame's outline and band on the rack, the block's outline a
 | DUPLEX | `Audio/Duplex` | `#73348D` |
 | NO CLASS | none | `#CBA553`, lettered dark (`#1D1E20`) |
 
-One outline, never dashed. Where a kind has a main group of ports, its colour is that group's.
+One outline, never dashed, and nothing filled inside it: the face's own paint shows through
+(2026-11-27: a frame's darker inside made its colour clash with the olive paint, MIDI's plum
+worst; `docs/design/olive/` looked for other colours and found no need). Where a kind has a main group of ports, its colour is that group's.
 
 **A port's colour is its group's**: the ports of one direction and one kind (monitor or not,
 audio, MIDI, video). Not `port.group`: Easy Effects gives each channel its own. The jack's ring on
