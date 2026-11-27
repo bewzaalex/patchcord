@@ -2040,8 +2040,9 @@ impl Scene {
         };
         let mut note = if bal && !mute { bal_text(volume, balance) } else { vol_text(volume, mute, input) };
         if d.dev.groups.iter().filter(|g| g.mix.is_some()).count() > 1 {
-            // which one, by its frame's name: INPUT, OUTPUT, SPEAKERS, MIC…
-            note = format!("{} {note}", face::name(&d.dev, gi));
+            // which one, by its frame's name (INPUT, OUTPUT, SPEAKERS, BUILT-IN MIC…), on the line
+            // above: with the name the value didn't fit one line
+            note = format!("{}\n{note}", face::name(&d.dev, gi));
         }
         d.mix_note = Some((Instant::now() + MIX_NOTE, note));
         self.edited = true;
@@ -3075,7 +3076,12 @@ fn prepare_dev(d: &mut DevView, n: usize, c: &DevCtx, inbox: &mut painter::Inbox
         d.shade_want = Some((wsig, d.geo.w + 2.0 * SHADOW, d.geo.h + 2.0 * SHADOW));
         inbox.ask(painter::key("shade", &d.dev.key), wsig, face::shadow(d.geo.w, d.geo.h, c.rack_w.is_some()), SHADE_SCALE);
     }
+    // a note of two lines (which frame, then its value) takes the second line too
     let note = d.mix_note.as_ref().filter(|(until, _)| Instant::now() < *until).map(|(_, s)| s.clone());
+    let (above, note) = match note.as_ref().and_then(|n| n.split_once('\n')) {
+        Some((a, n)) => (Some(a.to_owned()), Some(n.to_owned())),
+        None => (None, note),
+    };
     let links = if let Some(note) = note {
         note
     } else if d.dev.groups.is_empty() && d.dev.card.is_some() {
@@ -3096,12 +3102,16 @@ fn prepare_dev(d: &mut DevView, n: usize, c: &DevCtx, inbox: &mut painter::Inbox
     // channel, or as many channels as its widest frame has when they don't say they're L and R
     // (a JACK app's out1, out2)
     let channels = d.dev.groups.iter().map(|g| g.ports.iter().filter(|p| p.media == Media::Audio).count()).max().unwrap_or(0);
-    let carries = match &d.dev.card {
-        Some(card) => face::marquee(&card.summary(), c.ms),
-        None if d.dev.groups.iter().any(|g| g.ports.iter().any(|p| p.media == Media::Midi)) => "MIDI".to_owned(),
-        None if d.dev.groups.iter().any(|g| g.stereo) => "STEREO".to_owned(),
-        None if channels > 1 => format!("{channels} CH"),
-        None => "MONO".to_owned(),
+    let carries = if let Some(a) = above {
+        a
+    } else {
+        match &d.dev.card {
+            Some(card) => face::marquee(&card.summary(), c.ms),
+            None if d.dev.groups.iter().any(|g| g.ports.iter().any(|p| p.media == Media::Midi)) => "MIDI".to_owned(),
+            None if d.dev.groups.iter().any(|g| g.stereo) => "STEREO".to_owned(),
+            None if channels > 1 => format!("{channels} CH"),
+            None => "MONO".to_owned(),
+        }
     };
     // what it is, and its state against the right edge (the name is on the plate)
     let state = d.dev.state.to_uppercase();

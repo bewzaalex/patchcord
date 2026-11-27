@@ -168,7 +168,7 @@ what goes out, after its volume or gain).
 
 | | |
 | --- | --- |
-| VOLUME / GAIN knob | in each frame with controls: VOLUME on what plays (an app's OUTPUT, a card's SPEAKERS), GAIN on what comes in (an app's INPUT, a MIC). A sound card's are its own hardware volume, as pavucontrol sets it. From silence to 150% (red past 100%: it can clip): drag up or down (Shift: fine), or the wheel (5%, Shift: 1%); it rests at 100% for a moment, and a double-click sets 100%. The screen shows the value in % and dB while it changes |
+| VOLUME / GAIN knob | in each frame with controls: VOLUME on what plays (an app's OUTPUT, a card's SPEAKERS), GAIN on what comes in (an app's INPUT, a MIC). A sound card's are its own hardware volume, as pavucontrol sets it. From silence to 150% (red past 100%: it can clip): drag up or down (Shift: fine), or the wheel (5%, Shift: 1%); it rests at 100% for a moment, and a double-click sets 100%. The screen shows the value in % and dB while it changes (on a device with more than one such frame, the frame's name on the line above it) |
 | BAL knob | on stereo: the balance between L and R. A push-push knob, as on an old car stereo: click to pop it out, then turn it like VOLUME; click again to push it back in, where it can't be turned by accident |
 | MUTE key | silences it, when let go over it; a key flush with the panel, as MIXER's, lit red while muted |
 
