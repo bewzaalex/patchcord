@@ -32,15 +32,15 @@
   <screenshots>
     <screenshot type="default">
       <caption>Devices on the desk, patched with cords</caption>
-      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.2/docs/screenshots/desk.png</image>
+      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.3/docs/screenshots/desk.png</image>
     </screenshot>
     <screenshot>
       <caption>The same devices in a rack</caption>
-      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.2/docs/screenshots/rack.png</image>
+      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.3/docs/screenshots/rack.png</image>
     </screenshot>
     <screenshot>
       <caption>ENGINE: PipeWire's real graph, with an app's details and timings</caption>
-      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.2/docs/screenshots/engine.png</image>
+      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.3/docs/screenshots/engine.png</image>
     </screenshot>
   </screenshots>
   <description>
@@ -65,6 +65,20 @@
     </ul>
   </description>
   <releases>
+    <release version="0.7.3" date="2026-11-27">
+      <url type="details">https://github.com/bewzaalex/patchcord/releases/tag/v0.7.3</url>
+      <description>
+        <p>ENGINE's inspector shows PipeWire's data as it is, and the rack's vents are a honeycomb.</p>
+        <ul>
+          <li>ENGINE's inspector shows what PipeWire gives, as it gives it: every object's info fields (state, error, a link's format, a module's file and arguments), all its properties, and every param of nodes, ports and devices (a card's profiles and routes too), folded until opened, with PropInfo's own descriptions beside the Props they describe</li>
+          <li>Its tabs in one order everywhere (INFO, PROPS, PARAMS, TIMING, CONN); a search over properties and params, properties by namespace, an id a link to its object; what Patchcord adds stands apart under PATCHCORD</li>
+          <li>A click on a row copies its value (Ctrl: key = value), on Wayland</li>
+          <li>The rack's vents are a fine honeycomb, as high as the frames, running on from one unit into the next, so a device of several units reads as one; a line down each side between the screws</li>
+          <li>Frames without a darker inside, so their colours sit well on every paint</li>
+          <li>Fixes: a card whose profile is off says OFF, not SUSPENDED; a volume note with its frame's name no longer runs off the screen; a touchpad scrolls ENGINE's details and tables as far as the fingers move</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.7.2" date="2026-11-27">
       <url type="details">https://github.com/bewzaalex/patchcord/releases/tag/v0.7.2</url>
       <description>
