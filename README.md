@@ -159,7 +159,7 @@ what goes out, after its volume or gain).
 | Drag a cord's end | move it to another jack, or drop it in empty space to unlink |
 | Double-click a cord or its end | pull it out (unlink) |
 | Drag a cord | grab it and swing it |
-| SPLIT / JOIN | in a frame's row of keys, left of MUTE, a key lit amber while split, as MIXER's (on its band, before the name, when it has no stereo volume): one stereo jack, or separate L and R jacks, L above R, for every stereo pair in the frame (an effect's IN and OUT, an input and the MONITOR inside it) together; the stereo jacks its cords lead to follow, and theirs in turn, and so does a new stream that starts playing into a split pair |
+| SPLIT / JOIN | in a frame's row of keys, left of MUTE, a key lit amber while split, as MIXER's (on its band, before the name, when it has no stereo volume): one stereo jack, or separate L and R jacks, L above R, for every stereo pair in the frame (an effect's IN and OUT, an input and the MONITOR inside it) together; the stereo jacks its cords lead to follow, and theirs in turn, and so does a new stream that starts playing into a split pair. The cords are replaced at once, nothing falls |
 | FLOW key (W) | which way each cord goes: a light runs inside every plugged-in cord from its output to its input, one at a time; on by default |
 | Hover a jack, cord or device | its cords stand out (even with CABLES on fade or hide) and the others fade; after a moment a tooltip gives the full names |
 | Ctrl+Z / Ctrl+Shift+Z | undo / redo |

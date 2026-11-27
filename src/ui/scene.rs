@@ -2366,7 +2366,11 @@ impl Scene {
             }
         }
         self.index();
+        // the cords are replaced, not pulled out: the old ones go at once, nothing falls (the
+        // new ones come at rest)
+        let dying: HashSet<u64> = self.cords.iter().filter(|c| c.dying.is_some()).map(|c| c.seq).collect();
         self.reconcile();
+        self.cords.retain(|c| c.dying.is_none() || dying.contains(&c.seq));
         self.slots();
     }
 

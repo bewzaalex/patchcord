@@ -75,7 +75,7 @@
           <li>A click on a row copies its value (Ctrl: key = value), on Wayland</li>
           <li>The rack's vents are a fine honeycomb, as high as the frames, running on from one unit into the next, so a device of several units reads as one; a line down each side between the screws</li>
           <li>Frames without a darker inside, so their colours sit well on every paint</li>
-          <li>Fixes: a card whose profile is off says OFF, not SUSPENDED, and its screen no longer runs off at the bottom; a volume note with its frame's name no longer runs off the screen; a touchpad scrolls ENGINE's details and tables as far as the fingers move</li>
+          <li>Fixes: a card whose profile is off says OFF, not SUSPENDED, and its screen no longer runs off at the bottom; SPLIT replaces the cords at once, none falls; a volume note with its frame's name no longer runs off the screen; a touchpad scrolls ENGINE's details and tables as far as the fingers move</li>
         </ul>
       </description>
     </release>
