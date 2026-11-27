@@ -7,8 +7,6 @@ ships; what was turned down goes under **Not now** with the ADR that says why.
 
 ## Next
 
-- **New pictures for the README**: screenshots and `demo.gif` are still from 0.5.0; MIXER, the
-  rack and ENGINE have changed since.
 - **ENGINE shows all PipeWire has about an object, on request**: now it shows the registry's
   properties of ports, modules and factories, and of a card's params only what the rack reads
   (its routes and profiles aren't in ENGINE at all: "Speakers" is nowhere there). Opening an
@@ -19,6 +17,10 @@ ships; what was turned down goes under **Not now** with the ADR that says why.
 
 ## Later
 
+- **A printed border round a rack face**: a line through its four screws' middles, as the tags
+  are outlined, broken wherever something is on the face (its name, screen, keys, frames, vents,
+  the screws), a little room round each: the face reads as one piece of gear. Tried 2026-11-27
+  (an SVG mask with a hole round each thing, `face_border`) and put away for now.
 - **One look for RACK and MIXER**: MIXER found its own forms (frames on the module's edge with a
   two-line band, clear lit keys, amber LCDs for choices, titles between rules, keys that don't
   latch); bring the rack's faces to the same, or settle where they differ and why. Mockups first.

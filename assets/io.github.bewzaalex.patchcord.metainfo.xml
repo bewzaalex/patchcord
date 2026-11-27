@@ -32,15 +32,15 @@
   <screenshots>
     <screenshot type="default">
       <caption>Devices on the desk, patched with cords</caption>
-      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.1/docs/screenshots/desk.png</image>
+      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.2/docs/screenshots/desk.png</image>
     </screenshot>
     <screenshot>
       <caption>The same devices in a rack</caption>
-      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.1/docs/screenshots/rack.png</image>
+      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.2/docs/screenshots/rack.png</image>
     </screenshot>
     <screenshot>
       <caption>ENGINE: PipeWire's real graph, with an app's details and timings</caption>
-      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.1/docs/screenshots/engine.png</image>
+      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.2/docs/screenshots/engine.png</image>
     </screenshot>
   </screenshots>
   <description>
@@ -65,6 +65,21 @@
     </ul>
   </description>
   <releases>
+    <release version="0.7.2" date="2026-11-27">
+      <url type="details">https://github.com/bewzaalex/patchcord/releases/tag/v0.7.2</url>
+      <description>
+        <p>One light over everything, orange outputs, steadier dragging in the rack, and a cleaner, quicker inside.</p>
+        <ul>
+          <li>One light falls over all the devices, in the rack, on the desk and in MIXER: the corner nearer it as the paint is, the far one in shade; no device has a light of its own any more, so a stack no longer looks wavy</li>
+          <li>A device carried in the rack casts its shadow over everything under it; its neighbours make room only once it passes their middle</li>
+          <li>Cords' shadows go into the jacks with them; knobs, faders and screws cast their shadows the same way</li>
+          <li>MIXER: a click on a device's name opens ENGINE; on a card that is off, with its device chosen</li>
+          <li>Outputs in orange instead of brown; PipeWire's own nodes in a dark olive; the rules in a frame printed, the one before its knobs in the frame's colour</li>
+          <li>No screws on the desk: a device there isn't screwed to anything</li>
+          <li>Fixes: ENGINE no longer rebuilds 25 times a second while sound plays; a cue link taken away is made again; the profiler starts when ENGINE is the screen opened at start; the status bar in CUE says only what is heard</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.7.1" date="2026-11-27">
       <url type="details">https://github.com/bewzaalex/patchcord/releases/tag/v0.7.1</url>
       <description>
