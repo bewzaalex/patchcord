@@ -12,7 +12,7 @@ use resvg::tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Rect, Transform};
 use resvg::usvg;
 
 use super::cord::{Cord, Held, RATE, Slot};
-use super::face::{self, BADGE, BAL_R, BalKnob, DEV_H, Geometry, KNOB_R, Leds, MIX_H, MIX_Y, JP, JackDef, JackKind, LCD_H, LCD_W, LCD_X, LCD_Y, FACE_PAD, PIC, RACK_GAP, RACK_MIN, RACK_SCREW_X, RACK_U, SHADOW};
+use super::face::{self, BADGE, BAL_R, BalKnob, DEV_H, Geometry, KNOB_R, Leds, MIX_H, MIX_Y, JP, JackDef, LCD_H, LCD_W, LCD_X, LCD_Y, FACE_PAD, PIC, RACK_GAP, RACK_MIN, RACK_SCREW_X, RACK_U, SHADOW};
 use super::{ease, paint, painter, text};
 use crate::config::Preset;
 
@@ -173,12 +173,12 @@ fn columns(hs: &[f64], n: usize) -> Vec<usize> {
 fn unit_top(k: i64) -> f64 {
     RACK_GAP / 2.0 + k as f64 * RACK_U
 }
-/// Where the ringed jacks start in `Scene::jack_pics` (after the plus badge): for each group
-/// colour of `face::ACCENTS`, a mono, a stereo and a MIDI jack.
+/// Where the ringed jacks start in `Scene::jack_pics` (after the plus badge): a jack for each
+/// group colour of `face::ACCENTS` (mono, stereo and MIDI look alike: ADR 0023).
 const JACK_PICS: usize = 1;
 /// Where the cue's marks start in `Scene::jack_pics`: the disc under a jack kept on, the ring,
 /// the red ring.
-pub const CUE_PICS: usize = JACK_PICS + 3 * face::ACCENTS.len();
+pub const CUE_PICS: usize = JACK_PICS + face::ACCENTS.len();
 /// Where the target rings start in `Scene::jack_pics`: green, then gold.
 pub const TARGET_PICS: usize = CUE_PICS + 3;
 /// Where the half discs start (left, right): one channel of a stereo jack kept on.
@@ -324,6 +324,29 @@ impl DevView {
     }
 }
 
+/// The rack's one light, as a picture stretched over all its devices: the room's light falling
+/// from the top left, so the corner nearer it is lighter and the far one darker, evenly across
+/// every device (each face's own sheen made the light go in waves down a stack).
+pub(crate) fn light_layer() -> Layer {
+    let n = 64u32;
+    let pm = Pixmap::new(n, n).map(|mut pm| {
+        for y in 0..n {
+            for x in 0..n {
+                // along the diagonal from the light: the paint as it is nearest it, falling into
+                // shade further off (only shade: a light added made the paint look milky, as if
+                // one saw through it)
+                let t = (x as f32 + y as f32) / (2.0 * (n - 1) as f32);
+                let a8 = (0.26 * t.powf(1.2) * 255.0).round() as u8;
+                if let Some(p) = resvg::tiny_skia::PremultipliedColorU8::from_rgba(0, 0, 0, a8) {
+                    pm.pixels_mut()[(y * n + x) as usize] = p;
+                }
+            }
+        }
+        pm
+    });
+    Layer { id: next_id(), pm, x: 0.0, y: 0.0, w: 1.0, h: 1.0 }
+}
+
 /// The volume as the LCD shows it: "VOL  85%  -4.23 dB" ("GAIN" on an input), or MUTED.
 fn vol_text(volume: f64, mute: bool, input: bool) -> String {
     if mute {
@@ -432,13 +455,14 @@ pub struct Scene {
     /// each group on a band of its kind's colour (K)
     pub accents: bool,
     /// pictures laid over the faces: the plus badge of a mult's free jack, then (from
-    /// `JACK_PICS`) for each group colour of `face::ACCENTS` a mono, a stereo and a MIDI jack
-    /// ringed in it; then, from `CUE_PICS`, the cue's marks: the disc under a jack kept on, the ring
+    /// `JACK_PICS`) a jack ringed in each group colour of `face::ACCENTS`; then, from `CUE_PICS`, the cue's marks: the disc under a jack kept on, the ring
     /// round a jack heard, and the red ring of one that would feed back; then the rings round
     /// the jacks a cord's end in the hand may go into (`TARGET_PICS`): green, and gold for the
     /// one it is pulled to; last the halves of a disc (`HALF_PICS`: left, right) and a split
     /// pair's marks (`PAIR_PICS`: disc, ring, red ring)
     pub jack_pics: [Option<Layer>; PAIR_PICS + 3],
+    /// the one light over the whole rack (`rack_light`), laid over its devices
+    pub light: Layer,
     /// counts what PipeWire said (but the levels) and the devices made from it: what is worked
     /// out from them is worked out again when it moves on
     pub rev: u64,
@@ -464,7 +488,7 @@ pub struct Scene {
     redo: Vec<Change>,
     /// devices hidden by hand (by key), and those of them PipeWire has now
     pub hidden: Vec<String>,
-    pub hidden_devs: Vec<crate::graph::Device>,
+    pub hidden_devs: Vec<Device>,
     /// hidden devices that came back by themselves (they got a cord), by name, for the app to say
     pub shown_again: Vec<String>,
     /// a light runs inside each cord that carries sound (W)
@@ -548,6 +572,7 @@ impl Scene {
             align: true,
             accents: true,
             jack_pics: std::array::from_fn(|_| None),
+            light: light_layer(),
             spent: Vec::new(),
             prep_spent: Vec::new(),
             pics_scale: 0.0,
@@ -617,7 +642,7 @@ impl Scene {
         // devices hidden by hand stay out, unless one has a cord now (to a device that is shown
         // or hidden; a meter or the cue doesn't count): a cord must never lead nowhere
         let devices = self.graph.devices();
-        let ports_of = |d: &crate::graph::Device| -> HashSet<u32> { d.groups.iter().flat_map(|g| g.ports.iter().map(|p| p.id)).collect() };
+        let ports_of = |d: &Device| -> HashSet<u32> { d.groups.iter().flat_map(|g| g.ports.iter().map(|p| p.id)).collect() };
         let all: HashSet<u32> = devices.iter().flat_map(ports_of).collect();
         let links = self.graph.links();
         self.hidden_devs.clear();
@@ -799,8 +824,41 @@ impl Scene {
         if let Some(k) = dragged
             && let Some(d) = self.devs.iter().find(|d| d.dev.key == k)
         {
-            // the others stacked without it (down the racks as they would go), and it put before
-            // the first one past it: a rack further right, or lower in its rack
+            // within its own rack it trades places with a neighbour only once carried past that
+            // neighbour's middle (its top above the one above's, its bottom below the one below's):
+            // the others stay put while it is only touched or nudged
+            let h_of = |o: &str| self.devs.iter().find(|x| x.dev.key == o).map_or(DEV_H, DevView::h) + RACK_GAP;
+            let hs: Vec<f64> = order.iter().map(|o| h_of(o)).collect();
+            let col = columns(&hs, self.racks);
+            let pitch = rack_pitch(self.rack_w.unwrap_or(RACK_MIN));
+            let held = (((d.x + d.geo.w / 2.0) / pitch).floor().max(0.0) as usize).min(self.racks.max(1) - 1);
+            if let Some(at) = order.iter().position(|o| o == k)
+                && col[at] == held
+            {
+                // where each one's slot is now, the dragged one in its own
+                let mut tops = vec![0.0; order.len()];
+                let mut y = RACK_GAP;
+                for i in 0..order.len() {
+                    if i > 0 && col[i] != col[i - 1] {
+                        y = RACK_GAP;
+                    }
+                    tops[i] = y;
+                    y += hs[i];
+                }
+                let (top, bottom) = (d.y, d.y + d.h());
+                let mut to = at;
+                if at > 0 && col[at - 1] == held && top < tops[at - 1] + (hs[at - 1] - RACK_GAP) / 2.0 {
+                    to = at - 1;
+                } else if at + 1 < order.len() && col[at + 1] == held && bottom > tops[at + 1] + (hs[at + 1] - RACK_GAP) / 2.0 {
+                    to = at + 1;
+                }
+                if to != at {
+                    order.swap(at, to);
+                }
+                return self.place_rack(order, dragged);
+            }
+            // into another rack: the others stacked without it (down the racks as they would go),
+            // and it put before the first one past it there
             order.retain(|o| o != k);
             let hs: Vec<f64> = order.iter().map(|o| self.devs.iter().find(|x| x.dev.key == *o).map_or(DEV_H, DevView::h) + RACK_GAP).collect();
             let col = columns(&hs, self.racks);
@@ -820,6 +878,12 @@ impl Scene {
             }
             order.insert(idx, k.to_owned());
         }
+        self.place_rack(order, dragged);
+    }
+
+    /// Puts the devices in the rack in `order`, but for the one being dragged (it goes where it
+    /// is held).
+    fn place_rack(&mut self, order: Vec<String>, dragged: Option<&str>) {
         // each face in its units, a gap below the one above (and the first a gap below the top);
         // down the first rack and on into the next
         let hs: Vec<f64> = order.iter().map(|k| self.devs.iter().find(|d| d.dev.key == *k).map_or(DEV_H, DevView::h) + RACK_GAP).collect();
@@ -842,9 +906,41 @@ impl Scene {
         self.rack_h = bottom.max(RACK_GAP) - RACK_GAP / 2.0;
     }
 
+    /// Where the one light goes (world units): over the whole rack, from its top left to its
+    /// bottom right (where a device is carried doesn't move it); on the desk, over all the
+    /// devices, from the top left of the first to the bottom right of the last.
+    pub fn rack_light(&self) -> Option<[f64; 4]> {
+        if self.devs.is_empty() {
+            return None;
+        }
+        if let Some((l, r, _)) = self.rack_extent() {
+            return Some([l, 0.0, r - l, self.rack_h.max(RACK_U)]);
+        }
+        let (x0, y0) = self.devs.iter().fold((f64::MAX, f64::MAX), |a, d| (a.0.min(d.x), a.1.min(d.y)));
+        let (x1, y1) = self.devs.iter().fold((f64::MIN, f64::MIN), |a, d| (a.0.max(d.x + d.geo.w), a.1.max(d.y + d.h())));
+        Some([x0, y0, x1 - x0, y1 - y0])
+    }
+
+    /// Lays the one light (`rack_light`) on each device in `out`, and not between them, as the
+    /// window does: for pictures without a GPU. `to_px`: world point to the picture's pixels;
+    /// `scale`: its pixels a world unit.
+    pub fn draw_light(&self, out: &mut Pixmap, to_px: impl Fn(f64, f64) -> (f32, f32), scale: f64) {
+        let (Some(pm), Some(whole)) = (&self.light.pm, self.rack_light()) else { return };
+        let (gx, gy) = to_px(whole[0], whole[1]);
+        let (sx, sy) = ((whole[2] * scale) as f32 / pm.width() as f32, (whole[3] * scale) as f32 / pm.height() as f32);
+        let shader = resvg::tiny_skia::Pattern::new(pm.as_ref(), resvg::tiny_skia::SpreadMode::Pad, resvg::tiny_skia::FilterQuality::Bilinear, 1.0, Transform::from_row(sx, 0.0, 0.0, sy, gx, gy));
+        let paint = Paint { shader, ..Default::default() };
+        for d in &self.devs {
+            let (x, y) = to_px(d.x, d.y);
+            if let Some(r) = Rect::from_xywh(x, y, (d.geo.w * scale) as f32, (d.h() * scale) as f32) {
+                out.fill_rect(r, &paint, Transform::identity(), None);
+            }
+        }
+    }
+
     /// The ids of every picture of the desk or rack (to keep on the GPU while ENGINE shows).
     pub fn layer_ids(&self) -> impl Iterator<Item = u64> + '_ {
-        self.devs.iter().flat_map(|d| d.layers().map(|l| l.id)).chain(self.pic_ids()).chain(self.rails.iter().flat_map(Rails::ids))
+        self.devs.iter().flat_map(|d| d.layers().map(|l| l.id)).chain(self.pic_ids()).chain(self.rails.iter().flat_map(Rails::ids)).chain([self.light.id])
     }
 
     /// The ids of the pictures laid over the faces now and then (the spare devices', the jacks'
@@ -1113,7 +1209,7 @@ impl Scene {
                 key.extend([u32::MAX, g.ports[0].node]);
                 // named as the ports it measures (MONO, FL…) when they tell and differ; AUX0… else
                 let named: Vec<String> = targets.iter().map(|(_, p)| self.graph.props_of(*p).and_then(|q| q.get("audio.channel")).cloned().unwrap_or_default()).collect();
-                let unique = named.iter().all(|c| !c.is_empty()) && named.iter().collect::<std::collections::HashSet<_>>().len() == named.len();
+                let unique = named.iter().all(|c| !c.is_empty()) && named.iter().collect::<HashSet<_>>().len() == named.len();
                 let channels = if unique { named } else { (0..targets.len()).map(|i| format!("AUX{i}")).collect() };
                 want.insert(key, (MeterFor { dev: d.dev.key.clone(), groups: vec![gi], vol_of: g.mix.is_some().then_some(gi), mute_of: gain.then_some(gi), map }, targets, channels));
             }
@@ -1210,11 +1306,10 @@ impl Scene {
                 continue;
             }
             let (Some(pa), Some(pb)) = (self.slot_pos(&a, 0), self.slot_pos(&b, 0)) else { continue };
-            let (ka, kb) = (self.jack(&a).map(|j| j.1.kind).unwrap(), self.jack(&b).map(|j| j.1.kind).unwrap());
             let color = self.jack(&a).map(|j| j.0.dev.color).unwrap();
             self.seq += 1;
             self.slot_seq += 2;
-            self.cords.push(Cord::new(self.seq, (self.slot_seq - 1, self.slot_seq), (a, ka, pa), (b, kb, pb), color));
+            self.cords.push(Cord::new(self.seq, (self.slot_seq - 1, self.slot_seq), (a, pa), (b, pb), color));
         }
     }
 
@@ -1319,7 +1414,7 @@ impl Scene {
         // meters: peaks to lit LEDs on a dB scale (-48.6…+5.4 dB → 0…10), quick up and slow down;
         // one LED higher than -54…0 was, so that the red one lights only at a clip (0 dBFS and
         // over), not on a loud track at 100%
-        let mut target: HashMap<(&str, Option<usize>), [f32; 2]> = HashMap::new();
+        let mut target: HashMap<(&str, usize), [f32; 2]> = HashMap::new();
         let index: HashMap<&str, usize> = self.devs.iter().enumerate().map(|(i, d)| (d.dev.key.as_str(), i)).collect();
         for (id, p) in &self.peaks {
             let Some(m) = self.meter_dev.get(id) else { continue };
@@ -1351,7 +1446,7 @@ impl Scene {
                 ch[1] = ch[0];
             }
             for gi in &m.groups {
-                let t = target.entry((m.dev.as_str(), Some(*gi))).or_default();
+                let t = target.entry((m.dev.as_str(), *gi)).or_default();
                 (t[0], t[1]) = (t[0].max(led(ch[0])), t[1].max(led(ch[1])));
             }
         }
@@ -1361,7 +1456,7 @@ impl Scene {
         };
         for d in &mut self.devs {
             for (gi, ..) in &d.geo.meters {
-                let t = target.get(&(d.dev.key.as_str(), Some(*gi))).copied().unwrap_or_default();
+                let t = target.get(&(d.dev.key.as_str(), *gi)).copied().unwrap_or_default();
                 let lv = d.glevel.entry(*gi).or_default();
                 for (level, t) in lv.iter_mut().zip(t) {
                     moving |= fall(level, t);
@@ -1578,8 +1673,7 @@ impl Scene {
         Some(b)
     }
 
-    /// A view that shows every device in the window area `top` pixels down, w × h pixels.
-    /// The view that shows every device, as big as the window allows up to `max_scale`, with a
+    /// The view that shows every device in the window area `top` pixels down, w × h pixels, as big as the window allows up to `max_scale`, with a
     /// margin of `m` (screen pixels) round them.
     /// In the rack: the rails at the window's edges, the first device at the top.
     pub fn fit(&self, w: f64, h: f64, top: f64, max_scale: f64, m: f64) -> View {
@@ -1667,9 +1761,7 @@ impl Scene {
             // the jacks' pictures: the first ones at once, side by side on all cores; at a new
             // scale on the painter's threads (the old ones stretch meanwhile)
             let mut svgs = vec![face::badge_pic()];
-            for c in face::ACCENTS.iter() {
-                svgs.extend([JackKind::Mono, JackKind::Stereo, JackKind::Midi].into_iter().map(|kind| face::jack_pic_ring(kind, c)));
-            }
+            svgs.extend(face::ACCENTS.iter().map(|c| face::jack_pic_ring(c)));
             svgs.extend([face::cue_disc_pic(), face::cue_ring_pic(false), face::cue_ring_pic(true), face::target_ring_pic(false), face::target_ring_pic(true)]);
             svgs.extend([face::cue_half_pic(false), face::cue_half_pic(true), face::cue_pair_pic(false, false), face::cue_pair_pic(true, false), face::cue_pair_pic(true, true)]);
             // (in the order of the indexes above: JACK_PICS, CUE_PICS, TARGET_PICS…)
@@ -1851,16 +1943,8 @@ impl Scene {
         let mut v = Vec::new();
         for (ji, j) in d.defs.iter().enumerate() {
             let (Some(&(jx, jy)), Some(&n)) = (d.geo.jacks.get(ji), d.counts.get(ji)) else { continue };
-            // every jack is ringed in its group's colour (K switches only the bands); the L and R
-            // of a split stereo jack keep its double ring: still the same pair
-            let stereo = d.dev.groups.get(j.group).is_some_and(|g| g.stereo);
-            let kind = if stereo { JackKind::Stereo } else { j.kind };
-            let pic = JACK_PICS + 3 * face::accent_index(&d.dev, j.group)
-                + match kind {
-                    JackKind::Mono => 0,
-                    JackKind::Stereo => 1,
-                    JackKind::Midi => 2,
-                };
+            // every jack is ringed in its group's colour (K switches only the bands)
+            let pic = JACK_PICS + face::accent_index(&d.dev, j.group);
             let k = face::slots(n);
             for s in 0..k {
                 let (x, y) = (d.x + jx + s as f64 * JP, d.y + jy);
@@ -1872,7 +1956,7 @@ impl Scene {
                     Some(_) => 0.4,
                 };
                 v.push((pic, x, y, a));
-                // its badge; while a plug is in the hand a free jack it fits glows instead
+                // its badge; while a plug is in the hand a free jack it fits shows solid, its badge hidden
                 let badge = match targets {
                     None => 1.0,
                     Some(_) if a == 1.0 => 0.0,
@@ -1890,10 +1974,6 @@ impl Scene {
     pub fn spare(&self, key: &str) -> Option<(f32, f32)> {
         let &(di, ji) = self.jacks.get(key)?;
         self.slot_pos(key, self.devs[di].counts[ji])
-    }
-
-    pub fn jack_kind(&self, key: &str) -> Option<JackKind> {
-        self.jack(key).map(|(_, j)| j.kind)
     }
 
     /// The control of an app stream under a world point: (device, group).
@@ -2040,7 +2120,6 @@ impl Scene {
 
     /// The outputs (devices' sinks) or inputs (their sources) that can be the default: device,
     /// group, node.name, and how the list names it (with the group's when a device has several).
-    /// The outputs (or inputs) that can be the default: (device, group, node name, shown name).
     /// A device index past `devs` is one hidden by hand, in `hidden_devs`.
     pub fn ends(&self, output: bool) -> Vec<(usize, usize, String, String)> {
         let mut v = Vec::new();
@@ -2157,7 +2236,7 @@ impl Scene {
         if j.ports.len() != 1 || !d.dev.groups.get(j.group).is_some_and(|g| g.stereo) {
             return None;
         }
-        let both: Vec<&face::JackDef> = d.defs.iter().filter(|x| x.group == j.group).collect();
+        let both: Vec<&JackDef> = d.defs.iter().filter(|x| x.group == j.group).collect();
         if both.len() != 2 {
             return None;
         }
@@ -2294,11 +2373,10 @@ impl Scene {
     /// for snapshots of a patch the graph doesn't have (`--render ... demo`).
     pub fn show_cord(&mut self, out: &str, inp: &str) {
         let (Some(pa), Some(pb)) = (self.spare(out), self.spare(inp)) else { return };
-        let (ka, kb) = (self.jack(out).map(|j| j.1.kind).unwrap(), self.jack(inp).map(|j| j.1.kind).unwrap());
         let color = self.jack(out).map(|j| j.0.dev.color).unwrap();
         self.seq += 1;
         self.slot_seq += 2;
-        let c = Cord::new(self.seq, (self.slot_seq - 1, self.slot_seq), (out.to_owned(), ka, pa), (inp.to_owned(), kb, pb), color);
+        let c = Cord::new(self.seq, (self.slot_seq - 1, self.slot_seq), (out.to_owned(), pa), (inp.to_owned(), pb), color);
         self.cords.push(c);
         self.slots();
     }
@@ -2324,10 +2402,9 @@ impl Scene {
         let output = j.dir == Dir::Out;
         // its own device's colour; plugged into an output, it takes that one's
         let color = d.dev.color;
-        let kind = j.kind;
         self.seq += 1;
         self.slot_seq += 1;
-        self.cords.push(Cord::fresh(self.seq, self.slot_seq, key.to_owned(), kind, at, color, output));
+        self.cords.push(Cord::fresh(self.seq, self.slot_seq, key.to_owned(), at, color, output));
         Some(self.seq)
     }
 
@@ -2407,6 +2484,13 @@ impl Scene {
     }
 
     /// The PipeWire links from group `out`'s ports into group `inp`'s.
+    /// Whether any link runs from group `out` to group `inp`, among `links` (out port, in port: the
+    /// graph's links gathered once by the caller, who asks for many pairs).
+    pub fn groups_linked(&self, out: (usize, usize), inp: (usize, usize), links: &HashSet<(u32, u32)>) -> bool {
+        let b = self.group_ports(inp);
+        self.group_ports(out).iter().any(|o| b.iter().any(|i| links.contains(&(*o, *i))))
+    }
+
     pub fn group_links(&self, out: (usize, usize), inp: (usize, usize)) -> Vec<(u32, u32)> {
         let (a, b) = (self.group_ports(out), self.group_ports(inp));
         self.graph.links().into_iter().filter(|l| a.contains(&l.out_port) && b.contains(&l.in_port)).map(|l| (l.out_port, l.in_port)).collect()
@@ -2826,7 +2910,7 @@ impl Scene {
             return format!("{}  ·  click: choose its ports and latency offset", now.join(" · "));
         }
         if let Some(di) = self.profile_key_at(x, y) {
-            let card = self.devs[di].dev.card.as_ref().map_or(String::new(), |c| c.summary());
+            let card = self.devs[di].dev.card.as_ref().map_or(String::new(), super::super::graph::Card::summary);
             return format!("{card}  ·  click: choose a profile");
         }
         if let Some((di, g)) = self.switch_at(x, y) {
@@ -3536,6 +3620,8 @@ mod tests {
                 draw(&mut pm, l, (d.x + l.x, d.y + l.y, l.w, l.h));
             }
         }
+        // (the one light, on each device, as in the window)
+        s.draw_light(&mut pm, |x, y| ((x * sc + v.x) as f32, (y * sc + v.y) as f32), sc);
         // the top panel's place
         if let Some(rect) = Rect::from_xywh(0.0, 0.0, ww as f32, top as f32) {
             let mut p = Paint::default();
@@ -3565,15 +3651,7 @@ mod tests {
                 }
                 t.elapsed() / 5
             };
-            let without = |pat: &str| svg.replace(pat, "url(#none)");
-            println!(
-                "{} {:.0}x{:.0}: all {:?}; no sheen {:?}",
-                d.dev.name,
-                geo.w,
-                geo.h,
-                time(&svg),
-                time(&without("url(#gSheen)"))
-            );
+            println!("{} {:.0}x{:.0}: {:?}", d.dev.name, geo.w, geo.h, time(&svg));
         }
     }
 

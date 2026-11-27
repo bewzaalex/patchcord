@@ -30,11 +30,36 @@ fn stroke(width: f32) -> Stroke {
     Stroke { width, line_cap: LineCap::Round, line_join: LineJoin::Round, ..Default::default() }
 }
 
-/// The cord's centre line as a smooth curve through its points.
+/// A cord's points moved by (ox, oy) as its shadow is: not at all at its plugs, where it lies in
+/// the jack, then more and more as it rises off the panel, all of it a little way along (so the
+/// shadow goes into the jack with the cord).
+pub(super) fn shadow_pts(c: &Cord, ox: f32, oy: f32) -> Vec<(f32, f32)> {
+    // how far along it rises to its height
+    const RISE: f32 = 36.0;
+    let mut along = vec![0.0f32];
+    for w in c.pts.windows(2) {
+        along.push(along.last().copied().unwrap_or(0.0) + (w[1].x - w[0].x).hypot(w[1].y - w[0].y));
+    }
+    let len = along.last().copied().unwrap_or(0.0);
+    c.pts
+        .iter()
+        .zip(&along)
+        .map(|(p, a)| {
+            let t = (a.min(len - a) / RISE).clamp(0.0, 1.0);
+            let k = t * t * (3.0 - 2.0 * t);
+            (p.x + ox * k, p.y + oy * k)
+        })
+        .collect()
+}
+
 fn trace(c: &Cord, ox: f32, oy: f32) -> Option<Path> {
+    trace_pts(&c.pts.iter().map(|p| (p.x + ox, p.y + oy)).collect::<Vec<_>>())
+}
+
+/// The cord's centre line as a smooth curve through its points.
+fn trace_pts(r: &[(f32, f32)]) -> Option<Path> {
     // from one end to the other, through the middles between its points with the points as
     // control points, so it bends smoothly
-    let r: Vec<(f32, f32)> = c.pts.iter().map(|p| (p.x + ox, p.y + oy)).collect();
     let n = r.len();
     let mut pb = PathBuilder::new();
     pb.move_to(r[0].0, r[0].1);
@@ -56,7 +81,7 @@ pub(super) fn cord_w(c: &Cord) -> f32 {
 }
 
 pub fn shadow(pm: &mut Pixmap, c: &Cord, alpha: f32, ts: Transform) {
-    let Some(path) = trace(c, 7.0, 12.0) else { return };
+    let Some(path) = trace_pts(&shadow_pts(c, 7.0, 12.0)) else { return };
     // (as wide round the cord as it was round the thicker one)
     for (w, a) in [(9.0, 0.07), (6.3, 0.1), (4.2, 0.12)] {
         pm.stroke_path(&path, &solid([0, 0, 0], a * alpha), &stroke(w), ts, None);

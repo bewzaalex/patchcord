@@ -24,11 +24,12 @@ PipeWire ──(pw.rs thread)── Event ──► Graph (graph.rs) ──devic
   group *is* looks at `role` or `kind`, never at `label`. ENGINE colours its blocks and ports by
   the same two functions (ADR 0014).
 - **`ui/scene.rs`** is everything on the field without a window: devices and their places, cords
-  and their physics, meters, cue sources, and the layout of the desk and the rack. `--render`
-  uses it too.
+  and their physics, meters, cue sources, and the layout of the desk and the rack. The one light
+  over all the devices (`light_layer`, `rack_light`) is a small picture stretched over them and
+  laid on each device as it is drawn; no face has a light of its own. `--render` uses it too.
 - **`ui/face.rs`** draws a device's face as SVG: plate, name, LCD, keys, frames, jacks. A frame
-  is a node (`face::sections`: its groups side by side, a MONITOR inside the input it copies).
-  It computes the face's `Geometry` (where jacks, keys, knobs and each frame's name, its GRAPH target, are)
+  is a node (`face::sections`: its groups side by side, a MON inside the input it copies).
+  It computes the face's `Geometry` (where jacks, keys, knobs and each frame's name, a click on which opens ENGINE, are)
   for hit-testing.
 - **`ui/app.rs`** is the window: input, the top panel, drop-down lists (PROFILE, PORT),
   and switching between MIXER, RACK (its two views, rails and desk) and ENGINE.

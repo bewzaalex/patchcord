@@ -375,7 +375,6 @@ impl Graph {
         }
     }
 
-    /// Every object PipeWire listed, for ENGINE: (id, kind, properties).
     /// What a report keeps of the state PipeWire gives as params, not properties: every node's
     /// volume and mute, each card's profiles (`*` the one it is in) and ports (`*` the ones in
     /// use, with the card's volume, mute and latency offset). Plain text, by id.
@@ -429,6 +428,7 @@ impl Graph {
         o
     }
 
+    /// Every object PipeWire listed, for ENGINE: (id, kind, properties).
     pub fn objects(&self) -> impl Iterator<Item = (u32, Kind, &Props)> {
         self.objects.iter().map(|(id, (k, p))| (*id, *k, p))
     }
@@ -438,12 +438,12 @@ impl Graph {
         self.state.get(&id).copied()
     }
 
-    /// An object's properties.
     /// Why a node or a link is in error, as PipeWire says it.
     pub fn failed(&self, id: u32) -> Option<&str> {
         self.failed.get(&id).map(String::as_str)
     }
 
+    /// An object's properties.
     pub fn props_of(&self, id: u32) -> Option<&Props> {
         self.props(id)
     }
@@ -505,7 +505,7 @@ impl Graph {
 
     /// A node's `node.name`, as PipeWire's defaults name it.
     pub fn node_name(&self, node: u32) -> Option<&str> {
-        self.props(node)?.get("node.name").map(|s| s.as_str())
+        self.props(node)?.get("node.name").map(String::as_str)
     }
 
     pub fn links(&self) -> Vec<Link> {
@@ -619,7 +619,7 @@ impl Graph {
                     // nodes of the same name stay apart (several streams of one app)
                     let name = p.get("node.name").map_or("?", |s| s.as_str());
                     if names.get(name).copied().unwrap_or(0) > 1 {
-                        format!("node:{name}#{}", p.get("object.serial").map_or(node.to_string(), |s| s.clone()))
+                        format!("node:{name}#{}", p.get("object.serial").map_or(node.to_string(), Clone::clone))
                     } else {
                         format!("node:{name}")
                     }
@@ -629,7 +629,7 @@ impl Graph {
         }
         // sound cards show even when their profile has no inputs or outputs (Off, or an HDMI
         // output nobody picked), so they can be switched on
-        let card_of = |key: &str| self.of(Kind::Device).find(|(_, p)| key.strip_prefix("device:") == p.get("device.name").map(|s| s.as_str())).map(|(id, _)| id);
+        let card_of = |key: &str| self.of(Kind::Device).find(|(_, p)| key.strip_prefix("device:") == p.get("device.name").map(String::as_str)).map(|(id, _)| id);
         for (id, p) in self.of(Kind::Device) {
             if self.profiles.get(&id).is_some_and(|(l, _)| !l.is_empty()) && p.get("media.class").is_some_and(|c| c == "Audio/Device") {
                 boxes.entry(format!("device:{}", p.get("device.name").map_or("?", |s| s))).or_default();
@@ -1215,7 +1215,7 @@ mod tests {
         // fully down, or one side by the balance: -120 dB, not silence
         assert_eq!(m.volumes_for(0.0, 0.0), vec![VOL_FLOOR; 2]);
         assert_eq!(m.volumes_for(1.0, 1.0), vec![VOL_FLOOR, 1.0]);
-        let down = Mix { volumes: vec![VOL_FLOOR; 2], ..m.clone() };
+        let down = Mix { volumes: vec![VOL_FLOOR; 2], ..m };
         assert_eq!((down.volume(), down.balance()), (0.0, 0.0));
         assert_eq!(volume_text(down.volume()).0, "0%");
         // set to a true 0 elsewhere: also 0

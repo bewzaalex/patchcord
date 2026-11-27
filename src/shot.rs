@@ -134,6 +134,8 @@ fn compose(scene: &Scene, view: View, size: (u32, u32), dpi: f64, held: Option<(
             }
         }
     }
+    // the one light, on each device, as in the window
+    scene.draw_light(&mut out, |x, y| ((x * view.s + view.x) as f32, (y * view.s + view.y) as f32), view.s);
     // alignment guides, as in the window
     let lw = (1.5 * dpi) as f32;
     let mut amber = resvg::tiny_skia::Paint::default();
@@ -182,14 +184,14 @@ fn status(scene: &Scene, width: f64, dpi: f64) -> Layer {
     panel::status(width, &format!("PipeWire {} · {} devices", scene.version.as_deref().unwrap_or("?"), scene.devs.len()), "", dpi)
 }
 
-/// `patchcord --render out.png [rack] [demo] [split] [hover | held] [save | presets]
-/// [profile[=NAME]] [only=NAME,NAME…] [size=WxH]`: draws the live graph to a PNG without opening a window, after
+/// `patchcord --render out.png [rack] [demo] [split] [hover | held] [save | presets | defaults |
+/// hidden] [profile[=NAME]] [port[=NAME]] [only=NAME,NAME…] [size=WxH]`: draws the live graph to a PNG without opening a window, after
 /// letting the cords settle (PATCHCORD_SCALE sets the scale, 1.5 by default). "rack" puts the
 /// devices in the rack; "split" shows every stereo jack as L and R; "demo" adds a few cords to the
 /// picture (not to PipeWire); "hover" rests the pointer on the jack the first cord comes from;
 /// "held" pulls a cord out of the first output and holds its end in the air; "save", "presets",
 /// "defaults" or "hidden" opens that drop-down; "profile" opens a card's profile list (the named one's, else a
-/// Bluetooth card's). "only" shows just the devices whose names start with those, arranged by
+/// Bluetooth card's), "port" its port list. "only" shows just the devices whose names start with those, arranged by
 /// signal flow; "size" makes the picture W×H pixels, with the devices fitted into it.
 pub fn render(path: &str, opts: &[String]) -> Result<(), String> {
     if opts.iter().any(|o| o == "engine") && opts.iter().any(|o| o == "specimen") {
@@ -222,7 +224,7 @@ pub fn render(path: &str, opts: &[String]) -> Result<(), String> {
     // a cord's end in the hand, up and to the right of the jack it came from
     let held = opts.iter().any(|o| o == "held").then(|| scene.first_output()).flatten().and_then(|k| {
         let (x, y) = scene.spare(&k)?;
-        Some((scene.pull_new(&k)?, Held { x: x + 150.0, y: y + 110.0, kind: None }))
+        Some((scene.pull_new(&k)?, Held { x: x + 150.0, y: y + 110.0 }))
     });
     // a few more cords, in the picture only, for screenshots: (device, group) to (device, group)
     if opts.iter().any(|o| o == "demo") {
@@ -280,7 +282,7 @@ pub fn render(path: &str, opts: &[String]) -> Result<(), String> {
     let size = opt("size").and_then(|v| v.split_once('x')).and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)));
     let ((w, h), view) = match size {
         // the devices fitted between the panel and the status bar
-        Some((w, h)) => ((w, h), scene.fit(w as f64, h as f64 - top - panel::STATUS_H * s, top, 2.0 * s, crate::ui::scene::EDGE * s)),
+        Some((w, h)) => ((w, h), scene.fit(w as f64, h as f64 - top - panel::STATUS_H * s, top, 2.0 * s, ui::scene::EDGE * s)),
         None => (
             (((x1 - x0 + 2.0 * m) * s).max(1520.0 * s) as u32, ((y1 - y0 + 2.0 * m + 80.0 + panel::H + panel::STATUS_H) * s) as u32),
             // in the middle when the picture is wider than they are (wide enough for the whole
@@ -297,8 +299,8 @@ pub fn render(path: &str, opts: &[String]) -> Result<(), String> {
     panel.menu = match menu {
         Some("save") => Some(panel::Menu::Save { text: "LATE NIGHT".into(), placeholder: String::new() }),
         Some("presets") => Some(panel::Menu::Load { names: presets.iter().map(|p| p.name.clone()).collect(), current: (!presets.is_empty()).then_some(0), confirm: None }),
-        Some("defaults") => Some(crate::ui::app::defaults_menu(&scene)),
-        Some("hidden") => Some(crate::ui::app::hidden_menu(&scene)),
+        Some("defaults") => Some(ui::app::defaults_menu(&scene)),
+        Some("hidden") => Some(ui::app::hidden_menu(&scene)),
         _ => None,
     };
     let status = status(&scene, w as f64 / s, s);
@@ -407,12 +409,11 @@ impl Rec {
         if let Some((seq, _, _)) = self.held {
             let near = self.scene.targets(seq).into_iter().filter_map(|t| self.scene.spare(&t).map(|p| (t, p))).map(|(t, (x, y))| (t, (x as f64, y as f64))).map(|(t, p)| (t, p, (p.0 - hand.0).hypot(p.1 - hand.1))).filter(|(_, _, d)| *d < MAGNET).min_by(|a, b| a.2.total_cmp(&b.2));
             let to = near.as_ref().map_or(hand, |(_, p, _)| *p);
-            let kind = near.as_ref().and_then(|(t, _, _)| self.scene.jack_kind(t));
             if let Some((_, end, magnet)) = &mut self.held {
                 let k = ease(0.45, dt) as f64;
                 (end.0, end.1) = (end.0 + (to.0 - end.0) * k, end.1 + (to.1 - end.1) * k);
                 *magnet = near.map(|(t, _, _)| t);
-                held = Some((seq, Held { x: end.0 as f32, y: end.1 as f32, kind }));
+                held = Some((seq, Held { x: end.0 as f32, y: end.1 as f32 }));
             }
         }
         if let Some((key, off)) = self.dragged.clone() {
@@ -665,7 +666,7 @@ fn compose_engine(eng: &mut ui::engine::Engine, (w, h): (u32, u32), dpi: f64, ve
         // a body cut to its view
         let mask = clip.and_then(|[cx, cy, cw, ch]| {
             let mut m = resvg::tiny_skia::Mask::new(w, h)?;
-            let r = resvg::tiny_skia::Rect::from_xywh(cx as f32, cy as f32, cw as f32, ch as f32)?;
+            let r = Rect::from_xywh(cx as f32, cy as f32, cw as f32, ch as f32)?;
             m.fill_path(&resvg::tiny_skia::PathBuilder::from_rect(r), resvg::tiny_skia::FillRule::Winding, false, Transform::identity());
             Some(m)
         });
@@ -685,8 +686,9 @@ fn compose_engine(eng: &mut ui::engine::Engine, (w, h): (u32, u32), dpi: f64, ve
 }
 
 /// `patchcord --render out.png engine [select=NODE] [tab=server|top|issues|objects|metadata|events]
-/// [itab=info|conn|props|params|timing] [shut=bottom] [legend] [size=WxH]`: the ENGINE screen of the live graph, after the
-/// profiler has run for two seconds (it only reads: nothing in PipeWire changes).
+/// [itab=info|conn|props|params|timing] [shut=bottom] [legend] [size=WxH] [report=FILE]`: the ENGINE
+/// screen of the live graph, after the profiler has run for two seconds (it only reads: nothing in
+/// PipeWire changes); `report` also writes what SAVE REPORT would.
 fn render_engine(path: &str, opts: &[String]) -> Result<(), String> {
     use crate::ui::engine::Engine;
     let opt = |name: &str| opts.iter().find_map(|o| o.strip_prefix(name)?.strip_prefix('='));
@@ -749,7 +751,7 @@ pub fn compose_mixer(mixer: &mut ui::mixer::Mixer, scene: &Scene, (w, h): (u32, 
         let paint = PixmapPaint { quality: FilterQuality::Bilinear, opacity: alpha, ..Default::default() };
         let mask = clip.and_then(|[cx, cy, cw, ch]| {
             let mut m = resvg::tiny_skia::Mask::new(w, h)?;
-            let r = resvg::tiny_skia::Rect::from_xywh(cx as f32, cy as f32, cw as f32, ch as f32)?;
+            let r = Rect::from_xywh(cx as f32, cy as f32, cw as f32, ch as f32)?;
             m.fill_path(&resvg::tiny_skia::PathBuilder::from_rect(r), resvg::tiny_skia::FillRule::Winding, false, Transform::identity());
             Some(m)
         });
@@ -760,7 +762,7 @@ pub fn compose_mixer(mixer: &mut ui::mixer::Mixer, scene: &Scene, (w, h): (u32, 
         let mut p = resvg::tiny_skia::Paint::default();
         let (c, a) = if i == 0 { (0x2a2b2e_u32, 0.55) } else { (0x9a9da2, 0.8) };
         p.set_color(resvg::tiny_skia::Color::from_rgba8((c >> 16) as u8, (c >> 8) as u8, c as u8, (a * 255.0) as u8));
-        if let Some(r) = resvg::tiny_skia::Rect::from_xywh(x.round() as f32, y.round() as f32, bw.round() as f32, bh.round() as f32) {
+        if let Some(r) = Rect::from_xywh(x.round() as f32, y.round() as f32, bw.round() as f32, bh.round() as f32) {
             out.fill_rect(r, &p, Transform::identity(), None);
         }
     }
@@ -969,8 +971,8 @@ fn render_specimen(path: &str) -> Result<(), String> {
         n
     };
     let drivers = vec![
-        DriverTiming { node: t(50, "Scarlett 2i2", 52, 48000, 0), quantum: 1024, rate: 48000, load: 0.06, xruns: 0, end_ns: 420_000, end_max_ns: 1_300_000, followers: vec![t(60, "Firefox", 31, 48000, 0), t(65, "fooyin", 44, 44100, 3), t(70, "patchcord-meter-1", 12, 48000, 0), t(75, "patchcord-meter-2", 11, 48000, 0), t(80, "Broken app", 9, 48000, 0), t(150, "patchcord-cue", 7, 48000, 0), t(155, "patchcord-cue-out", 8, 48000, 0)] },
-        DriverTiming { node: t(90, "RØDE NT-USB", 18, 48000, 0), quantum: 512, rate: 48000, load: 0.02, xruns: 0, end_ns: 150_000, end_max_ns: 400_000, followers: vec![t(95, "OBS", 61, 48000, 0), t(100, "bluez_capture_internal", 16, 48000, 0), t(105, "Recorder", 22, 48000, 0)] },
+        DriverTiming { node: t(50, "Scarlett 2i2", 52, 48000, 0), quantum: 1024, rate: 48000, load: 0.06, end_ns: 420_000, end_max_ns: 1_300_000, followers: vec![t(60, "Firefox", 31, 48000, 0), t(65, "fooyin", 44, 44100, 3), t(70, "patchcord-meter-1", 12, 48000, 0), t(75, "patchcord-meter-2", 11, 48000, 0), t(80, "Broken app", 9, 48000, 0), t(150, "patchcord-cue", 7, 48000, 0), t(155, "patchcord-cue-out", 8, 48000, 0)] },
+        DriverTiming { node: t(90, "RØDE NT-USB", 18, 48000, 0), quantum: 512, rate: 48000, load: 0.02, end_ns: 150_000, end_max_ns: 400_000, followers: vec![t(95, "OBS", 61, 48000, 0), t(100, "bluez_capture_internal", 16, 48000, 0), t(105, "Recorder", 22, 48000, 0)] },
     ];
     let mut eng = Engine::new();
     // fooyin kept on too, though it plays in the output listened on already: filled all the same

@@ -7,7 +7,7 @@
 use std::fmt::Write;
 use std::sync::OnceLock;
 
-use resvg::tiny_skia::{Color, FillRule, FilterQuality, GradientStop, LinearGradient, Paint, Path, PathBuilder, Pattern, Pixmap, Point, SpreadMode, Transform};
+use resvg::tiny_skia::{FillRule, FilterQuality, Paint, Path, PathBuilder, Pattern, Pixmap, SpreadMode, Transform};
 use resvg::usvg;
 
 use super::print::{SECTION, SMALL, SWITCH};
@@ -67,13 +67,6 @@ const KEY_IN: f64 = 4.0;
 const HIDE_W: f64 = 22.0;
 const KEY_GAP: f64 = 6.0;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
-pub enum JackKind {
-    Mono,
-    Stereo,
-    Midi,
-}
-
 /// What you plug into: a stereo jack carries the L and R ports, a mono jack one port.
 #[derive(Clone, Debug)]
 pub struct JackDef {
@@ -81,7 +74,6 @@ pub struct JackDef {
     pub key: String,
     pub group: usize,
     pub ports: Vec<u32>,
-    pub kind: JackKind,
     pub dir: Dir,
     pub media: Media,
     pub label: String,
@@ -111,7 +103,6 @@ pub fn jacks(dev: &Device, split: &[bool]) -> Vec<JackDef> {
                 key: format!("{}|{:?}|{pre}{names}", dev.key, g.dir),
                 group: gi,
                 ports: vec![g.ports[0].id, g.ports[1].id],
-                kind: JackKind::Stereo,
                 dir: g.dir,
                 media: Media::Audio,
                 label: "STEREO".into(),
@@ -122,7 +113,6 @@ pub fn jacks(dev: &Device, split: &[bool]) -> Vec<JackDef> {
                     key: format!("{}|{:?}|{pre}{}", dev.key, g.dir, p.name),
                     group: gi,
                     ports: vec![p.id],
-                    kind: if p.media == Media::Midi { JackKind::Midi } else { JackKind::Mono },
                     dir: g.dir,
                     media: p.media,
                     label: p.label.clone(),
@@ -156,14 +146,16 @@ pub struct Geometry {
     pub profile: Option<[f64; 4]>,
     /// beside it, the PORT key of a card whose output or input has ports to choose from
     pub port: Option<[f64; 4]>,
-    /// the HIDE key, right of the name (x, y, w, h)
+    /// the HIDE key, at the left of the row under the LCD (x, y, w, h; no width while the device
+    /// has cords: it isn't there)
     pub hide: [f64; 4],
     /// the controls of each app stream, by group
     pub mix: Vec<(usize, MixGeo)>,
     /// each audio frame's meter: its group, its left edge, how far down its unit starts, and
     /// its columns (two for stereo)
     pub meters: Vec<(usize, f64, f64, usize)>,
-    /// each frame's GRAPH key, on its band before its name: its node, and (x, y, w, h)
+    /// each frame's name on its band, a click on which opens its block in ENGINE: its node, and
+    /// (x, y, w, h)
     pub graph: Vec<(u32, [f64; 4])>,
 }
 
@@ -221,7 +213,7 @@ pub enum BalKnob {
 }
 
 /// The knob's angle for a volume: from -135° (silence) to 135° (150%).
-fn vol_angle(v: f64) -> f64 {
+pub(crate) fn vol_angle(v: f64) -> f64 {
     -135.0 + 270.0 * v.clamp(0.0, VOL_MAX) / VOL_MAX
 }
 
@@ -230,11 +222,12 @@ fn vol_angle(v: f64) -> f64 {
 /// HDMI), CAPTURE (a source's outputs: a microphone), anything else's OUTPUT and INPUT, VIDEO.
 /// (A frame's own colour is its block's kind: `kind_colour`.)
 /// One lightness and one chroma (OKLCH .52 / .115), the hues spread round the circle (340, 290,
-/// 195, 245, 140, 85°): none shouts over another, each is told apart. OUTPUT is a warm brown
-/// (`#7e5a42`, less chroma): rust read as ENGINE's error red (docs/design/apps/palette.py, B).
+/// 195, 245, 140, 85°): none shouts over another, each is told apart. OUTPUT is an orange, as a
+/// synth's painted sections (`#bb5a2a`, 2026-11-27, dark enough for its light lettering, 4:1; a warm brown `#7e5a42` before, chosen so rust
+/// wouldn't read as ENGINE's error red: docs/design/apps/palette.py, B).
 /// The eighth, OTHER (a port of a format Patchcord doesn't know, or of none), is NO CLASS's sand:
 /// nothing is said of it.
-pub const ACCENTS: [&str; 8] = ["#934c7e", "#695ca6", "#007c7d", "#206ea6", "#7e5a42", "#427935", "#876200", "#cba553"];
+pub const ACCENTS: [&str; 8] = ["#934c7e", "#695ca6", "#007c7d", "#206ea6", "#bb5a2a", "#427935", "#876200", "#cba553"];
 
 /// A group's colour by its role (`graph::port_role`): its jacks' rings here, its ports in ENGINE.
 pub fn role_colour(role: &str) -> &'static str {
@@ -279,7 +272,7 @@ pub fn kind_colour(kind: &str) -> &'static str {
     match kind {
         "SINK" => "#007c7d",
         "SOURCE" => "#206ea6",
-        "PLAYBACK STREAM" => "#7e5a42",
+        "PLAYBACK STREAM" => "#bb5a2a",
         "RECORDING STREAM" => "#427935",
         "MIDI" => "#934c7e",
         "VIDEO" => "#876200",
@@ -368,7 +361,6 @@ impl Leds {
 
 struct Fin {
     base: &'static str,
-    paint: bool,
     noise: f64,
     print: &'static str,
 }
@@ -379,10 +371,11 @@ fn fin(f: Finish) -> Fin {
         // dark and in between, so none passes for another
         // (hardware in the top panel's own painted metal, 2026-11-23; navy since 2026-11-26, the
         // first version's paint, as it was: the light grey stood out of the rack)
-        Finish::Aluminium => Fin { base: "#2b3950", paint: false, noise: 0.8, print: "#dde5f0" },
-        Finish::Black => Fin { base: "#232427", paint: false, noise: 0.9, print: "#d5d7d9" },
-        // (a graphite green since 2026-11-26: the olive stood out beside the navy and the black)
-        Finish::Olive => Fin { base: "#2c312c", paint: false, noise: 0.8, print: "#dfe4df" },
+        Finish::Aluminium => Fin { base: "#2b3950", noise: 0.8, print: "#dde5f0" },
+        Finish::Black => Fin { base: "#232427", noise: 0.9, print: "#d5d7d9" },
+        // (a dark olive since 2026-11-27: the olive stood out beside the navy and the black, and a
+        // graphite green after it passed for the black)
+        Finish::Olive => Fin { base: "#45512f", noise: 0.8, print: "#ebedd9" },
     }
 }
 
@@ -390,7 +383,7 @@ fn fin(f: Finish) -> Fin {
 /// colour printed on it.
 pub fn paint(f: Finish, w: f64, h: f64, r: f64) -> (Skin, &'static str) {
     let f = fin(f);
-    (Skin { w, h, r, base: hex(f.base), paint: f.paint, noise: f.noise as f32 }, f.print)
+    (Skin { w, h, r, base: hex(f.base), noise: f.noise as f32 }, f.print)
 }
 
 /// How many jacks a mult shows for `count` cords: one each, and a free one.
@@ -536,7 +529,7 @@ fn rec_w(dev: &Device, gi: usize, jd: &[JackDef], counts: &[usize]) -> f64 {
     })
 }
 
-/// A split MONITOR's first jack in each row, from the rule before it: room for its tag (MONITOR L).
+/// A split MONITOR's first jack in each row, from the rule before it: room for its tag (MON L).
 fn mon_row_x() -> f64 {
     9.0 + SMALL.width("MON L") + 10.0 + 6.0 + 21.0
 }
@@ -551,10 +544,9 @@ fn group_w(dev: &Device, gi: usize, jd: &[JackDef], counts: &[usize]) -> f64 {
     jacks_w(dev, gi, jd, counts) + mix_w(dev, gi)
 }
 
-/// A port's tag under its jacks: IN or OUT, and a MIDI bridge's client in it (IN · HYDROGEN).
-/// The tag under jack `i` of group `gi`: what the port is (IN, OUT, MONITOR in its input's
-/// frame) and, inside it, a MIDI client's name (IN · HYDROGEN) or, in a group of several jacks
-/// side by side, its channel (OUT · OUT5, MONITOR · FC).
+/// The tag under jack `i` of group `gi`: what the port is (IN, OUT, MON in its input's frame)
+/// and, inside it, a MIDI client's name (IN · HYDROGEN) or, in a group of several jacks side by
+/// side, its channel (OUT · OUT5, MON · FC).
 fn jack_tag(dev: &Device, gi: usize, jd: &[JackDef], i: usize) -> String {
     let g = &dev.groups[gi];
     // (MON: the monitor's tag short, as IN and OUT are, 2026-11-26)
@@ -583,9 +575,9 @@ fn jacks_w(dev: &Device, gi: usize, jd: &[JackDef], counts: &[usize]) -> f64 {
     } else {
         jd.iter().enumerate().filter(|(_, j)| j.group == gi).map(|(i, _)| cell_w(dev, gi, jd, i, slots(counts[i]))).sum::<f64>() + 14.0
     };
-    // GRAPH and the name span the MONITOR too: room for them is found over both
+    // the name spans the MON too: room for it is found over both
     let rec = rec_w(dev, gi, jd, counts);
-    // room on the band for GRAPH, SPLIT and the name (a frame of several sections has them once,
+    // room on the band for SPLIT and the name (a frame of several sections has them once,
     // across them all)
     let n = sections(dev, gi).len().max(1) as f64;
     let keys = if splits(dev, gi) && !split_below(dev, gi) { split_key_w() + 4.0 } else { 0.0 };
@@ -606,7 +598,8 @@ fn jacks_w(dev: &Device, gi: usize, jd: &[JackDef], counts: &[usize]) -> f64 {
     (jacks + rec).max(named)
 }
 
-/// A frame's one SPLIT key, on its band right of GRAPH: as wide whether it says SPLIT or JOIN.
+/// A frame's one SPLIT key (on its band before its name, or in its row of keys): as wide whether
+/// it says SPLIT or JOIN.
 fn split_key_w() -> f64 {
     10.0 + SMALL.width("SPLIT").max(SMALL.width("JOIN"))
 }
@@ -927,7 +920,7 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
             geo.meters.push((gi, mx, oy, cols));
         }
         geo.groups[gi] = (x, gw, jw, oy);
-        // a frame's first section: its GRAPH key on the band, and right of it the frame's one
+        // a frame's first section: its name on the band (`graph`), and the frame's one
         // SPLIT (every stereo pair in the frame, a MONITOR inside it too)
         if sections(dev, gi).first() == Some(&gi) {
             if let Some(node) = node_of(dev, gi) {
@@ -1018,12 +1011,30 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
 }
 
 /// A point `r` from (x, y) at angle `a` (degrees, 0 straight up, clockwise).
-fn polar(x: f64, y: f64, a: f64, r: f64) -> String {
+/// A knob's shadow on the panel, the same for every knob (the rack's, MIXER's): lit from the top
+/// left, down and a little right of it, as far as it stands out (`lift`).
+pub(crate) fn knob_shadow(x: f64, y: f64, r: f64, lift: f64) -> String {
+    format!(r##"<circle cx="{}" cy="{}" r="{}" fill="#000" opacity=".5"/>"##, x + 0.5 * lift, y + lift, r + 0.3 * lift)
+}
+
+/// A knob `r` round at (x, y), its pointer at `a` (degrees from straight up), the rack's and
+/// MIXER's alike (its gradient `gVol`).
+pub(crate) fn knob(x: f64, y: f64, r: f64, a: f64) -> String {
+    format!(
+        r##"<circle cx="{x}" cy="{y}" r="{r}" fill="url(#gVol)" stroke="#0c0c0d"/><circle cx="{x}" cy="{y}" r="{}" fill="none" stroke="rgba(255,255,255,.08)"/><path d="M{} L{}" stroke="#ffb02e" stroke-width="{}" stroke-linecap="round"/>"##,
+        r * 0.75,
+        polar(x, y, a, r * 0.29),
+        polar(x, y, a, r * 0.86),
+        if r > 12.0 { 2.4 } else { 2.0 }
+    )
+}
+
+pub(crate) fn polar(x: f64, y: f64, a: f64, r: f64) -> String {
     let a = a.to_radians();
     format!("{:.2},{:.2}", x + r * a.sin(), y - r * a.cos())
 }
 
-/// The printed part of a stream's controls, inside its group's frame after a groove: the scales,
+/// The printed part of a stream's controls, inside its group's frame after a rule: the scales,
 /// the MUTE key and its own meter's dark LEDs (the knobs and the lit LEDs are pictures of their
 /// own, see `mix_pic`). On an output the knob is the VOLUME it plays at; on an input, the GAIN it
 /// records with, as on a mixer's input channel.
@@ -1071,20 +1082,8 @@ fn mix_panel(m: &MixGeo, print: &str, band: bool, edge: &str) -> String {
 /// face.
 pub fn mix_pic(m: &MixGeo, volume: f64, balance: f64, mute: bool, bal: BalKnob, split: bool, held: Option<RowKey>) -> String {
     let m = &m.local();
-    // a knob's shadow on the panel, the same for both (lit from the top left: down and a little
-    // right of it), as far as it stands out
-    let shadow = |x: f64, y: f64, r: f64, lift: f64| format!(r##"<circle cx="{}" cy="{}" r="{}" fill="#000" opacity=".5"/>"##, x + 0.5 * lift, y + lift, r + 0.3 * lift);
-    let knob = |x: f64, y: f64, r: f64, a: f64| {
-        format!(
-            r##"<circle cx="{x}" cy="{y}" r="{r}" fill="url(#gVol)" stroke="#0c0c0d"/><circle cx="{x}" cy="{y}" r="{}" fill="none" stroke="rgba(255,255,255,.08)"/><path d="M{} L{}" stroke="#ffb02e" stroke-width="{}" stroke-linecap="round"/>"##,
-            r * 0.75,
-            polar(x, y, a, r * 0.29),
-            polar(x, y, a, r * 0.86),
-            if r > 12.0 { 2.4 } else { 2.0 }
-        )
-    };
     let (cx, cy) = m.knob;
-    let mut s = shadow(cx, cy, 14.0, 2.5) + &knob(cx, cy, 14.0, vol_angle(volume));
+    let mut s = knob_shadow(cx, cy, 14.0, 2.5) + &knob(cx, cy, 14.0, vol_angle(volume));
     if let Some((bx, by)) = m.bal {
         let a = balance.clamp(-1.0, 1.0) * 135.0;
         let pointer = |dy: f64, color: &str, w: f64, r0: f64, r1: f64| format!(r#"<path d="M{} L{}" stroke="{color}" stroke-width="{w}" stroke-linecap="round"/>"#, polar(bx, by + dy, a, r0), polar(bx, by + dy, a, r1));
@@ -1092,7 +1091,7 @@ pub fn mix_pic(m: &MixGeo, volume: f64, balance: f64, mute: bool, bal: BalKnob, 
             // held down: below flush, deeper in its well
             BalKnob::Held => format!(r##"<circle cx="{bx}" cy="{}" r="8.3" fill="#151618" stroke="#050506"/><circle cx="{bx}" cy="{}" r="8.6" fill="none" stroke="rgba(0,0,0,.7)" stroke-width="1.6"/>{}"##, by + 0.6, by - 0.4, pointer(0.6, "#6a5028", 1.7, 2.4, 6.6)),
             // out: a taller cap with a shadow under it
-            BalKnob::Out => format!(r##"{}<circle cx="{bx}" cy="{}" r="9.6" fill="#0d0e0f"/>{}"##, shadow(bx, by, 9.6, 2.5), by + 2.0, knob(bx, by, 9.6, a)),
+            BalKnob::Out => format!(r##"{}<circle cx="{bx}" cy="{}" r="9.6" fill="#0d0e0f"/>{}"##, knob_shadow(bx, by, 9.6, 2.5), by + 2.0, knob(bx, by, 9.6, a)),
             // in: flush, a dim pointer
             BalKnob::In => format!(r##"<circle cx="{bx}" cy="{by}" r="9" fill="#202124" stroke="#0c0c0d"/>{}"##, pointer(0.0, "#8a6a32", 1.8, 2.6, 7.4)),
         };
@@ -1168,7 +1167,7 @@ pub fn badge_pic() -> String {
 /// A jack as a small amp's panel-mount one, flush with the face (ADR 0023; it had a hex nut): a
 /// wide bushing in its group's colour, and inside it the jack: a black bezel, nickel round the deep
 /// hole; the same for mono, stereo and MIDI (its colour tells MIDI; its tag, a stereo pair).
-pub fn jack_pic_ring(_kind: JackKind, color: &str) -> String {
+pub fn jack_pic_ring(color: &str) -> String {
     let s = 2.0 * PIC;
     format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="{s}" height="{s}" viewBox="0 0 {s} {s}">{}<circle cx="{PIC}" cy="{PIC}" r="14.6" fill="none" stroke="#000" stroke-opacity=".35" stroke-width="1.2"/><circle cx="{PIC}" cy="{PIC}" r="14" fill="{color}"/><use href="#jack" x="{PIC}" y="{PIC}"/></svg>"##,
@@ -1271,7 +1270,7 @@ pub fn target_ring_pic(hot: bool) -> String {
 pub const BADGE: (f64, f64) = (11.5, -11.5);
 
 /// What lies under a face's drawing, put straight onto its pixels (see `raster`): its base paint,
-/// its paint's texture or its noise, its sheen. Drawn through the SVG these took most of a face's time
+/// and its noise. Drawn through the SVG these took most of a face's time
 /// (a pattern sampled at every pixel of a face as wide as the rack).
 #[derive(Clone, Copy, Debug)]
 pub struct Skin {
@@ -1279,7 +1278,6 @@ pub struct Skin {
     h: f64,
     r: f64,
     base: [u8; 3],
-    paint: bool,
     noise: f32,
 }
 
@@ -1307,15 +1305,14 @@ fn rounded(w: f32, h: f32, r: f32) -> Option<Path> {
     p.finish()
 }
 
-/// The paint's texture and the noise, as pixels (as `defs` has them for the SVG).
-fn textures() -> &'static (Option<Pixmap>, Option<Pixmap>) {
-    static T: OnceLock<(Option<Pixmap>, Option<Pixmap>)> = OnceLock::new();
-    T.get_or_init(|| (Pixmap::decode_png(include_bytes!("../../assets/paint.png")).ok(), Pixmap::decode_png(include_bytes!("../../assets/noise.png")).ok()))
+/// The paint's noise, as pixels.
+fn noise() -> Option<&'static Pixmap> {
+    static T: OnceLock<Option<Pixmap>> = OnceLock::new();
+    T.get_or_init(|| Pixmap::decode_png(include_bytes!("../../assets/noise.png")).ok()).as_ref()
 }
 
-/// A face's picture at `scale`: its `Skin` put straight onto the pixels (the base, then the
-/// paint's texture in 80-unit tiles or the noise in 128-unit ones, as the SVG's patterns were,
-/// and the sheen), then its SVG drawn over it.
+/// A face's picture at `scale`: its `Skin` put straight onto the pixels (the base, then its noise
+/// in 128-unit tiles), then its SVG drawn over it. (No light of its own: one light lies over all the faces, `scene::light_layer`.)
 pub fn raster(opt: &usvg::Options, svg: &str, skin: &Skin, scale: f64) -> Option<Pixmap> {
     let tree = match usvg::Tree::from_str(svg, opt) {
         Ok(t) => t,
@@ -1332,16 +1329,9 @@ pub fn raster(opt: &usvg::Options, svg: &str, skin: &Skin, scale: f64) -> Option
         let mut base = Paint { anti_alias: true, ..Default::default() };
         base.set_color_rgba8(skin.base[0], skin.base[1], skin.base[2], 255);
         pm.fill_path(&path, &base, FillRule::Winding, at, None);
-        let (paint, noise) = textures();
-        for (tex, tile, alpha) in [(paint.as_ref().filter(|_| skin.paint), 80.0, 1.0), (noise.as_ref().filter(|_| skin.noise > 0.0), 128.0, skin.noise)] {
-            let Some(t) = tex else { continue };
-            let k = tile / t.width() as f32;
-            let shader = Pattern::new(t.as_ref(), SpreadMode::Repeat, FilterQuality::Bilinear, alpha, Transform::from_scale(k, k));
-            pm.fill_path(&path, &Paint { shader, anti_alias: true, ..Default::default() }, FillRule::Winding, at, None);
-        }
-        // the sheen: light at the top, shade at the bottom (as `gSheen`)
-        let stops = vec![GradientStop::new(0.0, Color::from_rgba8(255, 255, 255, 41)), GradientStop::new(0.35, Color::from_rgba8(255, 255, 255, 0)), GradientStop::new(1.0, Color::from_rgba8(0, 0, 0, 61))];
-        if let Some(shader) = LinearGradient::new(Point::from_xy(0.0, 0.0), Point::from_xy(0.0, skin.h as f32), stops, SpreadMode::Pad, Transform::identity()) {
+        if let Some(t) = noise().filter(|_| skin.noise > 0.0) {
+            let k = 128.0 / t.width() as f32;
+            let shader = Pattern::new(t.as_ref(), SpreadMode::Repeat, FilterQuality::Bilinear, skin.noise, Transform::from_scale(k, k));
             pm.fill_path(&path, &Paint { shader, anti_alias: true, ..Default::default() }, FillRule::Winding, at, None);
         }
     }
@@ -1360,13 +1350,8 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
     let geo = face_geometry(dev, jd, counts, rack_w, accents);
     let (w, h) = (geo.w, geo.h);
     let mut body = String::new();
-    // a unit more: a groove across the face parts it from the one above
-    let step = if rack { RACK_U } else { DEV_H };
-    let mut uy = step - if rack { RACK_GAP / 2.0 } else { 0.0 };
-    while uy < h - 1.0 {
-        let _ = write!(body, r#"<path d="M{a},{uy} H{b}" stroke="rgba(0,0,0,.55)" stroke-width="1.2"/><path d="M{a},{} H{b}" stroke="rgba(255,255,255,.08)"/>"#, uy + 1.2, a = ear + 8.0, b = w - ear - 8.0);
-        uy += step;
-    }
+    // (a face of several units is one panel: no groove between its units, 2026-11-27; it made it
+    // look like two devices stacked)
     for (gi, g) in dev.groups.iter().enumerate() {
         let (x, gw, _, oy) = geo.groups[gi];
         // MONITOR, inside its host's frame: a dotted rule, and under its jacks their name
@@ -1390,7 +1375,7 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
                 if k > 1 {
                     let _ = write!(s, r#"<rect x="{}" y="{}" width="{}" height="{hm}" rx="{}" fill="rgba(0,0,0,.08)" stroke="{}" stroke-width=".9" opacity=".5"/>"#, jx - hm / 2.0, jy - hm / 2.0, (k - 1) as f64 * JP + hm, hm / 2.0, f.print);
                 }
-                // split with its input: its rows' tags at their left, MONITOR L, MONITOR R
+                // split with its input: its rows' tags at their left, MON L, MON R
                 if split {
                     let t = format!("MON {}", jd[i].label);
                     s.push_str(&port_tag(jx - 21.0 - (SMALL.width(&t) + 10.0) / 2.0, jy, &t, &f));
@@ -1411,7 +1396,7 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
         let acc = accents.then(|| kind_colour(g.kind));
         let ink = if acc.is_some() { band_ink(g.kind) } else { f.print };
         // a frame is a node (ADR 0014): its first section draws the frame round them all, the band
-        // in its block's colour, GRAPH and the name once; the others a dotted rule before them
+        // in its block's colour, the name once; the others a dotted rule before them
         let secs = sections(dev, gi);
         if secs.first() == Some(&gi) {
             let (fx, fw) = match secs.last() {
@@ -1442,7 +1427,9 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
             let nx = fx + 9.0 + if splits(dev, gi) && !split_below(dev, gi) { split_key_w() + 4.0 } else { 0.0 };
             body.push_str(&SECTION.text(nx, 31.0, ink, "start", &name(dev, gi)));
         } else {
-            let _ = write!(body, r#"<path d="M{x},{} V{}" stroke="{}" stroke-width=".9"/>"#, RULE.0, RULE.1, f.print);
+            // (between its sections, IN and OUT: in the frame's own colour, as its edge and the
+            // rule before its knobs)
+            let _ = write!(body, r#"<path d="M{x},{} V{}" stroke="{}" stroke-width="1.2" stroke-opacity=".9"/>"#, RULE.0, RULE.1, acc.unwrap_or(f.print));
         }
         // under its jacks, what each port is: IN, OUT, outlined (ADR 0014); a split group's
         // rows IN L, IN R at their left; a MIDI client's name, or a channel, under the tag
@@ -1473,7 +1460,8 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
             body.push_str("</g>");
         }
     }
-    // a frame's SPLIT: a key like GRAPH, on the band; JOIN while its pairs are split
+    // a frame's SPLIT: a dark key on the band (or a lit one in the row: `mix_pic`); JOIN while its
+    // pairs are split
     for (gi, [bx, by, bw, bh]) in &geo.switches {
         // in the row of keys: drawn with MUTE over the knobs (`mix_pic`), which is drawn again
         // as it is pressed
@@ -1538,9 +1526,12 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
         )
     };
     let key = geo.profile.map_or(String::new(), |r| key_pic(r, "PROFILE")) + &geo.port.map_or(String::new(), |r| key_pic(r, "PORT"));
-    // in the rack the screws go through the face into the rails' holes, and are as big as those
-    let (inset, sy, big) = if rack { (RACK_SCREW_X, RACK_SCREW_Y, RACK_SCREW_R / 5.2) } else { (11.0, 11.0, 1.0) };
-    let screws: String = {
+    // in the rack the screws go through the face into the rails' holes, and are as big as those;
+    // on the desk a face has none (nothing to screw it to; they sat over its name)
+    let screws: String = if !rack {
+        String::new()
+    } else {
+        let (inset, sy, big) = (RACK_SCREW_X, RACK_SCREW_Y, RACK_SCREW_R / 5.2);
         [(inset, sy), (w - inset, sy), (inset, h - sy), (w - inset, h - sy)]
             .iter()
             .enumerate()
@@ -1554,8 +1545,8 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
             })
             .collect()
     };
-    // paint: solid base, its texture and the sheen, put under the drawing (`Skin`)
-    let under = Skin { w, h, r, base: hex(f.base), paint: f.paint, noise: f.noise as f32 };
+    // paint: solid base and its texture, put under the drawing (`Skin`)
+    let under = Skin { w, h, r, base: hex(f.base), noise: f.noise as f32 };
     let (dw, dh) = (w + 2.0 * FACE_PAD, h + 2.0 * FACE_PAD);
     let svg = format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="{dw}" height="{dh}" viewBox="0 0 {dw} {dh}" font-family="Noto Sans" font-weight="bold">
@@ -1632,25 +1623,19 @@ pub fn paint_uri() -> &'static str {
     URI.get_or_init(|| format!("data:image/png;base64,{}", base64(include_bytes!("../../assets/paint.png"))))
 }
 
-/// The shared pieces of the faces' SVG: the paint, the noise, the sheen, the LCD's glow, the
-/// screws, and the chrome and the dark hole (the jacks are pictures of their own: `jack_defs`).
+/// The shared pieces of the faces' SVG: the LCD's glow, the screws, and the dark of a knob's well
+/// (the paint and its noise go under the drawing, `raster`; the jacks are pictures of their own,
+/// `jack_defs`; the keys lit in `mix_pic`, with their own).
 fn defs() -> &'static str {
     static DEFS: OnceLock<String> = OnceLock::new();
     DEFS.get_or_init(|| {
-        let paint = paint_uri();
-        let noise = format!("data:image/png;base64,{}", base64(include_bytes!("../../assets/noise.png")));
         format!(
             r##"<defs>
-<pattern id="pt" width="80" height="80" patternUnits="userSpaceOnUse"><image href="{paint}" width="80" height="80"/></pattern>
-<pattern id="nz" width="128" height="128" patternUnits="userSpaceOnUse"><image href="{noise}" width="128" height="128"/></pattern>
-<linearGradient id="gSheen" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".16"/><stop offset=".35" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".24"/></linearGradient>
 <linearGradient id="gLcd" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f7bb62"/><stop offset="1" stop-color="#e38c2a"/></linearGradient>
 <radialGradient id="gScrew" cx=".38" cy=".32" r=".75"><stop offset="0" stop-color="#f4f5f6"/><stop offset=".45" stop-color="#b7babe"/><stop offset=".85" stop-color="#6d7075"/><stop offset="1" stop-color="#55585d"/></radialGradient>
-<g id="screwHead"><circle r="5.6" fill="#000" opacity=".35" transform="translate(.3,.5)"/><circle r="5.2" fill="url(#gScrew)" stroke="#2c2d30" stroke-width=".6"/><circle r="4.3" fill="none" stroke="#fff" stroke-opacity=".28" stroke-width=".5"/></g>
+<g id="screwHead"><circle r="5.5" fill="#000" opacity=".45" transform="translate(.7,1.2)"/><circle r="5.2" fill="url(#gScrew)" stroke="#2c2d30" stroke-width=".6"/><circle r="4.3" fill="none" stroke="#fff" stroke-opacity=".28" stroke-width=".5"/></g>
 <path id="screwCross" d="M-3,-.75 H-.75 V-3 H.75 V-.75 H3 V.75 H.75 V3 H-.75 V.75 H-3 Z"/>
-{metal}{glass}</defs>"##,
-            metal = METAL,
-            glass = super::mixer::glass_defs()
+{HOLE}</defs>"##
         )
     })
 }
@@ -1659,12 +1644,11 @@ fn defs() -> &'static str {
 /// each picture would parse again).
 fn jack_defs() -> &'static str {
     static DEFS: OnceLock<String> = OnceLock::new();
-    DEFS.get_or_init(|| format!("<defs>\n{METAL}\n{}</defs>", jack_parts()))
+    DEFS.get_or_init(|| format!("<defs>\n{}</defs>", jack_parts()))
 }
 
-/// The chrome (screws, jacks) and the dark of a hole: on the faces and in the jacks.
-const METAL: &str = r##"<radialGradient id="gChrome" cx=".35" cy=".3" r=".85"><stop offset="0" stop-color="#fff"/><stop offset=".4" stop-color="#b9bcc1"/><stop offset=".75" stop-color="#65686d"/><stop offset="1" stop-color="#a6a9ad"/></radialGradient>
-<radialGradient id="gHole" cx=".5" cy=".62" r=".6"><stop offset="0" stop-color="#000"/><stop offset=".7" stop-color="#0a0a0b"/><stop offset="1" stop-color="#3c3d40"/></radialGradient>"##;
+/// The dark of a hole (BAL's well).
+const HOLE: &str = r##"<radialGradient id="gHole" cx=".5" cy=".62" r=".6"><stop offset="0" stop-color="#000"/><stop offset=".7" stop-color="#0a0a0b"/><stop offset="1" stop-color="#3c3d40"/></radialGradient>"##;
 
 /// What is inside a jack's coloured bushing (`jack_pic_ring`): a black bezel, the jack's nickel and
 /// the deep hole.
@@ -1754,13 +1738,13 @@ mod tests {
     #[test]
     fn jack_pictures_need_only_the_jacks_defs() {
         let opt = text::svg_options();
-        for kind in [JackKind::Mono, JackKind::Stereo, JackKind::Midi] {
-            let small = jack_pic_ring(kind, ACCENTS[0]);
+        for c in ACCENTS {
+            let small = jack_pic_ring(c);
             let full = small.replacen(jack_defs(), &format!("{}{}", defs(), jack_defs()), 1);
             assert_ne!(small, full);
             let (a, b) = (super::super::scene::rasterize(&opt, &small, 2.0).unwrap(), super::super::scene::rasterize(&opt, &full, 2.0).unwrap());
-            assert!(a.data().iter().any(|&v| v > 0), "a {kind:?} jack draws nothing");
-            assert_eq!(a.data(), b.data(), "a {kind:?} jack draws differently without the faces' defs");
+            assert!(a.data().iter().any(|&v| v > 0), "a {c} jack draws nothing");
+            assert_eq!(a.data(), b.data(), "a {c} jack draws differently without the faces' defs");
         }
     }
 }

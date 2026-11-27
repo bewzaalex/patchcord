@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use resvg::tiny_skia::Pixmap;
 
-use super::face::{self, BalKnob, FACE_PAD};
+use super::face::{self, BalKnob, FACE_PAD, knob, knob_shadow, polar, vol_angle};
 use super::painter;
 use super::panel;
 use super::print::{SECTION, SMALL};
@@ -156,6 +156,8 @@ pub struct Wheel {
 #[derive(Clone, Debug, PartialEq)]
 enum Hit {
     Graph(u32),
+    /// a card that is off: no node, so the device itself (its object in ENGINE)
+    Device(u32),
     Profile(usize),
     /// a device's PORT: its card, and the group (its input or its output) whose ports it lists
     Port((usize, usize)),
@@ -177,6 +179,8 @@ enum Hit {
 pub enum Action {
     /// ENGINE, that node chosen
     Graph(u32),
+    /// ENGINE, that object chosen (a card that is off: the device)
+    Object(u32),
     /// a card's PROFILE or PORT list, under the key at this rectangle (window pixels)
     Profile(usize, [f64; 4]),
     Port(usize, usize, [f64; 4]),
@@ -217,9 +221,6 @@ const HEAD: f64 = 0.0;
 const STRIP_W: f64 = 112.0;
 /// the frame's band: two lines on it, the device's name and the frame's
 const BAND: f64 = 38.0;
-/// GRAPH (`#id`, opens ENGINE): on the band's second line, at its right
-const GRAPH_Y: f64 = 20.0;
-const GRAPH_H: f64 = 13.0;
 /// the first group of keys (OUTPUT, INPUT, PLAY ON, RECORD FROM): its title, then its keys in rows
 const ROUTE_Y: f64 = BAND + 7.0;
 const KEY_H: f64 = 17.0;
@@ -304,6 +305,8 @@ fn lowest(mods: &[Module], sinks: usize, sources: usize) -> f64 {
 
 /// a fader's cap, its volume on it (and its shadow, a little lower)
 const CAP: (f64, f64) = (34.0, 22.0);
+/// Room past the cap's right and bottom for its shadow.
+const CAP_SHADOW: (f64, f64) = (2.5, 3.5);
 /// the lit LEDs' column: as tall as the fader's slot, level with it; under the knobs, from the
 /// block's name down to its keys' bottom
 const LEDS_H: f64 = TRAVEL;
@@ -473,6 +476,8 @@ struct ModPic {
 #[derive(Default)]
 pub struct Mixer {
     pub on: bool,
+    /// the one light over the whole console, as the rack's (`scene::light_layer`)
+    light: Option<Layer>,
     /// how far the console is scrolled (logical pixels)
     sx: f64,
     sy: f64,
@@ -523,6 +528,8 @@ impl Mixer {
         let mut mods: Vec<(Section, u8, usize, Module)> = Vec::new();
         for (di, d) in scene.devs.iter().enumerate() {
             let dev = &d.dev;
+            // (a card's ports, once for all its groups)
+            let sections = scene.port_sections(di);
             let strips: Vec<Strip> = (0..dev.groups.len())
                 .filter_map(|gi| {
                     let role = role_of(dev, gi)?;
@@ -535,7 +542,7 @@ impl Mixer {
                         Role::Source => g.mix.is_some() && node_name.is_some() && node_name == in_default,
                         _ => false,
                     };
-                    let port = scene.port_sections(di).into_iter().find(|p| p.group == gi).and_then(|p| p.ports.iter().find(|c| Some(c.index) == p.current).map(|c| c.description.clone()));
+                    let port = sections.iter().find(|p| p.group == gi).and_then(|p| p.ports.iter().find(|c| Some(c.index) == p.current).map(|c| c.description.clone()));
                     let jacks: Vec<&String> = d.defs.iter().filter(|j| j.group == gi).map(|j| &j.key).collect();
                     // lit when any of it is heard: a jack of it, or a port of one (kept on in the
                     // rack, in ENGINE or here)
@@ -589,6 +596,8 @@ impl Mixer {
                 })
             })
             .collect();
+        // (the graph's links gathered once: an app's every key asks of them)
+        let links: HashSet<(u32, u32)> = scene.graph.links().iter().map(|l| (l.out_port, l.in_port)).collect();
         for m in &mut mods {
             for s in &mut m.strips {
                 let want = match s.role {
@@ -600,7 +609,7 @@ impl Mixer {
                     .iter()
                     .filter(|e| e.0 == want)
                     .map(|(_, at, label, color)| {
-                        let lit = if s.role == Role::Play { !scene.group_links(s.at, *at).is_empty() } else { !scene.group_links(*at, s.at).is_empty() };
+                        let lit = if s.role == Role::Play { scene.groups_linked(s.at, *at, &links) } else { scene.groups_linked(*at, s.at, &links) };
                         Target { at: *at, label: label.clone(), color: *color, lit }
                     })
                     .collect();
@@ -666,12 +675,18 @@ impl Mixer {
             }
             let sy = my + HEAD;
             let below = usize::from(m.profile.is_some());
+            // the device's name on the band (its first line): a click opens ENGINE with the frame's
+            // block, as a frame's name on the rack does; a card that is off, with the device
+            let named = |w: f64| SECTION.width(&m.name).min(w - 20.0) + 6.0;
+            if m.strips.is_empty()
+                && let Some(card) = scene.devs.get(m.di).and_then(|d| d.dev.card.as_ref())
+            {
+                self.hits.push((Hit::Device(card.id), [mx + 7.0, sy + 4.0, named(m.w), 15.0]));
+            }
             for s in &m.strips {
                 let x0 = mx + s.x;
                 let [[lx, lw], [rx, rw]] = halves(x0 + 6.0, s.w - 12.0);
-                // the frame's name on the band: a click opens ENGINE with its block (as on the rack)
-                let nw = SMALL.width(&s.name).min(s.w - 26.0);
-                self.hits.push((Hit::Graph(s.node), [x0 + 7.0, sy + GRAPH_Y, nw + 6.0, GRAPH_H]));
+                self.hits.push((Hit::Graph(s.node), [x0 + 7.0, sy + 4.0, named(s.w), 15.0]));
                 let (kx, kw) = (x0 + 6.0, s.w - 12.0);
                 match s.role {
                     Role::Play | Role::Rec => {
@@ -826,6 +841,7 @@ impl Mixer {
         }
         match hit {
             Hit::Graph(node) => Some(Action::Graph(node)),
+            Hit::Device(id) => Some(Action::Object(id)),
             Hit::Profile(di) => Some(Action::Profile(di, self.to_window(rect, dpi))),
             Hit::Port((di, gi)) => Some(Action::Port(di, gi, self.to_window(rect, dpi))),
             Hit::Fader(at, ch, top) => {
@@ -1068,6 +1084,7 @@ impl Mixer {
         let name = |at: (usize, usize)| scene.devs.get(at.0).map(|d| format!("{} · {}", d.dev.name, face::name(&d.dev, at.1))).unwrap_or_default();
         Some(match self.hit(p, dpi)? {
             Hit::Graph(n) => format!("#{n} · {}  ·  click: open it in ENGINE", scene.graph.node_name(n).unwrap_or("?")),
+            Hit::Device(id) => format!("#{id} · the card's device (it is off: no nodes)  ·  click: open it in ENGINE"),
             Hit::Profile(_) => "The card's profile: which of its outputs and inputs it has".into(),
             Hit::Port(_) => "The card's port: where it plays or records from".into(),
             Hit::To(from, to) => {
@@ -1149,9 +1166,20 @@ impl Mixer {
         for m in &self.modules {
             let (skin, print) = face::paint(m.finish, m.w, mod_h, RADIUS);
             prints.push(print);
-            let svg = module_svg(m, print, &rows);
-            let sig = painter::sig(&svg, dpi);
+            // (known by what it is drawn from: its SVG is made only when that changed)
+            // (but not what are layers of their own and move: its meters' levels, every frame, and
+            // its volume and balance, on the caps and knobs; only whether it is muted)
+            let mut what = m.clone();
+            for s in &mut what.strips {
+                s.level = [0.0; 2];
+                s.mix = s.mix.map(|(_, _, mute)| (0.0, 0.0, mute));
+            }
+            let sig = painter::sig((format!("{what:?}"), format!("{rows:?}"), print), dpi);
             let p = self.pics.entry(m.key.clone()).or_insert(ModPic { sig: 0, layer: None, want: None });
+            if p.layer.is_some() && (p.sig == sig || p.want.is_some_and(|w| w.0 == sig)) {
+                continue;
+            }
+            let svg = module_svg(m, print, &rows);
             // (one of a new height too goes to the painter: the old one shows meanwhile; drawing every
             // module here took 200 ms a frame)
             if p.layer.is_none() {
@@ -1203,7 +1231,7 @@ impl Mixer {
             self.bals.entry(k).or_insert_with(|| small(&bal_knob_svg(k.0, k.1), 30.0, 30.0, dpi));
         }
         for k in wanted_caps {
-            self.caps.entry(k).or_insert_with(|| small(&cap_svg(k.0), CAP.0 + 1.0, CAP.1 + 2.0, dpi));
+            self.caps.entry(k).or_insert_with(|| small(&cap_svg(k.0), CAP.0 + CAP_SHADOW.0, CAP.1 + CAP_SHADOW.1, dpi));
         }
         for sec in [Section::Inputs, Section::Apps, Section::Outputs] {
             wanted_texts.push((sec.name().to_owned(), LABEL, scale));
@@ -1230,6 +1258,9 @@ impl Mixer {
         }
         if self.bals.len() > 400 {
             self.bals.clear();
+        }
+        if self.light.is_none() {
+            self.light = Some(super::scene::light_layer());
         }
         let (fw, top, bottom) = self.view(size, dpi);
         let clip = Some([0.0, top * dpi, fw * dpi, (bottom - top) * dpi]);
@@ -1287,6 +1318,20 @@ impl Mixer {
                 let l = s.level.map(lit);
                 if let Some(layer) = self.leds.get(&(s.cols, l[0], if s.cols == 2 { l[1] } else { 0 }, false, scale)) {
                     out.push((layer, px(ox + x0 + meter_x(s)), px(oy + top + cap_y(VOL_MAX)), layer.w * dpi, layer.h * dpi, clip, 1.0));
+                }
+            }
+        }
+        // one light over the whole console, as over the rack: the corner nearer it lighter, the far
+        // one darker, evenly across every module (each its own sheen made it go in waves)
+        // (laid on each module only, not on the dark between them)
+        if let (Some(l), Some(first), Some(last), Some([cx, cy, cw, ch])) = (&self.light, self.modules.first(), self.modules.last(), clip) {
+            let (x0, x1) = (ox + first.x, ox + last.x + last.w);
+            for m in &self.modules {
+                // the module's rectangle within the field's
+                let (a, b) = ((px(ox + m.x)).max(cx), (px(ox + m.x + m.w)).min(cx + cw));
+                let (t, u) = ((px(oy + TOP)).max(cy), (px(oy + TOP + mod_h)).min(cy + ch));
+                if b > a && u > t {
+                    out.push((l, px(x0), px(oy + TOP), px(x1) - px(x0), (mod_h * dpi).round(), Some([a, t, b - a, u - t]), 1.0));
                 }
             }
         }
@@ -1366,9 +1411,12 @@ fn label_text(t: &str, colour: &str) -> String {
 fn cap_svg(pct: u32) -> String {
     let (w, h) = CAP;
     format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5a5b5f"/><stop offset=".45" stop-color="#2b2c2f"/><stop offset=".55" stop-color="#1b1c1e"/><stop offset="1" stop-color="#3c3d41"/></linearGradient></defs><rect x="1" y="2" width="{w}" height="{h}" rx="3" fill="#000" opacity=".5"/><rect x=".5" y=".5" width="{}" height="{}" rx="3" fill="url(#g)" stroke="#0b0b0c"/><text x="{}" y="14.5" font-family="Noto Sans Mono" font-weight="bold" font-size="8.5" fill="{}" text-anchor="middle">{pct}</text></svg>"##,
-        w + 1.0,
-        h + 2.0,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5a5b5f"/><stop offset=".45" stop-color="#2b2c2f"/><stop offset=".55" stop-color="#1b1c1e"/><stop offset="1" stop-color="#3c3d41"/></linearGradient></defs><rect x="1" y="2.25" width="{}" height="{}" rx="3.5" fill="#000" opacity=".5"/><rect x=".5" y=".5" width="{}" height="{}" rx="3" fill="url(#g)" stroke="#0b0b0c"/><text x="{}" y="14.5" font-family="Noto Sans Mono" font-weight="bold" font-size="8.5" fill="{}" text-anchor="middle">{pct}</text></svg>"##,
+        w + CAP_SHADOW.0,
+        h + CAP_SHADOW.1,
+        // its shadow as a knob's (`knob_shadow`): 1.25 right and 2.5 down of it, 0.75 wider all round
+        w + 0.5,
+        h + 0.5,
         w - 1.0,
         h - 1.0,
         w / 2.0,
@@ -1388,34 +1436,6 @@ fn bal_state(scene: &Scene, at: (usize, usize)) -> u8 {
         Some(BalKnob::Held) => 1,
         _ => 0,
     }
-}
-
-/// A point `r` from (x, y) at angle `a` (degrees, 0 straight up, clockwise).
-fn polar(x: f64, y: f64, a: f64, r: f64) -> String {
-    let a = a.to_radians();
-    format!("{:.2},{:.2}", x + r * a.sin(), y - r * a.cos())
-}
-
-/// The VOLUME knob's angle for a volume: from -135° (silence) to 135° (150%), as the rack's.
-fn vol_angle(v: f64) -> f64 {
-    -135.0 + 270.0 * v.clamp(0.0, VOL_MAX) / VOL_MAX
-}
-
-/// A knob's shadow on the panel, the same for every knob, as the rack's (`face::mix_pic`): lit
-/// from the top left, down and a little right of it, as far as it stands out.
-fn knob_shadow(x: f64, y: f64, r: f64, lift: f64) -> String {
-    format!(r##"<circle cx="{}" cy="{}" r="{}" fill="#000" opacity=".5"/>"##, x + 0.5 * lift, y + lift, r + 0.3 * lift)
-}
-
-/// A knob `r` round at (x, y), its pointer at `a`, as the rack's (`face::mix_pic`).
-fn knob(x: f64, y: f64, r: f64, a: f64) -> String {
-    format!(
-        r##"<circle cx="{x}" cy="{y}" r="{r}" fill="url(#gVol)" stroke="#0c0c0d"/><circle cx="{x}" cy="{y}" r="{}" fill="none" stroke="rgba(255,255,255,.08)"/><path d="M{} L{}" stroke="#ffb02e" stroke-width="{}" stroke-linecap="round"/>"##,
-        r * 0.75,
-        polar(x, y, a, r * 0.29),
-        polar(x, y, a, r * 0.86),
-        if r > 12.0 { 2.4 } else { 2.0 }
-    )
 }
 
 const KNOB_DEFS: &str = r##"<defs><radialGradient id="gVol" cx=".38" cy=".3" r=".8"><stop offset="0" stop-color="#5a5b5f"/><stop offset="1" stop-color="#151618"/></radialGradient></defs>"##;
@@ -1519,7 +1539,12 @@ fn mix(a: &str, b: &str, t: f64) -> String {
 /// The keys' gradients: lit, a lamp behind frosted plastic in the key's colour (brightest a little
 /// above and left of the middle, falling off unevenly to the edges, as a bulb lights it); unlit,
 /// pale ivory frosted plastic, as a synth's lit keys are, a little warmer in the middle.
-pub(crate) fn glass_defs() -> String {
+pub(crate) fn glass_defs() -> &'static str {
+    static DEFS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    DEFS.get_or_init(glass_defs_made)
+}
+
+fn glass_defs_made() -> String {
     let mut o = String::new();
     for (c, id) in GLASS {
         let _ = write!(

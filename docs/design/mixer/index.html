@@ -114,7 +114,7 @@ function lowest(mods, ends) {
 // the lettering (src/ui/print.rs)
 const SECTION = { size: 9, spacing: 1.2 }, SMALL = { size: 7.5, spacing: 0.8 };
 // the colours (face::kind_colour, band_ink, fin)
-const KIND = { "SINK": "#007c7d", "SOURCE": "#206ea6", "PLAYBACK STREAM": "#7e5a42", "RECORDING STREAM": "#427935", "MIDI": "#934c7e", "VIDEO": "#876200", "DUPLEX": "#73348d" };
+const KIND = { "SINK": "#007c7d", "SOURCE": "#206ea6", "PLAYBACK STREAM": "#bb5a2a", "RECORDING STREAM": "#427935", "MIDI": "#934c7e", "VIDEO": "#876200", "DUPLEX": "#73348d" };
 const kindColour = (k) => KIND[k] || "#cba553";
 const bandInk = (k) => (kindColour(k) === "#cba553" ? "#1d1e20" : "#f3efe6");
 const FIN = {

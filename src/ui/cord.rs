@@ -5,7 +5,6 @@
 //! Distances are in world units (the panel's pixels at zoom 1).
 
 use super::ease;
-use super::face::JackKind;
 
 /// points along a cord
 pub const N: usize = 22;
@@ -57,7 +56,6 @@ pub struct End {
     /// order in the jack's mult: the earliest plugged in sits first
     pub slot: u64,
     pub rank: usize,
-    pub kind: JackKind,
     /// where the cord ends: on the jack, in the hand, or where it fell
     pub x: f32,
     pub y: f32,
@@ -71,8 +69,8 @@ pub struct End {
 }
 
 impl End {
-    fn new(jack: Option<String>, kind: JackKind, slot: u64) -> Self {
-        End { jack, held: false, free: false, slot, rank: 0, kind, x: 0.0, y: 0.0, placed: false, rel: (0.0, 0.0), orig: None }
+    fn new(jack: Option<String>, slot: u64) -> Self {
+        End { jack, held: false, free: false, slot, rank: 0, x: 0.0, y: 0.0, placed: false, rel: (0.0, 0.0), orig: None }
     }
     pub fn seated(&self) -> bool {
         self.jack.is_some() && !self.held && !self.free
@@ -107,12 +105,11 @@ pub struct Cord {
     settle: bool,
 }
 
-/// The hand holding a cord's end: where, and the kind of jack it is about to go into.
+/// The hand holding a cord's end: where.
 #[derive(Clone, Copy, Debug)]
 pub struct Held {
     pub x: f32,
     pub y: f32,
-    pub kind: Option<JackKind>,
 }
 
 /// How long a cord between two points (`dx` apart across, `dy` up or down) is: a third longer
@@ -145,13 +142,13 @@ fn hang(p0: (f32, f32), p1: (f32, f32), len: f32) -> Vec<(f32, f32)> {
 impl Cord {
     /// A cord plugged in at both ends, starting in the curve it hangs in (see `hang`), so it swings
     /// a little and settles instead of dropping or buckling.
-    pub fn new(seq: u64, slots: (u64, u64), a: (String, JackKind, (f32, f32)), b: (String, JackKind, (f32, f32)), color: [u8; 3]) -> Self {
-        let len = target_len(b.2.0 - a.2.0, b.2.1 - a.2.1);
-        let pts = hang(a.2, b.2, len).into_iter().map(|(x, y)| P::at(x, y)).collect();
+    pub fn new(seq: u64, slots: (u64, u64), a: (String, (f32, f32)), b: (String, (f32, f32)), color: [u8; 3]) -> Self {
+        let len = target_len(b.1.0 - a.1.0, b.1.1 - a.1.1);
+        let pts = hang(a.1, b.1, len).into_iter().map(|(x, y)| P::at(x, y)).collect();
         Cord {
             seq,
-            a: End::new(Some(a.0), a.1, slots.0),
-            b: End::new(Some(b.0), b.1, slots.1),
+            a: End::new(Some(a.0), slots.0),
+            b: End::new(Some(b.0), slots.1),
             color,
             pts,
             len,
@@ -169,8 +166,8 @@ impl Cord {
 
     /// A cord just pulled out of a jack: one end plugged in, the other in the hand. It starts with
     /// no length and quickly grows to its own as the hand moves away.
-    pub fn fresh(seq: u64, slot: u64, jack: String, kind: JackKind, at: (f32, f32), color: [u8; 3], output: bool) -> Self {
-        let mut c = Cord::new(seq, (slot, slot), (jack.clone(), kind, at), (jack, kind, at), color);
+    pub fn fresh(seq: u64, slot: u64, jack: String, at: (f32, f32), color: [u8; 3], output: bool) -> Self {
+        let mut c = Cord::new(seq, (slot, slot), (jack.clone(), at), (jack, at), color);
         // it comes out of the jack in the hand: that is to be seen
         c.settle = false;
         c.len = 0.0;
@@ -230,9 +227,6 @@ impl Cord {
                 && let Some(h) = held
             {
                 (e.x, e.y) = (h.x, h.y);
-                if let Some(k) = h.kind {
-                    e.kind = k;
-                }
             } else if e.free {
                 // a dropped end falls with the cord
                 let p = if end_b { self.pts[N - 1] } else { self.pts[0] };
@@ -442,7 +436,7 @@ mod tests {
             let at = if k == "a" { pos.get() } else { jb };
             Some(Slot { at, dev: at })
         };
-        let mut c = Cord::new(1, (1, 2), ("a".into(), JackKind::Stereo, ja), ("b".into(), JackKind::Stereo, jb), [0, 200, 0]);
+        let mut c = Cord::new(1, (1, 2), ("a".into(), ja), ("b".into(), jb), [0, 200, 0]);
         for &to in path {
             for _ in 0..60 {
                 let at = pos.get();
@@ -527,7 +521,7 @@ mod tests {
         let jb = (900.0, 420.0);
         // the jack jumps on a device that stays
         let slot = |k: &str, _n: usize| Some(Slot { at: if k == "a" { ja.get() } else { jb }, dev: (0.0, 0.0) });
-        let mut c = Cord::new(1, (1, 2), ("a".into(), JackKind::Stereo, ja.get()), ("b".into(), JackKind::Stereo, jb), [0, 200, 0]);
+        let mut c = Cord::new(1, (1, 2), ("a".into(), ja.get()), ("b".into(), jb), [0, 200, 0]);
         for jump in [None, Some((150.0, 500.0))] {
             if let Some(to) = jump {
                 ja.set(to);
@@ -551,12 +545,12 @@ mod tests {
         let ja = (400.0, 300.0);
         let slot = move |_: &str, _n: usize| Some(Slot { at: ja, dev: (0.0, 0.0) });
         for (dx, dy) in [(300.0, 0.0), (250.0, 200.0), (-250.0, 150.0), (20.0, 300.0), (-20.0, 300.0), (150.0, -200.0)] {
-            let mut c = Cord::fresh(1, 1, "a".into(), JackKind::Stereo, ja, [0, 200, 0], true);
+            let mut c = Cord::fresh(1, 1, "a".into(), ja, [0, 200, 0], true);
             let mut worst = 0;
             for i in 0..90 {
                 // the hand pulls the end away over a second, then holds still
                 let t = (i as f32 / 60.0).min(1.0);
-                let h = Held { x: ja.0 + dx * t, y: ja.1 + dy * t, kind: None };
+                let h = Held { x: ja.0 + dx * t, y: ja.1 + dy * t };
                 c.frame(1.0 / 60.0, 2, &slot, None, Some(h), false);
                 if i > 3 {
                     worst = worst.max(crossings(&c));

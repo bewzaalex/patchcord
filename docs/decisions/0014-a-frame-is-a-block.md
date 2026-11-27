@@ -33,7 +33,7 @@ sink is a sink). The frame's outline and band on the rack, the block's outline a
 |---|---|---|
 | SINK | `Audio/Sink` | `#007C7D` |
 | SOURCE | `Audio/Source`, `Audio/Source/Virtual` | `#206EA6` |
-| PLAYBACK STREAM | `Stream/Output/Audio` | `#7E5A42` |
+| PLAYBACK STREAM | `Stream/Output/Audio` | `#BB5A2A` (orange since 2026-11-27; a brown `#7E5A42` before) |
 | RECORDING STREAM | `Stream/Input/Audio` | `#427935` |
 | MIDI | `Midi/*` | `#934C7E` |
 | VIDEO | `Video/*`, `Stream/*/Video` (in ENGINE only: ADR 0019) | `#876200` |
@@ -51,7 +51,7 @@ the rack, the port's dot and pill in ENGINE (which stops giving ports the block'
 | PLAYBACK | a sink's inputs | `#007C7D` |
 | CAPTURE | a source's outputs (a virtual source's too, though `port.monitor`) | `#206EA6` |
 | INPUT | anything else's inputs | `#427935` |
-| OUTPUT | anything else's outputs | `#7E5A42` |
+| OUTPUT | anything else's outputs | `#BB5A2A` |
 | MONITOR | outputs with `port.monitor` | `#695CA6` |
 | MIDI | MIDI ports | `#934C7E` |
 | VIDEO | video ports | `#876200` |
@@ -66,8 +66,9 @@ HARDWARE aluminium `#C3C6CA` (print `#1D1E20`; since 2026-11-23 the top panel's 
 `#8C8E91`; since 2026-11-26 navy `#2B3950`, print `#DDE5F0`, noise as the others, the first
 version's navy: the light grey stood out of the rack, and navy beside black reads apart once the
 frames carry their colours; the same on the desk, in the rack and in MIXER), PROGRAM black `#232427` (print `#D5D7D9`), a NODE
-of PipeWire's or WirePlumber's olive `#66683F` (print `#F1F1E6`; since 2026-11-26 a graphite green
-`#2C312C`, print `#DFE4DF`: the olive stood out beside the navy and the black).
+of PipeWire's or WirePlumber's olive `#66683F` (print `#F1F1E6`; since 2026-11-27 a dark olive
+`#45512F`, print `#EBEDD9`: the olive stood out beside the navy and the black, and a graphite green
+`#2C312C`, tried a day, passed for the black).
 
 **The frame**, as the face draws it, with these changes:
 - The band: the name (after SPLIT on a frame without a stereo volume), at the left on every frame; VOLUME · BAL (GAIN on a source or a recording stream) and SIG

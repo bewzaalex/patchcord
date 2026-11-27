@@ -39,12 +39,13 @@ put a headset's mic and headphones together and the master anywhere). Left to ri
 **A module is one strip**, of one width (112 + 12), in a frame as the rack's (2026-11-24): on the
 module's very edge, its corners the module's, its edge and its band in the block kind's colour.
 The band has two lines: the device's (or app's) name, then the frame's, cut with an ellipsis; a
-click on the frame's name opens ENGINE with its block, the status bar saying its `#id`, as on the
-rack (2026-11-26: it was a key, GRAPH, at the second line's right; before that under the band, and
-on it beside one line). A card's PROFILE is once: on its output (else its input). A card that is off
+click on the device's name (the first line) opens ENGINE with the frame's block, the status bar
+saying its `#id`; on a card that is off, with no node, the device itself is chosen in ENGINE
+(2026-11-26: it was a key, GRAPH, at the second line's right; before that under the band, and on
+it beside one line). A card's PROFILE is once: on its output (else its input). A card that is off
 has a plain grey band, OFF on its second line (no GRAPH: it has no node), and SETUP with PROFILE.
 No screens. Paint by owner, as on the rack: hardware navy, a program black,
-PipeWire's own graphite green.
+PipeWire's own dark olive.
 
 **Every module is as tall as the tallest** (2026-11-25; they were as tall as the window, the room
 under the first keys growing with it, which left empty room). The VOLUME (GAIN) block goes right

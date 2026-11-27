@@ -1074,7 +1074,7 @@ fn menu_svg(menu: &Menu) -> (String, f64, Vec<(MenuHit, [f64; 4])>) {
                 );
                 y += 24.0;
             }
-            for line in ["A device's HIDE key (the struck-through eye", "by its name) hides it when unused; H too.", "Click one above to show it again."] {
+            for line in ["A device's HIDE key (the struck-through eye", "under its screen) hides it when unused; H too.", "Click one above to show it again."] {
                 let _ = write!(o, r#"<text x="12" y="{}" font-size="10.5" font-weight="normal" fill="{INK}" opacity=".75">{line}</text>"#, y + 16.0);
                 y += 15.0;
             }

@@ -110,9 +110,14 @@ fn spot(out: &mut Vec<f32>, at: (f32, f32), r: f32, c: Rgba) {
 /// The cord's centre line as `paint::trace` draws it (through the middles between its points,
 /// with the points as control points), shifted by (ox, oy) world units, in window pixels.
 fn line(c: &Cord, ox: f32, oy: f32, v: View) -> Vec<(f32, f32)> {
+    line_pts(&c.pts.iter().map(|p| (p.x + ox, p.y + oy)).collect::<Vec<_>>(), v)
+}
+
+/// The same for points of its own (world units): its shadow's, from `paint::shadow_pts`.
+fn line_pts(pts: &[(f32, f32)], v: View) -> Vec<(f32, f32)> {
     let s = v.s as f32;
-    let px = |x: f32, y: f32| ((x + ox) * s + v.x as f32, (y + oy) * s + v.y as f32);
-    let r: Vec<(f32, f32)> = c.pts.iter().map(|p| px(p.x, p.y)).collect();
+    let px = |x: f32, y: f32| (x * s + v.x as f32, y * s + v.y as f32);
+    let r: Vec<(f32, f32)> = pts.iter().map(|p| px(p.0, p.1)).collect();
     let n = r.len();
     if n < 2 {
         return r;
@@ -142,7 +147,7 @@ pub fn cords(cords: &[Cord], alpha_of: impl Fn(&Cord) -> f32, v: View) -> Mesh {
     let shown: Vec<(&Cord, f32)> = cords.iter().map(|c| (c, alpha_of(c))).filter(|(_, a)| *a > 0.01).collect();
     // the shadow: three soft strokes in `paint`, one softer one here
     for &(c, a) in &shown {
-        stroke(&mut m.normal, &line(c, 7.0, 12.0, v), 2.8 * s, 3.5 * s, rgba([0, 0, 0], 0.26 * a));
+        stroke(&mut m.normal, &line_pts(&super::paint::shadow_pts(c, 7.0, 12.0), v), 2.8 * s, 3.5 * s, rgba([0, 0, 0], 0.26 * a));
     }
     for &(c, a) in &shown {
         let w = cord_w(c);
@@ -226,12 +231,11 @@ mod tests {
     #[ignore]
     fn mesh_time() {
         use super::super::cord::Slot;
-        use super::super::face::JackKind;
         let ends = |i: usize| ((80.0 + (i % 8) as f32 * 150.0, 200.0 + (i / 8) as f32 * 40.0), (200.0 + (i * 7 % 8) as f32 * 140.0, 700.0 + (i / 8) as f32 * 30.0));
         let mut cs: Vec<Cord> = (0..40)
             .map(|i| {
                 let (a, b) = ends(i);
-                let mut c = Cord::new(i as u64, (2 * i as u64, 2 * i as u64 + 1), (format!("a{i}"), JackKind::Stereo, a), (format!("b{i}"), JackKind::Stereo, b), [40, 200, 90]);
+                let mut c = Cord::new(i as u64, (2 * i as u64, 2 * i as u64 + 1), (format!("a{i}"), a), (format!("b{i}"), b), [40, 200, 90]);
                 (c.flow, c.flow_at) = (1.0, 0.4);
                 c
             })

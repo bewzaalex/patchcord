@@ -35,7 +35,7 @@ const SCROLL_LATCH: Duration = Duration::from_millis(400);
 
 /// A picture of one pixel of a colour (opaque), stretched to whatever it fills.
 fn pixel(rgb: [u8; 4]) -> Layer {
-    let mut pm = resvg::tiny_skia::Pixmap::new(1, 1).expect("1×1");
+    let mut pm = Pixmap::new(1, 1).expect("1×1");
     pm.data_mut().copy_from_slice(&rgb);
     Layer { id: next_id(), pm: Some(pm), x: 0.0, y: 0.0, w: 1.0, h: 1.0 }
 }
@@ -121,14 +121,15 @@ struct Cue {
 /// A second click this soon, this close, is a double-click.
 const DOUBLE: Duration = Duration::from_millis(350);
 
-/// A card's profile list, open under its PROFILE key: drawn again when the card changes, placed
-/// under the key wherever the view puts it.
+/// Which list of a card's is open: its profiles or its ports.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ListOf {
     Profiles,
     Ports,
 }
 
+/// A card's profile list, open under its PROFILE key: drawn again when the card changes, placed
+/// under the key wherever the view puts it.
 struct ProfileList {
     /// the device whose list it is
     key: String,
@@ -461,7 +462,7 @@ impl App {
     }
 
     /// The jacks marked: the ones kept on (heard), and the one under the pointer (a ring only).
-    fn cue_heard(&self) -> Vec<String> {
+    fn cue_marked(&self) -> Vec<String> {
         let mut v = self.cue.pins.clone();
         if let Some(h) = &self.cue.hover
             && !v.contains(h)
@@ -478,7 +479,7 @@ impl App {
     fn cue_marks(&self) -> Vec<(usize, (f32, f32), usize, bool)> {
         // per jack: its halves kept on (1 left, 2 right, 3 both), heard, would feed back
         let mut at: std::collections::BTreeMap<String, (u8, bool, bool)> = Default::default();
-        for k in self.cue_heard() {
+        for k in self.cue_marked() {
             // (a port heard from ENGINE shows on its jack)
             let Some(j) = self.scene.cue_jack(&k) else { continue };
             let bad = self.scene.cue_blocked(&k);
@@ -572,17 +573,15 @@ impl App {
         {
             return feedback(&self.scene.jack_title(h));
         }
-        // (on the desk and the rack: ENGINE says what a click on a port does, `port_hint`)
-        let what = self.cue_what().unwrap_or_else(|| "move over a jack to listen to it".to_owned());
-        if self.cue.mode {
-            let click = match &self.cue.hover {
-                Some(h) if self.kept(h) => "  ·  click: stop it",
-                Some(_) => "  ·  click: keep it on",
-                None => "  ·  click a jack to keep it on; CUE or Esc stops all",
-            };
-            format!("{what}{click}")
-        } else {
-            what
+        // (on the desk and the rack, over a jack in CUE mode: ENGINE says what a click on a port
+        // does, `port_hint`); what is heard is what is kept on, never what the pointer is over
+        let click = match &self.cue.hover {
+            Some(h) if self.kept(h) => "click: stop it",
+            _ => "click: listen to it",
+        };
+        match self.cue_what() {
+            Some(what) => format!("{what}  ·  {click}"),
+            None => format!("CUE  ·  {click}"),
         }
     }
 
@@ -608,7 +607,8 @@ impl App {
     /// What is heard, for the status bar: "CUE ▸ fooyin · OUTPUT · in the default output at 70%".
     fn cue_what(&self) -> Option<String> {
         let heard: Vec<String> = self
-            .cue_heard()
+            .cue
+            .pins
             .iter()
             .filter(|k| !self.scene.cue_blocked(k))
             .map(|k| if self.scene.cue_already_heard(k) { format!("{} (already in the output you listen on)", self.scene.jack_title(k)) } else { self.scene.jack_title(k) })
@@ -813,6 +813,11 @@ impl App {
                 self.engine.show_node(node);
                 self.send_engine();
             }
+            Some(mixer::Action::Object(id)) => {
+                self.set_engine(true);
+                self.engine.show_object(id);
+                self.send_engine();
+            }
             Some(mixer::Action::Profile(di, r)) => self.open_list(di, ListOf::Profiles, None, r),
             Some(mixer::Action::Port(di, gi, r)) => self.open_list(di, ListOf::Ports, Some(gi), r),
             Some(mixer::Action::Cue(keys)) => self.cue_group(keys),
@@ -840,7 +845,7 @@ impl App {
         }
         // any of it heard (from the rack or ENGINE too: a jack of it, or a port of one): all of
         // it stops, as its lit CUE says
-        let of_it = |scene: &scene::Scene, p: &String| scene.cue_jack(p).is_some_and(|j| keys.iter().any(|k| k.as_str() == j));
+        let of_it = |scene: &Scene, p: &String| scene.cue_jack(p).is_some_and(|j| keys.iter().any(|k| k.as_str() == j));
         if self.cue.pins.iter().any(|p| of_it(&self.scene, p)) {
             let scene = &self.scene;
             self.cue.pins.retain(|p| !of_it(scene, p));
@@ -930,7 +935,7 @@ impl App {
     fn fit(&mut self, glide: bool) {
         let dpi = self.dpi();
         let (top, bottom) = self.field();
-        let v = self.scene.fit(self.size.0 as f64, bottom - top, top, 2.0 * dpi, super::scene::EDGE * dpi);
+        let v = self.scene.fit(self.size.0 as f64, bottom - top, top, 2.0 * dpi, scene::EDGE * dpi);
         if glide {
             self.view_to = Some(v);
         } else {
@@ -1089,8 +1094,7 @@ impl App {
             if !(p.0.is_finite() && p.1.is_finite()) {
                 (*p, *v) = (to, (0.0, 0.0));
             }
-            let kind = magnet.as_ref().and_then(|m| self.scene.jack_kind(m));
-            held = Some((*seq, Held { x: p.0, y: p.1, kind }));
+            held = Some((*seq, Held { x: p.0, y: p.1 }));
             for t in targets.iter() {
                 if let Some(pos) = self.scene.spare(t) {
                     rings.push((pos, magnet.as_ref() == Some(t)));
@@ -1201,7 +1205,7 @@ impl App {
             // the ports of the jacks kept on, all of them: also those the cue leaves out (heard
             // in the output already, or asleep)
             // (and a port kept on from ENGINE itself, an input too)
-            let mut kept: Vec<u32> = self.cue_heard().iter().filter(|k| !self.scene.cue_blocked(k)).flat_map(|k| self.scene.cue_sources(k).into_iter().map(|s| s.1).chain(scene::port_of_key(k))).collect();
+            let mut kept: Vec<u32> = self.cue.pins.iter().filter(|k| !self.scene.cue_blocked(k)).flat_map(|k| self.scene.cue_sources(k).into_iter().map(|s| s.1).chain(scene::port_of_key(k))).collect();
             kept.sort_unstable();
             kept.dedup();
             self.engine.cue_kept = kept;
@@ -1254,6 +1258,7 @@ impl App {
                 self.cue.badge = Some((raster, panel::cue_badge(self.dpi())));
             }
         }
+        self.prof.mark("badge");
         let version = self.scene.version.clone().unwrap_or_else(|| "?".into());
         let field = self.field();
         let bars = if mixer_on { self.mixer.bars(self.size, dpi) } else { self.rack_bars() };
@@ -1280,7 +1285,6 @@ impl App {
         let mut engine_at = 0;
         let mut carried = None;
         if self.engine.on {
-            self.prof.mark("badge");
             // a link carried near the graph's edge scrolls it, frame after frame
             if self.engine.edge_scroll(self.cursor, self.size, dpi) {
                 sf.window.request_redraw();
@@ -1307,16 +1311,25 @@ impl App {
             Some(Drag::Plug { targets, .. }) => Some(targets.as_slice()),
             _ => None,
         };
-        // in the rack every shadow goes under every face: the one last touched (drawn last) casts
-        // none on the unit below it; on the desk each falls with its own face, as a lifted one does
+        // in the rack every shadow goes under every face (the one last touched, drawn last, casts
+        // none on the unit below it), but the one carried: it is lifted over the others, and its
+        // shadow falls on them; on the desk each falls with its own face, as a lifted one does
         let rack = self.scene.rack;
-        for d in self.scene.devs.iter().filter(|_| !engine_on && rack) {
+        let lifted = match &self.drag {
+            Some(Drag::Device { key, .. }) => Some(key.as_str()),
+            _ => None,
+        };
+        let own_shadow = |d: &scene::DevView| !rack || lifted == Some(d.dev.key.as_str());
+        for d in self.scene.devs.iter().filter(|d| !engine_on && !own_shadow(d)) {
             if let Some((_, l)) = &d.shade {
                 sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (d.x + l.x) * v.s + v.x, y: (d.y + l.y) * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha: 1.0, clip: None });
             }
         }
+        // the one light over all the devices, laid on each as it is drawn (a device over another
+        // hides the light on the one under it)
+        let light = self.scene.rack_light().filter(|_| !engine_on);
         for (di, d) in self.scene.devs.iter().enumerate().filter(|_| !engine_on) {
-            for l in d.layers().skip(usize::from(rack && d.shade.is_some())) {
+            for l in d.layers().skip(usize::from(!own_shadow(d) && d.shade.is_some())) {
                 sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (d.x + l.x) * v.s + v.x, y: (d.y + l.y) * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha: 1.0, clip: None });
             }
             // the jacks of it kept on: their discs, under the jacks
@@ -1330,6 +1343,12 @@ impl App {
                 if let Some(l) = &self.scene.jack_pics[pic] {
                     sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: (x + l.x) * v.s + v.x, y: (y + l.y) * v.s + v.y, w: l.w * v.s, h: l.h * v.s, alpha, clip: None });
                 }
+            }
+            // the light on it (under the cords)
+            if let Some([x, y, w, h]) = light {
+                let l = &self.scene.light;
+                let clip = Some([d.x * v.s + v.x, d.y * v.s + v.y, d.geo.w * v.s, d.h() * v.s]);
+                sprites.push(Sprite { id: l.id, pm: l.pm.as_ref(), x: x * v.s + v.x, y: y * v.s + v.y, w: w * v.s, h: h * v.s, alpha: 1.0, clip });
             }
         }
         // alignment guides, over the faces and under the cords
@@ -2194,8 +2213,8 @@ impl App {
         self.cursor.1 >= top && self.cursor.1 <= bottom && !self.panel.in_more(self.cursor.0 / dpi, self.cursor.1 / dpi) && self.panel.menu.is_none() && self.profile_hit().is_none()
     }
 
-    /// The jack listened to under the pointer: only on the field (a jack behind the panel or a
-    /// menu isn't heard).
+    /// The jack under the pointer in CUE mode, ringed (a click listens to it): only on the field
+    /// (not a jack behind the panel or a menu).
     fn probe_at(&self) -> Option<String> {
         if self.engine.on || !self.on_field() {
             return None;
@@ -2368,11 +2387,15 @@ impl App {
         for e in &events {
             engine |= self.engine.apply(e);
         }
+        let rev = self.scene.rev;
         let changed = self.scene.apply(events);
-        if changed {
+        // ENGINE is built again only when the graph changed: not for the meters' levels (every
+        // 40 ms while sound plays) or the profiler's timings, which `engine.apply` takes itself
+        let graph = self.scene.rev != rev;
+        if graph {
             self.engine.dirty = true;
         }
-        if engine || (changed && self.engine.on) {
+        if engine || (graph && self.engine.on) {
             self.redraw();
         }
         for cmd in self.scene.outbox.drain(..) {

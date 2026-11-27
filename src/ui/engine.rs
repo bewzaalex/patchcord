@@ -8,7 +8,7 @@
 //! It only looks: patching is done on the desk.
 //!
 //! The graph is drawn in world units into one picture (redrawn when it changes or after zooming),
-//! moved and scaled by the view; the strip, the inspector and the tabs below are drawn in window
+//! moved and scaled by the view; the overlay's keys, cards, inspector and the tabs below are drawn in window
 //! units, like the panel.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -54,7 +54,7 @@ pub enum ITab {
     Timing,
 }
 
-/// Something clickable in ENGINE's strip, inspector or tabs.
+/// Something clickable in ENGINE's overlay, cards, inspector or tabs.
 #[derive(Clone, PartialEq, Debug)]
 enum Hit {
     Tab(Tab),
@@ -303,7 +303,7 @@ impl Model {
     }
 }
 
-/// One line of ISSUES: how bad (2 error, 1 warning, 0 info), its tag, what, and what to do.
+/// One line of ISSUES: how bad (2 error, 1 warning), its tag, what, and what to do.
 #[derive(Clone, PartialEq, Hash)]
 struct Issue {
     level: u8,
@@ -1168,12 +1168,10 @@ impl Engine {
         if on {
             self.legend_open = false;
         }
-        self.dirty = true;
     }
 
     /// What FIND's field has; changed, nothing is gone to yet.
     pub fn find_text(&mut self) -> &mut String {
-        self.dirty = true;
         &mut self.find
     }
 
@@ -1636,7 +1634,7 @@ impl Engine {
         self.model.nodes.iter().filter(|n| self.props.get(&n.id).is_some_and(|p| p.get("device.id") == Some(&id) || p.get("client.id") == Some(&id))).map(|n| n.id).collect()
     }
 
-    /// The graph; with `numbers`, also what changes every moment (each node's time, each group's
+    /// The graph; with `numbers`, also what changes every moment (each group's
     /// load), which on screen are their own small pictures (see `numbers`).
     fn graph_svg(&self, numbers: bool) -> String {
         let m = &self.model;
@@ -1838,7 +1836,7 @@ impl Engine {
             let d = m.node(g.driver);
             // after the header drawn in the graph (all in a monospaced font)
             let x = BPAD + text::width(text::MONO_BOLD, "DRIVER", 12.0, 1.0) + text::width(text::MONO_BOLD, &format!("  {}  ", d.map_or("?", |n| n.desc.as_str())), 12.0, 0.0) + text::width(text::MONO, &band_rest(g, d), 12.0, 0.0);
-            out.push(Num { key: format!("g{}", g.driver), x, y: y + 22.0, end: false, text: band_load(g), size: 12.0, fill: "#7d8085", alpha: 1.0 });
+            out.push(Num { key: format!("g{}", g.driver), x, y: y + 22.0, text: band_load(g) });
         }
         out
     }
@@ -1939,22 +1937,17 @@ impl Engine {
         let nums = self.numbers();
         self.nums.retain(|k, _| nums.iter().any(|n| n.key == *k));
         for n in nums {
-            let sig = hash_str(&format!("{}{}{}{}{}", n.text, n.alpha, n.x, n.y, n.end), r);
+            let sig = painter::sig((&n.text, n.x.to_bits(), n.y.to_bits()), r);
             if self.nums.get(&n.key).is_some_and(|(s, _)| *s == sig) {
                 continue;
             }
-            let (w, h) = (text::width(text::MONO, &n.text, n.size, 0.0) + 4.0, n.size * 1.5);
-            let base = n.size * 1.15;
+            let (w, h) = (text::width(text::MONO, &n.text, NUM_SIZE, 0.0) + 4.0, NUM_SIZE * 1.5);
+            let base = NUM_SIZE * 1.15;
             let svg = format!(
-                r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}"><text x="{}" y="{base}" font-family="Noto Sans Mono" font-size="{}" fill="{}" opacity="{}"{} xml:space="preserve">{}</text></svg>"##,
-                if n.end { w - 2.0 } else { 2.0 },
-                n.size,
-                n.fill,
-                n.alpha,
-                if n.end { r#" text-anchor="end""# } else { "" },
+                r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}"><text x="2" y="{base}" font-family="Noto Sans Mono" font-size="{NUM_SIZE}" fill="{NUM_FILL}" xml:space="preserve">{}</text></svg>"##,
                 esc(&n.text)
             );
-            let x = if n.end { n.x - w + 2.0 } else { n.x - 2.0 };
+            let x = n.x - 2.0;
             self.nums.insert(n.key, (sig, Layer { id: next_id(), pm: rasterize(&text::svg_options(), &svg, r), x, y: n.y - base, w, h }));
         }
         lap(&mut self.spent, "engine.numbers");
@@ -1980,7 +1973,7 @@ impl Engine {
         {
             let gw = graph_a[2].max(1.0);
             let sh = keys_h.min(graph_a[3].max(1.0));
-            let sig = hash_str(&ov, dpi);
+            let sig = painter::sig(&ov, dpi);
             if self.overlay.as_ref().is_none_or(|(s, _)| *s != sig) {
                 self.overlay = Some((sig, Layer { id: next_id(), pm: rasterize(&text::svg_options(), &ov, dpi), x: graph_a[0], y: graph_a[1], w: gw, h: sh }));
             }
@@ -1999,7 +1992,7 @@ impl Engine {
             let s = ((graph_a[0] + graph_a[2] - legend_x - 6.0) / lw).min((graph_a[3] - keys_h - 12.0) / lh).clamp(0.2, 1.0);
             let (w, h) = (lw * s, lh * s);
             let (x, y) = (legend_x, below);
-            let sig = hash_str(LEGEND_SVG, dpi * s);
+            let sig = painter::sig(LEGEND_SVG, dpi * s);
             if self.legend.as_ref().is_none_or(|(sg, _)| *sg != sig) {
                 self.legend = Some((sig, Layer { id: next_id(), pm: rasterize(&text::svg_options(), LEGEND_SVG, dpi * s), x, y, w, h }));
             }
@@ -2016,7 +2009,7 @@ impl Engine {
         if self.find_open {
             let (svg, w, h, hs) = self.find_svg();
             let (x, y) = (find_x, below);
-            let sig = hash_str(&svg, dpi);
+            let sig = painter::sig(&svg, dpi);
             if self.find_card.as_ref().is_none_or(|(sg, _)| *sg != sig) {
                 self.find_card = Some((sig, Layer { id: next_id(), pm: rasterize(&text::svg_options(), &svg, dpi), x, y, w, h }));
             }
@@ -2037,7 +2030,7 @@ impl Engine {
             let (isvg, mut ihits, ibody) = self.insp_svg(insp_a);
             self.body_slice(0, &ibody, dpi);
             self.bar(0, &ibody, insp_a, &mut ihits);
-            let sig = hash_str(&isvg, dpi);
+            let sig = painter::sig(&isvg, dpi);
             // the first at once, then on the painter's threads (the old one shows meanwhile)
             if self.insp.is_none() {
                 self.insp = Some((sig, Layer { id: next_id(), pm: rasterize(&text::svg_options(), &isvg, dpi), x: insp_a[0], y: insp_a[1], w: insp_a[2], h: insp_a[3] }));
@@ -2057,7 +2050,7 @@ impl Engine {
             let (bsvg, mut bhits, bbody) = self.bottom_svg(bottom_a);
             self.body_slice(1, &bbody, dpi);
             self.bar(1, &bbody, bottom_a, &mut bhits);
-            let sig = hash_str(&bsvg, dpi);
+            let sig = painter::sig(&bsvg, dpi);
             if self.bottom.is_none() {
                 self.bottom = Some((sig, Layer { id: next_id(), pm: rasterize(&text::svg_options(), &bsvg, dpi), x: bottom_a[0], y: bottom_a[1], w: bottom_a[2], h: bottom_a[3] }));
             } else if self.bottom.as_ref().is_some_and(|(s, _)| *s != sig) && self.bottom_want.map(|w| w.0) != Some(sig) {
@@ -2078,7 +2071,7 @@ impl Engine {
         let vs = self.view.s;
         // (drawn again with the graph: its ports may have changed)
         let shown_sig = self.graph_layer.as_ref().map(|(s, _, _)| *s);
-        let hover = self.port_hover.map(|h| (h, hash_str(&format!("{h:?}{shown_sig:?}{:?}", self.lay.pos.get(&self.model.port_node.get(&h.0).copied().unwrap_or(0))), vs)));
+        let hover = self.port_hover.map(|h| (h, painter::sig(format!("{h:?}{shown_sig:?}{:?}", self.lay.pos.get(&self.model.port_node.get(&h.0).copied().unwrap_or(0))), vs)));
         self.hover_pic = match (hover, self.hover_pic.take()) {
             (Some((_, sig)), Some(p)) if p.0 == sig => Some(p),
             (Some((h, sig)), _) => self.port_frame(h.0, h.1, vs).map(|l| (sig, l)),
@@ -2138,7 +2131,7 @@ impl Engine {
     /// threads (the old one shows meanwhile).
     fn body_slice(&mut self, i: usize, b: &Scrolled, dpi: f64) {
         self.body_at[i] = (b.top, b.by);
-        let what = hash_str(&b.body, dpi + b.w * 1e-6);
+        let what = painter::sig(&b.body, dpi + b.w * 1e-6);
         let (v0, v1) = ((b.top - b.by).max(0.0), (b.top - b.by + b.view_h).min(b.content).max(0.0));
         let covers = |s0: f64, sh: f64| s0 <= v0 + 0.5 && s0 + sh >= v1 - 0.5;
         let body = &mut self.bodies[i];
@@ -2152,7 +2145,7 @@ impl Engine {
         let s0 = (v0 - b.view_h * 0.5).max(0.0).floor();
         let sh = (b.view_h * 2.0).min(b.content - s0).max(1.0).ceil();
         let svg = format!(r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{sh}" viewBox="0 {s0} {w} {sh}" font-family="Noto Sans Mono">{}</svg>"##, b.body, w = b.w);
-        let sig = hash_str(&svg, dpi);
+        let sig = painter::sig(&svg, dpi);
         if body.layer.is_none() {
             body.layer = Some((what, s0, Layer { id: next_id(), pm: rasterize(&text::svg_options(), &svg, dpi), x: 0.0, y: 0.0, w: b.w, h: sh }));
             body.want = None;
@@ -2196,7 +2189,9 @@ impl Engine {
     fn server_rows(&self) -> Vec<(&'static str, String, &'static str)> {
         let m = &self.model;
         let ports: usize = m.nodes.iter().map(|n| n.ins.len() + n.outs.len()).sum();
-        let get = |name: &str, key: &str| self.meta.iter().find(|((id, s, k), _)| *s == 0 && k == key && self.meta_name(*id) == name).map(|(_, (_, v))| v.clone());
+        // (the "settings" metadata found once, then each key straight from the map)
+        let settings = self.objects.iter().find(|o| o.0 == "Metadata" && o.2 == "settings").map(|o| o.1);
+        let get = |_: &str, key: &str| settings.and_then(|id| self.meta.get(&(id, 0, key.to_owned()))).map(|(_, v)| v.clone());
         let rate = get("settings", "clock.rate").unwrap_or_else(|| "?".into());
         let allowed = get("settings", "clock.allowed-rates").unwrap_or_default();
         let q = get("settings", "clock.quantum").unwrap_or_else(|| "?".into());
@@ -2508,7 +2503,7 @@ impl Engine {
                             heading(&mut body, &mut y, "THIS NODE");
                         }
                         chart(&mut body, &mut y, self.hist.get(&id), "B/Q", false);
-                        let per = g.map_or(0.0, |g| g.period_ns());
+                        let per = g.map_or(0.0, Group::period_ns);
                         let r: Vec<(&str, String)> = match (t.filter(|_| running), g) {
                             (Some(t), Some(_)) => vec![
                                 ("WAIT", format!("{:.1} µs · peak {:.1}", t.wait_ns as f64 / 1000.0, t.wait_max_ns as f64 / 1000.0)),
@@ -2750,7 +2745,7 @@ impl Engine {
         let _ = write!(
             head,
             r##"<rect x="{rx}" y="4" width="{rw}" height="24" rx="4" fill="#2a2b2e" stroke="#0b0b0c"/>{}<text x="{}" y="20" font-family="Noto Sans" font-weight="bold" font-size="10" letter-spacing=".5" fill="#e6e7e8">SAVE REPORT</text>"##,
-            key_icon(rx, 4.0, super::panel::icon(super::panel::Key::Save)),
+            key_icon(rx, 4.0, panel::icon(panel::Key::Save)),
             rx + KEY_TEXT
         );
         hits.push((Hit::Report, [a[0] + rx, a[1] + 4.0, rw, 24.0]));
@@ -3074,7 +3069,7 @@ impl Engine {
 
     // ---------------- input ----------------
 
-    /// A press at window pixel `p`: a click on the strip, inspector or tabs does its thing; in the
+    /// A press at window pixel `p`: a click on the overlay's keys, a card, the inspector or the tabs does its thing; in the
     /// graph it may become a pan.
     pub fn press(&mut self, p: (f64, f64), size: (u32, u32), dpi: f64) -> Option<Action> {
         let (lx, ly) = (p.0 / dpi, p.1 / dpi);
@@ -3104,13 +3099,8 @@ impl Engine {
                 Hit::Close => self.select(None),
                 Hit::Desk(key) => return Some(Action::Desk(key)),
                 Hit::Report => return Some(Action::Report),
-                Hit::Bottom => self.bottom_shut = !self.bottom_shut,
-                Hit::Legend => {
-                    self.legend_open = !self.legend_open;
-                    if self.legend_open {
-                        self.find_open = false;
-                    }
-                }
+                Hit::Bottom => self.toggle_bottom(),
+                Hit::Legend => self.toggle_legend(),
                 Hit::Find => self.set_find(!self.find_open),
                 Hit::FindStep(d) => self.find_step(d),
                 Hit::LegendWin => {}
@@ -3381,6 +3371,12 @@ impl Engine {
         self.reveal = true;
     }
 
+    /// Another object chosen (a device: a card that is off), its details open.
+    pub fn show_object(&mut self, id: u32) {
+        self.select(Some(Sel::Obj(id)));
+        self.reveal = true;
+    }
+
     /// Escape: closes the legend if it is open, else drops the selection (which closes the
     /// inspector).
     pub fn deselect(&mut self) {
@@ -3433,7 +3429,7 @@ impl Engine {
         Some(Layer { id: next_id(), pm: rasterize(&text::svg_options(), &svg, scale), x: x0, y: y0, w: pw, h: ph })
     }
 
-    /// Whether window pixel `p` is over the graph itself (not over a panel or chip on it).
+    /// Whether window pixel `p` is over the graph itself (not over a panel, key or card on it).
     pub fn over_graph(&self, p: (f64, f64), size: (u32, u32), dpi: f64) -> bool {
         let (lx, ly) = (p.0 / dpi, p.1 / dpi);
         self.in_graph(p, (size.0 as f64, size.1 as f64), dpi) && !self.hits.iter().any(|(_, [x, y, w, h])| lx >= *x && lx <= x + w && ly >= *y && ly <= y + h)
@@ -3615,7 +3611,7 @@ impl Engine {
     }
 
     /// For the design (`--render … engine specimen`): the graph four times, with nothing, a node,
-    /// a port and a link selected, under the overlay's chips and legend, as one SVG.
+    /// a port and a link selected, under the overlay's keys, as one SVG.
     pub fn specimen(&mut self, node: u32, port: u32, link: u32) -> String {
         self.show = [true; 4];
         self.bottom_shut = true;
@@ -3643,7 +3639,7 @@ impl Engine {
     /// For pictures (`--render … engine`): selects the node named so, and opens these tabs.
     pub fn demo(&mut self, node: Option<&str>, tab: Option<&str>, itab: Option<&str>, shut: Option<&str>) {
         let shut = shut.unwrap_or_default();
-        self.bottom_shut = shut.contains("bottom");
+        self.bottom_shut = shut == "bottom";
         if let Some(name) = node
             && let Some(n) = self.model.nodes.iter().find(|n| n.name == name || n.desc == name)
         {
@@ -3737,12 +3733,12 @@ struct Num {
     key: String,
     x: f64,
     y: f64,
-    end: bool,
     text: String,
-    size: f64,
-    fill: &'static str,
-    alpha: f64,
 }
+
+/// A group's load under its band: its size and colour.
+const NUM_SIZE: f64 = 12.0;
+const NUM_FILL: &str = "#7d8085";
 
 /// TOP's columns in a table `w` wide: (name, x, right-aligned); a column left out has no name.
 /// When narrow, the columns that say least go first, from the right; S, ID, BUSY, ERR and NAME
@@ -3869,11 +3865,6 @@ fn pixel(rgba: [u8; 4]) -> Layer {
     Layer { id: next_id(), pm: Some(pm), x: 0.0, y: 0.0, w: 1.0, h: 1.0 }
 }
 
-fn hash_str(s: &str, dpi: f64) -> u64 {
-    let mut h = std::hash::DefaultHasher::new();
-    std::hash::Hash::hash(&(s, dpi.to_bits()), &mut h);
-    std::hash::Hasher::finish(&h)
-}
 
 fn port_name(n: &ENode, port: u32) -> String {
     n.ins.iter().chain(&n.outs).find(|p| p.id == port).map_or_else(|| port.to_string(), |p| p.name.clone())
@@ -3939,7 +3930,7 @@ impl Redact {
     /// remove the name everywhere. A node's own name may be a song's, so it doesn't count.
     fn private(p: &Props) -> Vec<String> {
         const KIND: [&str; 5] = ["media.class", "media.type", "media.category", "media.role", "media.software"];
-        let ours = p.get("node.name").is_some_and(|n| n.starts_with(crate::pw::METER_PREFIX) || n == crate::pw::CUE_NODE);
+        let ours = p.get("node.name").is_some_and(|n| n.starts_with(METER_PREFIX) || n == CUE_NODE);
         if ours {
             return Vec::new();
         }
@@ -4383,10 +4374,10 @@ mod tests {
     #[test]
     #[ignore]
     fn layout_time() {
-        let t = std::time::Instant::now();
+        let t = Instant::now();
         let (e, lay, nlinks, _) = busy();
         let built = t.elapsed();
-        let t = std::time::Instant::now();
+        let t = Instant::now();
         let lay2 = e.layout();
         println!("build+layout {built:?}, layout {:?}, {} nodes, {nlinks} links", t.elapsed(), lay.pos.len());
         let ls: Vec<&ELink> = e.model.links.iter().collect();
@@ -4408,7 +4399,7 @@ mod tests {
                 e.sprites((1600, 1000), 1.0, "0");
             }
             let n = 200;
-            let t = std::time::Instant::now();
+            let t = Instant::now();
             let mut parts: HashMap<&str, Duration> = HashMap::new();
             for _ in 0..n {
                 e.sprites((1600, 1000), 1.0, "0");
@@ -4429,7 +4420,7 @@ mod tests {
     fn build_time() {
         let (mut e, _, _, g) = busy();
         let n = 200;
-        let t = std::time::Instant::now();
+        let t = Instant::now();
         for _ in 0..n {
             e.dirty = true;
             e.build(&g, &[], &HashSet::new(), &HashMap::new());

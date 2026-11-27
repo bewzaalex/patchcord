@@ -44,7 +44,7 @@ fn pool() -> &'static Pool {
         let (tx, rx) = channel::<Job>();
         let rx = Arc::new(Mutex::new(rx));
         let newest: Arc<Mutex<HashMap<u64, u64>>> = Arc::default();
-        let n = std::thread::available_parallelism().map_or(2, |n| n.get()).clamp(1, 4);
+        let n = std::thread::available_parallelism().map_or(2, std::num::NonZero::get).clamp(1, 4);
         for i in 0..n {
             let (rx, newest) = (rx.clone(), newest.clone());
             let _ = std::thread::Builder::new().name(format!("patchcord-paint-{i}")).spawn(move || {

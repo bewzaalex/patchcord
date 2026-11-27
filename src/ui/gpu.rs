@@ -87,7 +87,6 @@ pub struct Gpu {
 
 impl Gpu {
     pub fn new(window: Arc<Window>, display: OwnedDisplayHandle) -> Result<Self, String> {
-        let transparent = false;
         // Vulkan, Metal or DX12 first; OpenGL only where none of those works (old GPUs, some
         // virtual machines), since starting it as well costs memory
         let display = Box::new(display);
@@ -103,10 +102,6 @@ impl Gpu {
         .map_err(|e| format!("graphics device: {e}"))?;
 
         let caps = surface.get_capabilities(&adapter);
-        // keep the alpha channel for the compositor; premultiplied is what the layers hold
-        let alpha = [wgpu::CompositeAlphaMode::PreMultiplied, wgpu::CompositeAlphaMode::Inherit]
-            .into_iter()
-            .find(|m| transparent && caps.alpha_modes.contains(m));
         // 8 bits per channel: some systems offer a 10-bit format first, with only 2 bits of alpha
         let format = [wgpu::TextureFormat::Bgra8Unorm, wgpu::TextureFormat::Rgba8Unorm]
             .into_iter()
@@ -122,7 +117,8 @@ impl Gpu {
             height: size.height.max(1),
             present_mode,
             desired_maximum_frame_latency: 2,
-            alpha_mode: alpha.unwrap_or(caps.alpha_modes[0]),
+            // (an opaque window: the surface's first alpha mode, the background cleared to BG)
+            alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
             color_space: Default::default(),
         };
@@ -211,7 +207,7 @@ impl Gpu {
             vertices,
             mesh_vertices,
             textures: HashMap::new(),
-            clear: if alpha.is_some() { wgpu::Color::TRANSPARENT } else { BG },
+            clear: BG,
             info,
         })
     }
@@ -402,5 +398,5 @@ fn buffer(device: &wgpu::Device, bytes: usize) -> wgpu::Buffer {
 
 fn floats(v: &[f32]) -> &[u8] {
     // SAFETY: f32 has no padding, and every byte pattern is a valid u8
-    unsafe { std::slice::from_raw_parts(v.as_ptr().cast::<u8>(), std::mem::size_of_val(v)) }
+    unsafe { std::slice::from_raw_parts(v.as_ptr().cast::<u8>(), size_of_val(v)) }
 }

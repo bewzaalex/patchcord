@@ -147,7 +147,7 @@ what goes out, after its volume or gain).
 | OUTPUT 1, OUTPUT 2… | an app with several streams of a kind (Teams in a call records on two and plays on six) is one device with a numbered frame for each, each with its own controls and meter |
 | Units | up to four frames side by side; more make the device two or three units high, the frames spread evenly (eight: two units of four), inputs first and outputs last, vents where a unit has nothing to show |
 | Colours (K) | a frame's band and outline in its block's kind, as in ENGINE: a sink teal, a source blue, a playback stream brown, a recording stream green, MIDI plum, a duplex block magenta, a node without a class sand; or plain frames. A jack's ring is what its port is for, either way: a sink's input teal, a source's output blue, a monitor violet, any other input green and output brown, MIDI plum, a port of a format Patchcord doesn't know sand |
-| Paint | who owns the device: hardware navy, a program black, a node of PipeWire's or WirePlumber's own (a MIDI bridge) graphite green |
+| Paint | who owns the device: hardware navy, a program black, a node of PipeWire's or WirePlumber's own (a MIDI bridge) dark olive |
 | HIDE key | the struck-through eye at the left of the keys under a device's screen, on every device (or H over it), hides a device without cords; a device with cords has no HIDE key (pull them out first, or press H over it to be told so). Hidden devices stay hidden after a restart and come back by themselves when something connects to them |
 | HIDDEN key | the eye on the top panel (or H over the desk), with how many are hidden: click one to show it again. It also lists, dimmed and marked SYSTEM, what Patchcord always leaves out: other programs' level meters and its own, and the plumbing behind a Bluetooth headset's MIC |
 
@@ -214,7 +214,7 @@ group by name, A to Z (the defaults too: nothing jumps when they change).
 
 | | |
 | --- | --- |
-| Module | one strip in a frame of its kind's colour: a device's input or output, or an app's. Its band says whose it is and which frame; a click on the frame's name opens ENGINE (the status bar says its #id). The keys are in titled groups: PLAY ON / RECORD FROM on an app, SETUP on a device; then VOLUME (GAIN). All modules are as tall as the tallest; in a low window the faders become the rack's knobs. A card that is off has a grey band saying OFF and its PROFILE |
+| Module | one strip in a frame of its kind's colour: a device's input or output, or an app's. Its band says whose it is and which frame; a click on the device's name opens ENGINE with the frame's block (the status bar says its #id), or, on a card that is off, with the card's device. The keys are in titled groups: PLAY ON / RECORD FROM on an app, SETUP on a device; then VOLUME (GAIN). All modules are as tall as the tallest; in a low window the faders become the rack's knobs. A card that is off has a grey band saying OFF and its PROFILE |
 | PLAY ON / RECORD FROM | on an app's strip, a key for each output (input) shown, its red LED lit where the app plays (records). Click to link it there or not: as many at once as you like. Ctrl+Z undoes it |
 | MAIN | on an output's (input's) strip, lit amber on the default: make it the default, where new apps play (record) |
 | ALL HERE | every app that plays (records) moves here, and it becomes the default |
@@ -255,8 +255,10 @@ rack, with a few cords added to the picture only (`demo`, for screenshots), ever
 split, the pointer on a jack, a cord's end in the hand, a drop-down or a card's list open, only
 some devices, or at a given size (`PATCHCORD_SCALE` sets the scale, 1.5 by default).
 `patchcord --render out.png engine [select=NODE] [tab=server|top|issues|objects|metadata|events]
-[itab=info|conn|props|params|timing] [shut=bottom] [legend] [size=WxH]` draws ENGINE the same
-way, after letting PipeWire's profiler run for two seconds; MAC addresses in names are masked.
+[itab=info|conn|props|params|timing] [shut=bottom] [legend] [size=WxH] [report=FILE]` draws ENGINE
+the same way, after letting PipeWire's profiler run for two seconds (`report` also writes what SAVE
+REPORT would); MAC addresses in names are masked. `patchcord --render out.png engine specimen`
+draws every kind of block, link and band ENGINE draws, from a made-up graph.
 `patchcord --render out.png mixer [size=WxH]` draws MIXER, its meters measuring for a second.
 `patchcord --record DIR` plays a short scripted session on the current graph and saves it as
 frames for the README's animation; neither changes anything in PipeWire. `PATCHCORD_DEBUG=1`

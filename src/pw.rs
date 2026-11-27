@@ -112,7 +112,6 @@ pub struct DriverTiming {
     pub rate: u32,
     /// CPU load of the cycle, 0…1 (the profiler's fast average)
     pub load: f32,
-    pub xruns: i32,
     pub end_ns: i64,
     pub end_max_ns: i64,
     pub followers: Vec<NodeTiming>,
@@ -148,7 +147,7 @@ impl DriverTiming {
         }
         self.end_ns += d.end_ns;
         self.end_max_ns = self.end_max_ns.max(d.end_ns);
-        (self.quantum, self.rate, self.load, self.xruns) = (d.quantum, d.rate, d.load, d.xruns);
+        (self.quantum, self.rate, self.load) = (d.quantum, d.rate, d.load);
     }
 
     fn averaged(&self) -> DriverTiming {
@@ -424,6 +423,8 @@ fn mix_param(volumes: Vec<f32>, mute: bool) -> Option<Vec<u8>> {
 struct Cue {
     /// the links into its recording side (dropped first)
     links: HashMap<(u32, u32), pw::link::Link>,
+    /// one of its links was taken away: when to make it again
+    relink: Option<Instant>,
     streams: Option<CueStreams>,
     /// its recording side's node and input ports (by channel: 0 left, 1 right)
     node: Option<u32>,
@@ -639,6 +640,22 @@ impl Cue {
     }
 }
 
+/// Binds the profiler `id` (its protocol comes with its module, loaded into our context once, as
+/// pw-top does it).
+fn start_profiler(context: &pw::context::ContextRc, registry: &pw::registry::RegistryRc, id: u32, loaded: &std::cell::Cell<bool>, events: &Sender) -> Option<Profiler> {
+    if !loaded.get() {
+        let name = std::ffi::CString::new("libpipewire-module-profiler").expect("name");
+        // SAFETY: the context is alive and the name outlives the call
+        let m = unsafe { pw::sys::pw_context_load_module(context.as_raw_ptr(), name.as_ptr(), std::ptr::null(), std::ptr::null_mut()) };
+        loaded.set(!m.is_null());
+    }
+    let p = Profiler::bind(registry, id);
+    if p.is_none() {
+        events.send(Event::Error("cannot start the profiler".into()));
+    }
+    p
+}
+
 /// A POD object as bytes, to send.
 fn pod_bytes(obj: spa::pod::Object) -> Option<Vec<u8>> {
     Some(spa::pod::serialize::PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &spa::pod::Value::Object(obj)).ok()?.0.into_inner())
@@ -725,9 +742,10 @@ type MeterStream = (pw::stream::StreamRc, pw::stream::StreamListener<()>, Rc<Ref
 
 /// A signal meter: a capture stream, its ports once they exist, and the passive links to them.
 struct Meter {
-    /// the links to the ports, and which ports (global ids) they were made to; dropped before
-    /// the stream, whose going takes its links with it on the server
-    links: Vec<pw::link::Link>,
+    /// the links to the ports, by (the port measured, its own port), and which ports (global ids)
+    /// they were made to; dropped before the stream, whose going takes its links with it on the
+    /// server (one made again replaces the one taken away)
+    links: HashMap<(u32, u32), pw::link::Link>,
     linked: Vec<u32>,
     /// (the listener before the stream: see `Bound`)
     _listener: pw::stream::StreamListener<()>,
@@ -756,7 +774,7 @@ impl Meter {
         self.linked = now.clone();
         for (&(tn, tp), &mine) in self.targets.iter().zip(&now) {
             if let Ok(l) = make_link(core, (tn, tp), (me, mine), Linked::Passive) {
-                self.links.push(l);
+                self.links.insert((tp, mine), l);
             }
         }
     }
@@ -773,7 +791,7 @@ impl Meter {
             if !have.values().any(|&(o, i)| o == tp && i == p)
                 && let Ok(l) = make_link(core, (tn, tp), (me, p), Linked::Passive)
             {
-                self.links.push(l);
+                self.links.insert((tp, p), l);
             }
         }
     }
@@ -800,6 +818,10 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
     // the profiler (bound while ENGINE is open) and the nodes whose params ENGINE asked for
     let profiler_id: Rc<std::cell::Cell<Option<u32>>> = Default::default();
     let profiler: Rc<RefCell<Option<Profiler>>> = Default::default();
+    // ENGINE wants the profiler (it may ask before PipeWire has said where it is: it is started
+    // when it comes), and whether its module is loaded into our context yet
+    let want_profiler: Rc<std::cell::Cell<bool>> = Default::default();
+    let profiler_module: Rc<std::cell::Cell<bool>> = Default::default();
     let inspect: Rc<RefCell<std::collections::HashSet<u32>>> = Default::default();
     // every link's output and input port, and every port there is: a meter's link gone is made
     // again while what it measures is there
@@ -821,6 +843,10 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
             let inspect = inspect.clone();
             let link_in = link_in.clone();
             let ports_now = ports_now.clone();
+            let context = context.clone();
+            let profiler = profiler.clone();
+            let want_profiler = want_profiler.clone();
+            let profiler_module = profiler_module.clone();
             move |g| {
                 // every metadata, for ENGINE; the "settings" one (the clock rate and quantum) and
                 // the "default" one (the default output and input) for the panel too
@@ -848,6 +874,9 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                 }
                 if g.type_ == ObjectType::Profiler {
                     profiler_id.set(Some(g.id));
+                    if want_profiler.get() && profiler.borrow().is_none() {
+                        *profiler.borrow_mut() = start_profiler(&context, &registry, g.id, &profiler_module, &events);
+                    }
                 }
                 let kind = match g.type_ {
                     ObjectType::Device => Kind::Device,
@@ -1062,14 +1091,24 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
             let inspect = inspect.clone();
             let link_in = link_in.clone();
             let ports_now = ports_now.clone();
+            let profiler_id = profiler_id.clone();
             move |id| {
                 bound.borrow_mut().remove(&id);
+                if profiler_id.get() == Some(id) {
+                    profiler_id.set(None);
+                }
                 ports_now.borrow_mut().remove(&id);
                 // a link into a meter gone: the meter is linked again (on the next tick, once
                 // what went with it has gone too)
-                if let Some((_, p)) = link_in.borrow_mut().remove(&id) {
+                if let Some((o, p)) = link_in.borrow_mut().remove(&id) {
                     for m in meters.borrow_mut().values_mut().filter(|m| m.ports.values().any(|&q| q == p)) {
                         m.relink = Some(Instant::now() + Duration::from_millis(300));
+                    }
+                    // one into the cue taken away (in ENGINE, by another program): made again, a
+                    // moment later, while it is wanted
+                    let mut c = cue.borrow_mut();
+                    if c.links.remove(&(o, p)).is_some() {
+                        c.relink = Some(Instant::now() + Duration::from_millis(300));
                     }
                 }
                 // (ids come back: a new node at this one isn't inspected)
@@ -1142,11 +1181,8 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
         let cue = cue.clone();
         let core = core.clone();
         let events = events.clone();
-        let stale = stale.clone();
         let bound = bound.clone();
         let profiler = profiler.clone();
-        let ports_now = ports_now.clone();
-        let link_in = link_in.clone();
         move |_| {
             // a meter whose link was taken away: what is missing linked again, while what it
             // measures is there (gone, the rack measures something else, or nothing)
@@ -1163,6 +1199,10 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                 let mut c = cue.borrow_mut();
                 if c.failed.get() && !c.want.is_empty() && c.retried.is_none_or(|t| t.elapsed() > Duration::from_secs(2)) {
                     c.run(&core, &events);
+                }
+                if c.relink.is_some_and(|t| t <= now) {
+                    c.relink = None;
+                    c.reconcile(&core);
                 }
             }
             // each driver's cycles of the last half second, averaged, with their peaks (drivers
@@ -1212,18 +1252,6 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
     let made: RefCell<Vec<(Instant, pw::link::Link)>> = Default::default();
     let _commands = cmds.attach(mainloop.loop_(), {
         let mainloop = mainloop.clone();
-        let core = core.clone();
-        let registry = registry.clone();
-        let meters = meters.clone();
-        let events = events.clone();
-        let bound = bound.clone();
-        let default_md = default_md.clone();
-        let cue = cue.clone();
-        let context = context.clone();
-        let profiler = profiler.clone();
-        let profiler_id = profiler_id.clone();
-        let inspect = inspect.clone();
-        let profiler_module = std::cell::Cell::new(false);
         move |cmd| match cmd {
             Cmd::Link { out_node, out_port, in_node, in_port } => {
                 match make_link(&core, (out_node, out_port), (in_node, in_port), Linked::Lingering) {
@@ -1240,7 +1268,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
             }
             Cmd::Meter { id, ports, channels } => match meter(&core, id, &channels) {
                 Ok((stream, listener, peaks)) => {
-                    meters.borrow_mut().insert(id, Meter { _stream: stream, _listener: listener, targets: ports, node: None, ports: BTreeMap::new(), links: Vec::new(), linked: Vec::new(), peaks, relink: None });
+                    meters.borrow_mut().insert(id, Meter { _stream: stream, _listener: listener, targets: ports, node: None, ports: BTreeMap::new(), links: HashMap::new(), linked: Vec::new(), peaks, relink: None });
                 }
                 Err(e) => events.send(Event::Error(format!("cannot start meter: {e}"))),
             },
@@ -1311,24 +1339,14 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                 c.run(&core, &events);
             }
             Cmd::Profile(on) => {
+                want_profiler.set(on);
                 let mut p = profiler.borrow_mut();
                 if !on {
                     *p = None;
                 } else if p.is_none()
                     && let Some(id) = profiler_id.get()
                 {
-                    // the profiler's protocol comes with its module, loaded into our context
-                    // once (as pw-top does)
-                    if !profiler_module.get() {
-                        let name = std::ffi::CString::new("libpipewire-module-profiler").expect("name");
-                        // SAFETY: the context is alive and the name outlives the call
-                        let m = unsafe { pw::sys::pw_context_load_module(context.as_raw_ptr(), name.as_ptr(), std::ptr::null(), std::ptr::null_mut()) };
-                        profiler_module.set(!m.is_null());
-                    }
-                    *p = Profiler::bind(&registry, id);
-                    if p.is_none() {
-                        events.send(Event::Error("cannot start the profiler".into()));
-                    }
+                    *p = start_profiler(&context, &registry, id, &profiler_module, &events);
                 }
             }
             Cmd::Params(id) => {
@@ -1360,7 +1378,7 @@ struct Profiler {
 
 /// Each driver's cycles since the last report: when the last came, their sum, and whether the
 /// sum is still being added to (false: the next cycle starts a new one).
-type ProfileLatest = RefCell<BTreeMap<u32, (std::time::Instant, DriverTiming, bool)>>;
+type ProfileLatest = RefCell<BTreeMap<u32, (Instant, DriverTiming, bool)>>;
 
 impl Profiler {
     fn bind(registry: &pw::registry::RegistryRc, id: u32) -> Option<Self> {
@@ -1467,7 +1485,7 @@ fn timings_of(pod: &spa::pod::Pod) -> Vec<DriverTiming> {
                         Some(Value::Double(x)) => *x as f32,
                         _ => 0.0,
                     };
-                    d.xruns = int(f.get(4)) as i32;
+                    // (its xruns are counted per node: ENGINE adds them up)
                 }
                 spa::sys::SPA_PROFILER_clock => {
                     if let Some(Value::Fraction(r)) = f.get(4) {
@@ -1586,8 +1604,8 @@ fn choice_text(c: &spa::pod::ChoiceValue, enums: *const spa::sys::spa_type_info)
             E::None(v) => v.to_string(),
             E::Range { default, min, max } => format!("{default} ({min}…{max})"),
             E::Step { default, min, max, step } => format!("{default} ({min}…{max} by {step})"),
-            E::Enum { default, alternatives } => format!("{default} (one of {})", alternatives.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ")),
-            E::Flags { default, flags } => format!("{default} (flags {})", flags.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ")),
+            E::Enum { default, alternatives } => format!("{default} (one of {})", alternatives.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")),
+            E::Flags { default, flags } => format!("{default} (flags {})", flags.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")),
         }
     }
     let id = |i: &spa::utils::Id| type_name(enums, i.0).unwrap_or_else(|| i.0.to_string());
