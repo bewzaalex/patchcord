@@ -73,6 +73,55 @@ pub struct Group {
     /// its label too (OUTPUT 1, OUTPUT 2…); 0 for an app's only one, and for everything else.
     /// Each is a frame of its own with its own controls and meter
     pub stream: usize,
+    /// its node
+    pub node: u32,
+    /// a surround node's part (ADR 0025): MASTER (its own volume and mute, no jacks), FRONT,
+    /// REAR, CENTER, LFE, AUX0…; a frame of its own. None: the node's one frame
+    pub part: Option<String>,
+}
+
+impl Group {
+    /// A part of a surround node with a volume of its own but no MUTE (PipeWire mutes only the
+    /// node: MASTER does).
+    pub fn channels_part(&self) -> bool {
+        self.part.as_deref().is_some_and(|p| p != MASTER)
+    }
+}
+
+/// A surround node's frame with its own volume and mute (ADR 0025).
+pub const MASTER: &str = "MASTER";
+
+/// Pairs of positions a surround node's channels go in, as stereo frames, and their names
+/// (ADR 0025; SPA's positions, spa/param/audio/raw.h).
+const PAIRS: [(&str, &str, &str); 7] =
+    [("FL", "FR", "FRONT"), ("RL", "RR", "REAR"), ("SL", "SR", "SIDE"), ("FLC", "FRC", "FRONT CENTER"), ("TFL", "TFR", "TOP FRONT"), ("TRL", "TRR", "TOP REAR"), ("FLW", "FRW", "WIDE")];
+
+/// A channel without a partner, as its mono frame is named.
+fn mono_part(c: &str) -> String {
+    match c {
+        "FC" => "CENTER".into(),
+        "RC" => "REAR CENTER".into(),
+        "TC" => "TOP CENTER".into(),
+        "" => "MONO".into(),
+        c => c.into(),
+    }
+}
+
+/// A surround node's parts from its channels in their order: a pair whose both channels it has,
+/// else the channel alone. (name, its channels)
+fn parts_of(channels: &[String]) -> Vec<(String, Vec<String>)> {
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    let has = |c: &str| channels.iter().any(|x| x == c);
+    for c in channels {
+        if out.iter().any(|(_, cs)| cs.contains(c)) {
+            continue;
+        }
+        match PAIRS.iter().find(|(l, r, _)| l == c || r == c) {
+            Some((l, r, name)) if has(l) && has(r) => out.push(((*name).to_owned(), vec![(*l).to_owned(), (*r).to_owned()])),
+            _ => out.push((mono_part(c), vec![c.clone()])),
+        }
+    }
+    out
 }
 
 /// One of the ports a card's output or input can use.
@@ -144,7 +193,7 @@ pub const VOL_FLOOR: f32 = 1e-6;
 /// An app stream's volume (or, recording, its gain): PipeWire keeps one linear gain per channel;
 /// Patchcord shows them as pavucontrol does, as a volume (the cube root: 100% is 0 dB) and a
 /// balance between L and R.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct Mix {
     pub node: u32,
     pub volumes: Vec<f32>,
@@ -153,6 +202,12 @@ pub struct Mix {
     pub gain: bool,
     /// a card's output or input: its volume is on the port in use, not on the node
     pub route: Option<RouteRef>,
+    /// a surround node's part (ADR 0025): which of the node's channels `volumes` are (empty: all
+    /// of them), and all the node's channel volumes, which a part's change is written into
+    pub chans: Vec<usize>,
+    pub all: Vec<f32>,
+    /// the node's own volume (`volume`, 1 when it says none), on every channel beside its own
+    pub master: f32,
 }
 
 impl Mix {
@@ -178,6 +233,20 @@ impl Mix {
         } else {
             1.0 - a / b
         }
+    }
+
+    /// All the node's channel volumes with this part's set to `mine` (a whole node's: `mine`).
+    pub fn whole(&self, mine: &[f32]) -> Vec<f32> {
+        if self.chans.is_empty() {
+            return mine.to_vec();
+        }
+        let mut all = self.all.clone();
+        for (k, c) in self.chans.iter().enumerate() {
+            if let (Some(a), Some(v)) = (all.get_mut(*c), mine.get(k)) {
+                *a = *v;
+            }
+        }
+        all
     }
 
     /// The channel volumes (linear) for a volume and balance: the far side at the volume, the
@@ -296,6 +365,8 @@ pub struct Graph {
     profiles: HashMap<u32, (Vec<Profile>, Option<u32>)>,
     /// each app stream's channel volumes and mute, by node
     mix: HashMap<u32, (Vec<f32>, bool)>,
+    /// each node's own volume (`volume`), where it said one
+    master: HashMap<u32, f32>,
     /// each card's ports, and the ones in use (with the card's real volumes), by device
     routes: HashMap<u32, (Vec<Route>, Vec<Route>)>,
     pub synced: bool,
@@ -344,9 +415,11 @@ impl Graph {
                 let new = (volumes.clone(), *mute);
                 self.mix.insert(*id, new.clone()) != Some(new)
             }
+            Event::NodeVolume { id, volume } => self.master.insert(*id, *volume) != Some(*volume),
             Event::Removed(id) => {
                 self.born.remove(id);
                 self.mix.remove(id);
+                self.master.remove(id);
                 self.routes.remove(id);
                 self.profiles.remove(id);
                 self.info.remove(id);
@@ -951,7 +1024,7 @@ impl Graph {
                 groups.push(self.group(node, dir, mon, client, ps));
             }
         }
-        groups
+        self.by_position(groups)
     }
 
     /// One frame's group: a node's ports one way (of one client, on a MIDI bridge).
@@ -975,12 +1048,13 @@ impl Graph {
         let gain = dir == Dir::In && stream || dir == Dir::Out && device;
         // a card keeps it on its port in use; a virtual device (and an app) on the node
         let route = if audio && device { self.route_of(np, dir) } else { None };
+        let master = self.master.get(&node).copied().unwrap_or(1.0);
         let mix = if !audio || !(stream || device) {
             None
         } else if let Some((r, active)) = &route {
-            active.volumes.clone().map(|volumes| Mix { node, volumes, mute: active.mute, gain, route: Some(*r) })
+            active.volumes.clone().map(|volumes| Mix { node, volumes, mute: active.mute, gain, route: Some(*r), master, ..Default::default() })
         } else {
-            self.mix.get(&node).map(|(volumes, mute)| Mix { node, volumes: volumes.clone(), mute: *mute, gain, route: None })
+            self.mix.get(&node).map(|(volumes, mute)| Mix { node, volumes: volumes.clone(), mute: *mute, gain, route: None, master, ..Default::default() })
         };
         // a card's ports for it; with none in use (HDMI with nothing plugged in), all it has
         let ports_to = match &route {
@@ -989,7 +1063,55 @@ impl Graph {
             None => Vec::new(),
         };
         let nick = some(np.get("node.nick")).cloned();
-        Group { label, client, nick, role, kind: block_kind(class), dir, ports: ps, stereo, meter, mix, ports_to, stream: 0 }
+        Group { label, client, nick, role, kind: block_kind(class), dir, ports: ps, stereo, meter, mix, ports_to, stream: 0, node, part: None }
+    }
+
+    /// A node of more than two audio channels with a volume each (ADR 0025): its groups as frames
+    /// by its channels' positions. MASTER (its own volume and mute, the port it uses), then a
+    /// frame a pair (FL + FR FRONT…) or a channel without a partner, each with its jacks both
+    /// ways (a sink's inputs and monitors) and, on the side with the volume, its channels'
+    /// volumes. Any other node: as it was.
+    fn by_position(&self, groups: Vec<Group>) -> Vec<Group> {
+        let Some(v) = groups.iter().position(|g| g.mix.as_ref().is_some_and(|m| g.ports.len() > 2 && m.volumes.len() == g.ports.len() && g.ports.iter().all(|p| p.media == Media::Audio))) else {
+            return groups;
+        };
+        let vg = &groups[v];
+        let mix = vg.mix.clone().unwrap_or_default();
+        let parts = parts_of(&vg.ports.iter().map(|p| p.channel.clone()).collect::<Vec<_>>());
+        let mut out = vec![Group {
+            label: vg.role.to_owned(),
+            client: None,
+            ports: Vec::new(),
+            stereo: false,
+            mix: Some(Mix { volumes: vec![mix.master], ..mix.clone() }),
+            part: Some(MASTER.to_owned()),
+            ..vg.clone()
+        }];
+        // the volume's side first, then the others (a sink's monitors), each by the parts
+        let order = std::iter::once(v).chain((0..groups.len()).filter(|i| *i != v));
+        for gi in order {
+            let g = &groups[gi];
+            // its channels in the volume's parts, then any of its own the volume hasn't
+            let mut mine = parts.clone();
+            for (name, cs) in parts_of(&g.ports.iter().map(|p| p.channel.clone()).collect::<Vec<_>>()) {
+                if !mine.iter().any(|(_, m)| m.iter().any(|c| cs.contains(c))) {
+                    mine.push((name, cs));
+                }
+            }
+            for (name, cs) in mine {
+                let ports: Vec<Port> = cs.iter().filter_map(|c| g.ports.iter().find(|p| p.channel == *c).cloned()).collect();
+                if ports.is_empty() {
+                    continue;
+                }
+                let stereo = ports.len() == 2;
+                let mix = (gi == v).then(|| {
+                    let chans: Vec<usize> = ports.iter().filter_map(|p| g.ports.iter().position(|q| q.id == p.id)).collect();
+                    Mix { volumes: chans.iter().map(|c| mix.volumes[*c]).collect(), chans, all: mix.volumes.clone(), ..mix.clone() }
+                });
+                out.push(Group { label: format!("{} {name}", g.role), ports, stereo, mix, ports_to: Vec::new(), part: Some(name), ..g.clone() });
+            }
+        }
+        out
     }
 }
 
@@ -1201,7 +1323,7 @@ mod tests {
 
     #[test]
     fn volume_and_balance_read_as_in_pavucontrol() {
-        let m = Mix { node: 1, volumes: vec![0.85f32.powi(3), (0.85f32 * 0.6).powi(3)], mute: false, gain: false, route: None };
+        let m = Mix { node: 1, volumes: vec![0.85f32.powi(3), (0.85f32 * 0.6).powi(3)], mute: false, gain: false, route: None, ..Default::default() };
         assert!((m.volume() - 0.85).abs() < 1e-4);
         assert!((m.balance() + 0.4).abs() < 1e-4, "{}", m.balance());
         let v = m.volumes_for(m.volume(), m.balance());
@@ -1214,11 +1336,11 @@ mod tests {
 
     #[test]
     fn the_knobs_zero_is_minus_120_db_and_reads_as_zero() {
-        let m = Mix { node: 1, volumes: vec![1.0, 1.0], mute: false, gain: false, route: None };
+        let m = Mix { node: 1, volumes: vec![1.0, 1.0], mute: false, gain: false, route: None, ..Default::default() };
         // fully down, or one side by the balance: -120 dB, not silence
         assert_eq!(m.volumes_for(0.0, 0.0), vec![VOL_FLOOR; 2]);
         assert_eq!(m.volumes_for(1.0, 1.0), vec![VOL_FLOOR, 1.0]);
-        let down = Mix { volumes: vec![VOL_FLOOR; 2], ..m };
+        let down = Mix { volumes: vec![VOL_FLOOR; 2], ..m.clone() };
         assert_eq!((down.volume(), down.balance()), (0.0, 0.0));
         assert_eq!(volume_text(down.volume()).0, "0%");
         // set to a true 0 elsewhere: also 0

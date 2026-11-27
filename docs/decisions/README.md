@@ -30,3 +30,4 @@ General rules live in [principles](../principles.md). New ADRs start from [the t
 | 0022 | [ISSUES: only what is wrong](0022-issues-only-what-is-wrong.md) | 2026-11-26 |
 | 0023 | [Jacks without the nut](0023-jacks-without-the-nut.md) | 2026-11-26 |
 | 0024 | [The inspector shows PipeWire's data as it is](0024-the-inspector-shows-data-as-it-is.md) | 2026-11-27 |
+| 0025 | [Surround: a node's channels in frames by their positions](0025-surround-frames-by-position.md) | 2026-11-27 |

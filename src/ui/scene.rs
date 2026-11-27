@@ -1145,15 +1145,17 @@ impl Scene {
             // there are none (unmuted, they come again)
             let muted = |gi: Option<usize>| gi.and_then(|gi| d.dev.groups.get(gi)).and_then(|g| g.mix.as_ref()).is_some_and(|m| m.mute);
             for (gi, g) in d.dev.groups.iter().enumerate() {
-                if !face::metered(g) {
+                // (a surround node's MASTER has no ports: its meter shows its parts', below)
+                if !face::metered(g) || g.ports.is_empty() {
                     continue;
                 }
                 let gain = g.mix.as_ref().is_some_and(|m| m.gain);
                 // an output's monitor: the sound before the output's volume, its level shown on that
                 // output (PLAYBACK) too; silent when the output is muted
-                let output = (g.role == "MONITOR")
-                    .then(|| d.dev.groups.iter().position(|o| o.dir == Dir::In && o.mix.is_some() && o.ports.first().map(|p| p.node) == g.ports.first().map(|p| p.node)))
-                    .flatten();
+                let output = face::host(&d.dev, gi);
+                // a surround node's part (ADR 0025): its level on its MASTER too (the loudest
+                // part's), and silent when MASTER is muted
+                let master = g.part.is_some().then(|| d.dev.groups.iter().position(|o| o.node == g.node && o.part.as_deref() == Some(crate::graph::MASTER))).flatten();
                 // what leaves: measured on its own ports (what an app sends, a device's input after
                 // its gain, an output's monitor, a filter's output)
                 if g.dir == Dir::Out {
@@ -1161,11 +1163,11 @@ impl Scene {
                     let targets = g.ports.iter().map(|p| (p.node, p.id)).collect();
                     let channels = g.ports.iter().map(|p| if p.channel.is_empty() { "MONO".to_owned() } else { p.channel.clone() }).collect();
                     let map = (0..g.ports.len()).collect();
-                    let groups = std::iter::once(gi).chain(output).collect();
+                    let groups = std::iter::once(gi).chain(output).chain(master).collect();
                     // an output's monitor is before the output's volume: that volume put on it; anything
                     // else measured after its own (an app's output, a microphone)
                     let vol_of = output;
-                    let mute_of = output.or(g.mix.is_some().then_some(gi));
+                    let mute_of = master.or(output).or(g.mix.is_some().then_some(gi));
                     if muted(mute_of) {
                         continue;
                     }
@@ -1432,8 +1434,11 @@ impl Scene {
                 && let (Some((vol, bal, _)), Some(mx)) = (d.mix(gi), d.dev.groups.get(gi).and_then(|g| g.mix.as_ref()))
             {
                 let lin = mx.volumes_for(vol, bal);
+                // and a surround node's own volume, its MASTER's (ADR 0025)
+                let node = d.dev.groups.get(gi).map(|g| g.node);
+                let master = d.dev.groups.iter().position(|o| Some(o.node) == node && o.part.as_deref() == Some(crate::graph::MASTER)).and_then(|mi| d.mix(mi)).map_or(1.0, |(v, _, _)| v.powi(3) as f32);
                 for (c, v) in ch.iter_mut().enumerate() {
-                    *v *= lin.get(c).or(lin.first()).copied().unwrap_or(1.0);
+                    *v *= lin.get(c).or(lin.first()).copied().unwrap_or(1.0) * master;
                 }
             }
             // muted: silent
@@ -1446,8 +1451,11 @@ impl Scene {
                 ch[1] = ch[0];
             }
             for gi in &m.groups {
+                // a surround node's MASTER: one column, the loudest of all
+                let whole = index.get(m.dev.as_str()).and_then(|&di| self.devs[di].dev.groups.get(*gi)).is_some_and(|g| g.part.as_deref() == Some(crate::graph::MASTER));
+                let (a, b) = if whole { (ch[0].max(ch[1]), ch[0].max(ch[1])) } else { (ch[0], ch[1]) };
                 let t = target.entry((m.dev.as_str(), *gi)).or_default();
-                (t[0], t[1]) = (t[0].max(led(ch[0])), t[1].max(led(ch[1])));
+                (t[0], t[1]) = (t[0].max(led(a)), t[1].max(led(b)));
             }
         }
         let fall = |level: &mut f32, t: f32| {
@@ -2024,12 +2032,45 @@ impl Scene {
         let balance = if g.stereo { balance } else { 0.0 };
         let was = d.mix(gi);
         let volumes = m.volumes_for(volume, balance);
-        // a card keeps it on its port in use (as pavucontrol sets it); an app or a virtual device
-        // on its node
-        self.outbox.push(match m.route {
-            Some(r) => Cmd::SetRoute { device: r.card, index: r.index, route_device: r.device, volumes: Some(volumes), mute: Some(mute), latency_ns: None },
-            None => Cmd::SetMix { node: m.node, volumes, mute },
-        });
+        let route = |volumes: Option<Vec<f32>>, mute: Option<bool>, r: crate::graph::RouteRef| Cmd::SetRoute { device: r.card, index: r.index, route_device: r.device, volumes, mute, latency_ns: None };
+        if g.part.as_deref() == Some(crate::graph::MASTER) {
+            // a surround node's MASTER (ADR 0025): the node's own volume, and its mute (a card's
+            // on its port in use too)
+            let master = volumes.first().copied().unwrap_or(1.0);
+            self.outbox.push(Cmd::SetMix { node: m.node, volumes: Vec::new(), mute, master: Some(master) });
+            if let Some(r) = m.route {
+                self.outbox.push(route(None, Some(mute), r));
+            }
+        } else if g.channels_part() {
+            // one of its parts (FRONT, CENTER…): its channels' volumes, written into all the
+            // node's, with what its other parts were just set to (PipeWire may not have said yet)
+            let mut all = m.all.clone();
+            for (oi, o) in d.dev.groups.iter().enumerate().filter(|(oi, o)| *oi != gi && o.node == g.node && o.channels_part()) {
+                if let (Some(om), Some((at, (v, b, _)))) = (&o.mix, d.mix_local.get(&oi))
+                    && at.elapsed() < MIX_HOLD
+                {
+                    for (k, c) in om.chans.iter().enumerate() {
+                        if let (Some(a), Some(x)) = (all.get_mut(*c), om.volumes_for(*v, *b).get(k)) {
+                            *a = *x;
+                        }
+                    }
+                }
+            }
+            let whole = crate::graph::Mix { all, ..m.clone() }.whole(&volumes);
+            // (its mute is the node's, MASTER's: left as it is)
+            let node_mute = d.dev.groups.iter().position(|o| o.node == g.node && o.part.as_deref() == Some(crate::graph::MASTER)).and_then(|mi| d.mix(mi)).map_or(m.mute, |x| x.2);
+            self.outbox.push(match m.route {
+                Some(r) => route(Some(whole), None, r),
+                None => Cmd::SetMix { node: m.node, volumes: whole, mute: node_mute, master: None },
+            });
+        } else {
+            // a card keeps it on its port in use (as pavucontrol sets it); an app or a virtual
+            // device on its node
+            self.outbox.push(match m.route {
+                Some(r) => route(Some(volumes), Some(mute), r),
+                None => Cmd::SetMix { node: m.node, volumes, mute, master: None },
+            });
+        }
         d.mix_local.insert(gi, (Instant::now(), (volume, balance, mute)));
         // what the hand turns, the LCD says, all the while it turns (told by what changed it
         // flickered between the two as the balance, rounded, changed or didn't)
@@ -2128,10 +2169,11 @@ impl Scene {
         // choice: numbered after the shown ones)
         let all = self.devs.iter().map(|d| &d.dev).chain(&self.hidden_devs);
         for (di, d) in all.enumerate() {
-            let of = |g: &crate::graph::Group| g.mix.as_ref().is_some_and(|m| m.gain != output && (g.dir == Dir::In) == output);
+            // (a surround node once, by its MASTER: its parts are not ends of their own)
+            let of = |g: &crate::graph::Group| !g.channels_part() && g.mix.as_ref().is_some_and(|m| m.gain != output && (g.dir == Dir::In) == output);
             let n = d.groups.iter().filter(|g| of(g)).count();
             for (gi, g) in d.groups.iter().enumerate().filter(|(_, g)| of(g)) {
-                let Some(name) = g.ports.first().and_then(|p| self.graph.node_name(p.node)) else { continue };
+                let Some(name) = self.graph.node_name(g.node) else { continue };
                 let shown = if n > 1 { format!("{} · {}", d.name, face::name(d, gi)) } else { d.name.clone() };
                 v.push((di, gi, name.to_owned(), shown));
             }
@@ -2161,8 +2203,10 @@ impl Scene {
             return ports.iter().map(|p| (p.node, p.id, ch(p))).collect();
         }
         // a device's output (PLAYBACK): what it plays, its monitor (all it gets, mixed)
+        // (a surround node's part: its own part's monitor, ADR 0025)
         let node = ports.first().map(|p| p.node);
-        if let Some(mon) = d.dev.groups.iter().find(|g| g.role == "MONITOR" && g.ports.first().map(|p| p.node) == node) {
+        let part = d.dev.groups.get(j.group).and_then(|g| g.part.clone());
+        if let Some(mon) = d.dev.groups.iter().find(|g| g.role == "MONITOR" && Some(g.node) == node && g.part == part) {
             return mon.ports.iter().map(|p| (p.node, p.id, ch(p))).collect();
         }
         let links = self.graph.links();
@@ -2485,7 +2529,13 @@ impl Scene {
 
     /// A group's ports, as its jacks have them (FL, FR).
     fn group_ports(&self, (di, gi): (usize, usize)) -> Vec<u32> {
-        self.devs.get(di).and_then(|d| d.dev.groups.get(gi)).map(|g| g.ports.iter().map(|p| p.id).collect()).unwrap_or_default()
+        let Some(d) = self.devs.get(di) else { return Vec::new() };
+        let Some(g) = d.dev.groups.get(gi) else { return Vec::new() };
+        // a surround node's MASTER (ADR 0025): all its channels on its volume's side, its parts'
+        if g.part.as_deref() == Some(crate::graph::MASTER) {
+            return d.dev.groups.iter().filter(|o| o.node == g.node && o.dir == g.dir && o.channels_part() && o.mix.is_some()).flat_map(|o| o.ports.iter().map(|p| p.id)).collect();
+        }
+        g.ports.iter().map(|p| p.id).collect()
     }
 
     /// The PipeWire links from group `out`'s ports into group `inp`'s.
@@ -3105,13 +3155,15 @@ fn prepare_dev(d: &mut DevView, n: usize, c: &DevCtx, inbox: &mut painter::Inbox
     // a card's profile (and codec), scrolling when long; else what it carries: a stereo pair, one
     // channel, or as many channels as its widest frame has when they don't say they're L and R
     // (a JACK app's out1, out2)
-    let channels = d.dev.groups.iter().map(|g| g.ports.iter().filter(|p| p.media == Media::Audio).count()).max().unwrap_or(0);
+    // (a surround node's: all its channels, not its parts', ADR 0025)
+    let channels = d.dev.groups.iter().map(|g| g.ports.iter().filter(|p| p.media == Media::Audio).count().max(g.mix.as_ref().map_or(0, |m| m.all.len()))).max().unwrap_or(0);
     let carries = if let Some(a) = above {
         a
     } else {
         match &d.dev.card {
             Some(card) => face::marquee(&card.summary(), c.ms),
             None if d.dev.groups.iter().any(|g| g.ports.iter().any(|p| p.media == Media::Midi)) => "MIDI".to_owned(),
+            None if channels > 2 => format!("{channels} CH"),
             None if d.dev.groups.iter().any(|g| g.stereo) => "STEREO".to_owned(),
             None if channels > 1 => format!("{channels} CH"),
             None => "MONO".to_owned(),
@@ -3361,6 +3413,8 @@ mod tests {
             mix: None,
             ports_to: Vec::new(),
             stream: 0,
+            node: ids[0],
+            part: None,
         };
         let mut s = desk(&[(0.0, 0.0, 300.0), (400.0, 0.0, 300.0), (400.0, 200.0, 300.0)]);
         for (d, g) in s.devs.iter_mut().zip([group("OUTPUT", Dir::Out, [1, 2]), group("PLAYBACK", Dir::In, [3, 4]), group("PLAYBACK", Dir::In, [5, 6])]) {
@@ -3392,9 +3446,11 @@ mod tests {
             ports: vec![port(ids[0], dir, "FL"), port(ids[1], dir, "FR")],
             stereo: true,
             meter: true,
-            mix: mix.then(|| Mix { node: 1, volumes: vec![1.0, 1.0], mute: false, gain: false, route: None }),
+            mix: mix.then(|| Mix { node: 1, volumes: vec![1.0, 1.0], mute: false, gain: false, route: None, ..Default::default() }),
             ports_to: Vec::new(),
             stream: 0,
+            node: 1,
+            part: None,
         };
         let mut s = desk(&[(0.0, 0.0, 300.0)]);
         s.devs[0].dev.groups = vec![group("PLAYBACK", Dir::In, [1, 2], true), group("MONITOR", Dir::Out, [3, 4], false)];
@@ -3423,6 +3479,8 @@ mod tests {
             mix: None,
             ports_to: Vec::new(),
             stream: 0,
+            node: ids[0],
+            part: None,
         };
         let mut s = desk(&[(0.0, 0.0, 300.0), (500.0, 0.0, 300.0)]);
         for (d, g) in s.devs.iter_mut().zip([group("OUTPUT", Dir::Out, [1, 2]), group("PLAYBACK", Dir::In, [3, 4])]) {
@@ -3552,6 +3610,49 @@ mod tests {
         ev
     }
 
+    /// An HDMI sink in 5.1 (ADR 0025): its six channels in, their monitors out, a volume each and
+    /// its own; as PipeWire gives it (FL FR RL RR FC LFE, ALSA's order).
+    fn surround_events() -> Vec<Event> {
+        use crate::pw::{Kind, Props};
+        let props = |kv: &[(&str, &str)]| kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Props>();
+        let p = props(&[("node.name", "alsa_output.hdmi-surround"), ("node.description", "HDMI Surround"), ("media.class", "Audio/Sink")]);
+        let mut ev = vec![Event::Added { id: 30, kind: Kind::Node, props: p.clone() }, Event::Info { id: 30, props: p, state: Some("running") }];
+        let mut port = 3000;
+        for (dir, pre, mon) in [("in", "playback", "false"), ("out", "monitor", "true")] {
+            for (k, ch) in ["FL", "FR", "RL", "RR", "FC", "LFE"].iter().enumerate() {
+                port += 1;
+                ev.push(Event::Added { id: port, kind: Kind::Port, props: props(&[("node.id", "30"), ("port.id", &k.to_string()), ("port.direction", dir), ("port.name", &format!("{pre}_{ch}")), ("port.monitor", mon), ("audio.channel", ch), ("format.dsp", "32 bit float mono audio")]) });
+            }
+        }
+        ev.push(Event::Mix { id: 30, volumes: vec![1.0, 1.0, 0.512, 0.512, 1.0, 0.343], mute: false });
+        ev.push(Event::NodeVolume { id: 30, volume: 1.0 });
+        ev
+    }
+
+    /// A node of more than two channels with a volume each is framed by its channels' positions
+    /// (ADR 0025): MASTER, FRONT, REAR, CENTER, LFE, its monitors inside their parts; a part's
+    /// volume writes all the node's channels, its own changed and the others as they were.
+    #[test]
+    fn a_surround_node_is_framed_by_position() {
+        let mut s = Scene::new();
+        let mut ev = surround_events();
+        ev.push(Event::Synced);
+        s.apply(ev);
+        let di = s.devs.iter().position(|d| d.dev.groups.iter().any(|g| g.node == 30)).expect("the sink");
+        let d = &s.devs[di];
+        let frames: Vec<String> = (0..d.dev.groups.len()).filter(|g| face::host(&d.dev, *g).is_none()).map(|g| face::name(&d.dev, g)).collect();
+        assert_eq!(frames.iter().map(|f| f.rsplit(" · ").next().unwrap_or("")).collect::<Vec<_>>(), ["MASTER", "FRONT", "REAR", "CENTER", "LFE"], "{frames:?}");
+        let rear = d.dev.groups.iter().position(|g| g.part.as_deref() == Some("REAR") && g.mix.is_some()).expect("REAR");
+        assert!(d.dev.groups[rear].stereo);
+        assert!(d.dev.groups.iter().any(|g| g.role == "MONITOR" && g.part.as_deref() == Some("REAR")), "its monitors by part too");
+        s.set_volume((di, rear), 1.0);
+        let sent = s.outbox.iter().rev().find_map(|c| match c {
+            Cmd::SetMix { node: 30, volumes, master: None, .. } => Some(volumes.clone()),
+            _ => None,
+        });
+        assert_eq!(sent, Some(vec![1.0, 1.0, 1.0, 1.0, 1.0, 0.343]));
+    }
+
     /// Split headphones: the L and R of one app stand in one column of the mult, whatever order
     /// PipeWire made the links in (here A's L, B's L, B's R, A's R).
     #[test]
@@ -3605,7 +3706,11 @@ mod tests {
         let Ok(out) = std::env::var("PATCHCORD_PIC") else { return };
         let (ww, wh) = std::env::var("PATCHCORD_PIC_SIZE").ok().and_then(|v| v.split_once('x').and_then(|(a, b)| Some((a.parse::<u32>().ok()?, b.parse::<u32>().ok()?)))).unwrap_or((1200, 900));
         let down: f64 = std::env::var("PATCHCORD_PIC_DOWN").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
-        let ev = demo_events();
+        let mut ev = demo_events();
+        // PATCHCORD_PIC_SURROUND: an HDMI sink in 5.1 too (ADR 0025)
+        if std::env::var_os("PATCHCORD_PIC_SURROUND").is_some() {
+            ev.extend(surround_events());
+        }
         let mut s = Scene::new();
         s.apply(ev);
         s.set_rack(true);
@@ -3707,6 +3812,10 @@ mod tests {
         }
         // the speakers are the default output
         ev.insert(ev.len() - 1, Event::Setting { key: "default.audio.sink".into(), value: r#"{"name":"Speakers"}"#.into() });
+        // PATCHCORD_PIC_SURROUND: an HDMI sink in 5.1 too (ADR 0025)
+        if std::env::var_os("PATCHCORD_PIC_SURROUND").is_some() {
+            ev.extend(surround_events());
+        }
         let mut s = Scene::new();
         s.apply(ev);
         s

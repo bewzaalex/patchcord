@@ -22,7 +22,9 @@ PipeWire ──(pw.rs thread)── Event ──► Graph (graph.rs) ──devic
   (`port_role`: PLAYBACK, CAPTURE, MONITOR, INPUT, OUTPUT, MIDI, VIDEO: its jacks' colour) and a
   `kind` (`block_kind`: its node's kind, its frame's colour). Code that needs to know what a
   group *is* looks at `role` or `kind`, never at `label`. ENGINE colours its blocks and ports by
-  the same two functions (ADR 0014).
+  the same two functions (ADR 0014). A node of more than two channels with a volume each is
+  split by its channels' positions (`by_position`, ADR 0025): a group a `part` (MASTER, FRONT,
+  REAR…), each its own frame; a frame is a node and a part (`face::sections`).
 - **`ui/scene.rs`** is everything on the field without a window: devices and their places, cords
   and their physics, meters, cue sources, and the layout of the desk and the rack. The one light
   over all the devices (`light_layer`, `rack_light`) is a small picture stretched over them and

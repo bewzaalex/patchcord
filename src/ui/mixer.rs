@@ -47,9 +47,18 @@ impl Role {
 /// node with ports only one way (a DAW's engine, a filter that only plays). A node that takes sound
 /// in and gives it out without a volume (an effect inside Easy Effects' chain) is no strip: the
 /// rack has it.
+/// A strip's jacks: its group's; a surround node's MASTER, all its parts' on its volume's side
+/// (ADR 0025).
+fn strip_jacks(d: &crate::ui::scene::DevView, gi: usize) -> Vec<&face::JackDef> {
+    let g = &d.dev.groups[gi];
+    let mine = |o: usize| o == gi || (g.part.as_deref() == Some(crate::graph::MASTER) && d.dev.groups[o].node == g.node && d.dev.groups[o].dir == g.dir && d.dev.groups[o].channels_part() && d.dev.groups[o].mix.is_some());
+    d.defs.iter().filter(|j| mine(j.group)).collect()
+}
+
 pub fn role_of(dev: &Device, gi: usize) -> Option<Role> {
     let g = dev.groups.get(gi)?;
-    if !matches!(g.role, "PLAYBACK" | "CAPTURE" | "INPUT" | "OUTPUT") {
+    // a surround node is one strip, its MASTER (ADR 0025 is the rack's; MIXER's own way is to come)
+    if !matches!(g.role, "PLAYBACK" | "CAPTURE" | "INPUT" | "OUTPUT") || g.channels_part() {
         return None;
     }
     if g.mix.is_none() {
@@ -534,7 +543,7 @@ impl Mixer {
                 .filter_map(|gi| {
                     let role = role_of(dev, gi)?;
                     let g = &dev.groups[gi];
-                    let node = g.ports.first()?.node;
+                    let node = g.node;
                     let mix = d.mix(gi);
                     let node_name = scene.graph.node_name(node).map(str::to_owned);
                     let main = match role {
@@ -543,7 +552,7 @@ impl Mixer {
                         _ => false,
                     };
                     let port = sections.iter().find(|p| p.group == gi).and_then(|p| p.ports.iter().find(|c| Some(c.index) == p.current).map(|c| c.description.clone()));
-                    let jacks: Vec<&String> = d.defs.iter().filter(|j| j.group == gi).map(|j| &j.key).collect();
+                    let jacks: Vec<&String> = strip_jacks(d, gi).into_iter().map(|j| &j.key).collect();
                     // lit when any of it is heard: a jack of it, or a port of one (kept on in the
                     // rack, in ENGINE or here)
                     let cue = pins.iter().any(|p| scene.cue_jack(p).is_some_and(|j| jacks.iter().any(|k| k.as_str() == j)));
@@ -553,7 +562,7 @@ impl Mixer {
                         Some(Drag::Key(h)) if key_of(h) == Some((di, gi)) => Some(h.clone()),
                         _ => None,
                     };
-                    Some(Strip { at: (di, gi), role, node, name: face::name(dev, gi), kind: g.kind, mix, stereo: g.stereo, chans, held, targets: Vec::new(), main, node_name, port, cue, cols: if two { 2 } else { 1 }, level: d.level(gi), x: 6.0, w: STRIP_W })
+                    Some(Strip { at: (di, gi), role, node, name: face::name(dev, gi).trim_end_matches(" · MASTER").to_owned(), kind: g.kind, mix, stereo: g.stereo, chans, held, targets: Vec::new(), main, node_name, port, cue, cols: if two { 2 } else { 1 }, level: d.level(gi), x: 6.0, w: STRIP_W })
                 })
                 .collect();
             let profile = dev.card.as_ref().map(|c| c.profile().map_or_else(|| "Off".to_owned(), |p| p.description.clone()));
@@ -882,7 +891,7 @@ impl Mixer {
     /// A key with a LED let go over itself: it does what it does.
     fn key_up(&mut self, scene: &mut Scene, hit: Hit) -> Option<Action> {
         match hit {
-            Hit::Cue((di, gi)) => Some(Action::Cue(scene.devs.get(di).map(|d| d.defs.iter().filter(|j| j.group == gi).map(|j| j.key.clone()).collect()).unwrap_or_default())),
+            Hit::Cue((di, gi)) => Some(Action::Cue(scene.devs.get(di).map(|d| strip_jacks(d, gi).into_iter().map(|j| j.key.clone()).collect()).unwrap_or_default())),
             Hit::To(from, to) => {
                 let s = self.strip(from)?;
                 let play = s.role == Role::Play;

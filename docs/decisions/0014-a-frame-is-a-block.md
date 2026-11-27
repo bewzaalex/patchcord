@@ -17,7 +17,8 @@ for three kinds of device: metal and cream looked alike, navy passed for black.
 `docs/design/apps/nodes.py` (the rack), `progframes.py`, `hwframes.py` (a frame beside its
 ENGINE block), `kinds.py` (variant 4), `paints.py` (variant D).
 
-**One frame a node.** Every port of a node is in its one frame, on its one device: its inputs,
+**One frame a node** (a node of more than two audio channels: frames by their positions, ADR
+[0025](0025-surround-frames-by-position.md)). Every port of a node is in its one frame, on its one device: its inputs,
 its outputs, its monitor. A frame never splits. A device gathers frames: a card's or headset's
 nodes (`device.id`), a program's, or one node of PipeWire's own. `node.link-group` makes no roof
 (`linkgroup.py`, not now).

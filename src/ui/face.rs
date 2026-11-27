@@ -176,6 +176,9 @@ pub struct MixGeo {
     pub mute: [f64; 4],
     /// the frame's SPLIT, left of MUTE (x, y, w, h), when it is in the row (`split_below`)
     pub split: Option<[f64; 4]>,
+    /// a surround node's MASTER (ADR 0025): no jacks before it, so no rule; and no VOLUME heading,
+    /// its name says what it is (the name runs on over the knob)
+    pub bare: bool,
 }
 
 /// A key in a frame's row (MUTE, SPLIT): which one is held down.
@@ -477,6 +480,12 @@ const ROW_X: f64 = 62.0;
 /// what its node is called, or which way its sound goes. Two frames of a device still of one
 /// name: the second is numbered (HDMI 2).
 pub fn name(dev: &Device, gi: usize) -> String {
+    // a surround node's part (ADR 0025): its node's name (its MASTER's) and the part
+    if let Some(part) = &dev.groups[gi].part {
+        let g = &dev.groups[gi];
+        let master = dev.groups.iter().position(|o| o.node == g.node && o.part.as_deref() == Some(crate::graph::MASTER)).unwrap_or(gi);
+        return format!("{} · {part}", base_name(dev, master));
+    }
     let n = base_name(dev, gi);
     let counted = |i: usize| matches!(dev.groups[i].role, "PLAYBACK" | "CAPTURE");
     if !counted(gi) {
@@ -497,9 +506,8 @@ fn port_word_of(g: &crate::graph::Group) -> Option<&'static str> {
 /// A frame's name before two of a name are numbered (`name`).
 fn base_name(dev: &Device, gi: usize) -> String {
     let g = &dev.groups[gi];
-    let node = |g: &crate::graph::Group| g.ports.first().map(|p| p.node);
     // the other nodes' frames of this device
-    let others = || dev.groups.iter().enumerate().filter(move |(i, o)| *i != gi && node(o) != node(g)).map(|(_, o)| o);
+    let others = || dev.groups.iter().enumerate().filter(move |(i, o)| *i != gi && o.node != g.node).map(|(_, o)| o);
     let word = port_word_of(g);
     if let Some(w) = word
         && others().all(|o| port_word_of(o) != Some(w))
@@ -575,7 +583,8 @@ pub fn host(dev: &Device, gi: usize) -> Option<usize> {
     if g.role != "MONITOR" {
         return None;
     }
-    dev.groups.iter().position(|o| o.dir == Dir::In && o.mix.is_some() && o.ports.first().map(|p| p.node) == g.ports.first().map(|p| p.node))
+    // (a surround node's: its part's, ADR 0025)
+    dev.groups.iter().position(|o| o.dir == Dir::In && o.mix.is_some() && o.node == g.node && o.part == g.part)
 }
 
 /// The MONITOR whose MONITOR sits in group `gi`'s frame.
@@ -642,6 +651,13 @@ fn jacks_w(dev: &Device, gi: usize, jd: &[JackDef], counts: &[usize]) -> f64 {
     } else {
         jd.iter().enumerate().filter(|(_, j)| j.group == gi).map(|(i, _)| cell_w(dev, gi, jd, i, slots(counts[i]))).sum::<f64>() + 14.0
     };
+    // a surround node's MASTER (ADR 0025): no jacks, and its name runs on over its knob (it has no
+    // heading) to SIG; only what it needs beyond that before the knob
+    let g = &dev.groups[gi];
+    if g.part.as_deref() == Some(crate::graph::MASTER) {
+        let knobs = if g.stereo { 96.0 } else { 58.0 };
+        return (label_w(&name(dev, gi)) + 21.0 - knobs).max(4.0).ceil();
+    }
     // the name spans the MON too: room for it is found over both
     let rec = rec_w(dev, gi, jd, counts);
     // room on the band for SPLIT and the name (a frame of several sections has them once,
@@ -742,7 +758,7 @@ fn sides(dev: &Device) -> (Vec<usize>, Vec<usize>) {
         let mut all: Vec<usize> = (0..dev.groups.len()).filter(|g| host(dev, *g).is_none()).collect();
         if !dev.chain {
             // node by node: those that take sound in first, then those that only send it out
-            let first = |g: usize| (0..dev.groups.len()).position(|o| node_of(dev, o) == node_of(dev, g)).unwrap_or(g);
+            let first = |g: usize| (0..dev.groups.len()).position(|o| dev.groups[o].node == dev.groups[g].node).unwrap_or(g);
             let only_out = |g: usize| sections(dev, g).iter().all(|o| dev.groups[*o].dir == Dir::Out);
             all.sort_by_key(|g| (only_out(*g), first(*g)));
         }
@@ -819,15 +835,12 @@ fn blocks(dev: &Device, gs: &[usize]) -> Vec<Vec<usize>> {
     out
 }
 
-fn node_of(dev: &Device, gi: usize) -> Option<u32> {
-    dev.groups[gi].ports.first().map(|p| p.node)
-}
-
-/// A frame is a node (ADR 0014): group `gi`'s frame's sections, its node's groups side by side
-/// (its inputs, then its outputs; a MONITOR inside the input it copies, not a section).
+/// A frame is a node (ADR 0014), or a surround node's part (ADR 0025): group `gi`'s frame's
+/// sections, its node's (part's) groups side by side (its inputs, then its outputs; a MONITOR
+/// inside the input it copies, not a section).
 pub fn sections(dev: &Device, gi: usize) -> Vec<usize> {
-    let node = node_of(dev, gi);
-    (0..dev.groups.len()).filter(|o| node_of(dev, *o) == node && host(dev, *o).is_none()).collect()
+    let g = &dev.groups[gi];
+    (0..dev.groups.len()).filter(|o| dev.groups[*o].node == g.node && dev.groups[*o].part == g.part && host(dev, *o).is_none()).collect()
 }
 
 /// A face with a frame of several sections (a node both ways, a MIDI bridge's clients, a
@@ -963,13 +976,16 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
             // MUTE under the knobs; the frame's SPLIT beside it at the left, the two halves of
             // the row (as MIXER's keys)
             let first = sections(dev, gi).first() == Some(&gi) && split_below(dev, gi);
+            // a surround node's part has no MUTE (PipeWire mutes only the node, its MASTER does):
+            // SPLIT has the row to itself, or there is none (ADR 0025)
+            let muted = !g.channels_part();
             // (side by side in a block, as MIXER's: 2 of the hole's dark between them)
-            let kw = if first { (w - 14.0 - 2.0) / 2.0 } else { w - 14.0 };
+            let kw = if first && muted { (w - 14.0 - 2.0) / 2.0 } else { w - 14.0 };
             if first {
                 geo.switches.push((gi, [ox + 7.0, oy + 89.0, kw, 14.0]));
             }
-            let mx0 = ox + 7.0 + if first { kw + 2.0 } else { 0.0 };
-            let mute = [mx0, oy + 89.0, kw, 14.0];
+            let mx0 = ox + 7.0 + if first { kw + if muted { 2.0 } else { 0.0 } } else { 0.0 };
+            let mute = if muted { [mx0, oy + 89.0, kw, 14.0] } else { [mx0, oy + 89.0, 0.0, 0.0] };
             geo.mix.push((gi, MixGeo {
                 x: ox,
                 y: oy,
@@ -979,6 +995,7 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
                 bal: stereo.then_some((ox + 75.0, oy + 56.0)),
                 mute,
                 split: first.then_some([ox + 7.0, oy + 89.0, kw, 14.0]),
+                bare: g.part.as_deref() == Some(crate::graph::MASTER),
             }));
         }
         // its meter: after its knobs, or (without) right of its jacks
@@ -990,10 +1007,10 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
         // a frame's first section: its name on the band (`graph`), and the frame's one
         // SPLIT (every stereo pair in the frame, a MONITOR inside it too)
         if sections(dev, gi).first() == Some(&gi) {
-            if let Some(node) = node_of(dev, gi) {
+            {
                 // the name: a click on it opens ENGINE with this block (it was a key, #180)
                 let nx = x + 9.0 + if splits(dev, gi) && !split_below(dev, gi) { split_key_w() + 4.0 } else { 0.0 };
-                geo.graph.push((node, [nx - 3.0, oy + 20.0, label_w(&name(dev, gi)) + 6.0, 14.0]));
+                geo.graph.push((dev.groups[gi].node, [nx - 3.0, oy + 20.0, label_w(&name(dev, gi)) + 6.0, 14.0]));
             }
             if splits(dev, gi) && !split_below(dev, gi) {
                 geo.switches.push((gi, [x + 6.0, oy + 21.0, split_key_w(), 12.0]));
@@ -1115,12 +1132,16 @@ fn mix_panel(m: &MixGeo, print: &str, band: bool, edge: &str) -> String {
     // line in the frame's own colour, as its edge (`edge`; 2026-11-26: a groove pressed in)
     // (as far from the band, or the heading, as from the frame's bottom: RULE)
     let (ink, gy) = if band { (BAND_INK, RULE.0) } else { (print, 26.0) };
-    let mut s = format!(
-        r#"<path d="M{x},{gy} V{}" stroke="{edge}" stroke-width="1.2" stroke-opacity=".9"/>{}"#,
-        RULE.1,
-        SECTION.text(m.x + m.w / 2.0, 31.0, ink, "middle", &if m.bal.is_some() { format!("{name} · BAL") } else { name.to_owned() }),
-        x = m.x
-    );
+    let mut s = if m.bare {
+        String::new()
+    } else {
+        format!(
+            r#"<path d="M{x},{gy} V{}" stroke="{edge}" stroke-width="1.2" stroke-opacity=".9"/>{}"#,
+            RULE.1,
+            SECTION.text(m.x + m.w / 2.0, 31.0, ink, "middle", &if m.bal.is_some() { format!("{name} · BAL") } else { name.to_owned() }),
+            x = m.x
+        )
+    };
     // VOLUME: silence to 150%, a long tick at 100% and red past it (louder than the app plays it:
     // it can clip)
     let (cx, cy) = m.knob;
@@ -1142,7 +1163,10 @@ fn mix_panel(m: &MixGeo, print: &str, band: bool, edge: &str) -> String {
     // `mix_pic`, which is drawn again as they change or are pressed
     let [kx, ky, kw, kh] = m.mute;
     let row = m.split.map_or([kx, ky, kw, kh], |[sx, ..]| [sx, ky, kx + kw - sx, kh]);
-    super::mixer::key_hole(&mut s, row);
+    // (none: a surround part without SPLIT has no keys)
+    if row[2] > 0.0 {
+        super::mixer::key_hole(&mut s, row);
+    }
     if oy != 0.0 { format!(r#"<g transform="translate(0,{oy})">{s}</g>"#) } else { s }
 }
 
@@ -1165,7 +1189,9 @@ pub fn mix_pic(m: &MixGeo, volume: f64, balance: f64, mute: bool, bal: BalKnob, 
             BalKnob::In => format!(r##"<circle cx="{bx}" cy="{by}" r="9" fill="#202124" stroke="#0c0c0d"/>{}"##, pointer(0.0, "#8a6a32", 1.8, 2.6, 7.4)),
         };
     }
-    super::mixer::lit_key(&mut s, m.mute, "MUTE", "#ff4a32", mute, held == Some(RowKey::Mute));
+    if m.mute[2] > 0.0 {
+        super::mixer::lit_key(&mut s, m.mute, "MUTE", "#ff4a32", mute, held == Some(RowKey::Mute));
+    }
     if let Some(r) = m.split {
         super::mixer::lit_key(&mut s, r, "SPLIT", "#ffb02e", split, held == Some(RowKey::Split));
     }

@@ -201,6 +201,8 @@ pub enum Event {
     /// An app stream's volume (playing) or gain (recording): each channel's, linear as PipeWire
     /// keeps them, and its mute.
     Mix { id: u32, volumes: Vec<f32>, mute: bool },
+    /// A node's own volume (`volume`: one for all its channels, beside each channel's).
+    NodeVolume { id: u32, volume: f32 },
     /// Peak level of each meter's channels since the last report, 0…1.
     Levels(Vec<(u32, Vec<f32>)>),
     /// A value of PipeWire's "settings" metadata (clock.rate, clock.quantum…).
@@ -235,8 +237,9 @@ pub enum Cmd {
     Unmeter(u32),
     /// Switch card `device` to its profile `index` (remembered by PipeWire for next time).
     SetProfile { device: u32, index: u32 },
-    /// Set an app stream's channel volumes (linear) and mute.
-    SetMix { node: u32, volumes: Vec<f32>, mute: bool },
+    /// Set a node's channel volumes (linear; none: as they are) and mute, and its own volume
+    /// (`master`, ADR 0025: a surround node's MASTER).
+    SetMix { node: u32, volumes: Vec<f32>, mute: bool, master: Option<f32> },
     /// Switch card `device`'s sink or source `route_device` to its port `index`, or set that
     /// port's volumes, mute or latency offset (remembered by PipeWire).
     SetRoute { device: u32, index: u32, route_device: i32, volumes: Option<Vec<f32>>, mute: Option<bool>, latency_ns: Option<i64> },
@@ -377,6 +380,7 @@ fn profile_param(index: u32) -> Option<Vec<u8>> {
 }
 
 // keys of a props object (spa/param/props.h)
+const PROP_VOLUME: u32 = 0x10003;
 const PROP_MUTE: u32 = 0x10004;
 const PROP_CHANNEL_VOLUMES: u32 = 0x10008;
 const PROP_LATENCY_OFFSET: u32 = 0x1000e;
@@ -450,6 +454,16 @@ fn route_param(index: u32, device: i32, volumes: Option<Vec<f32>>, mute: Option<
 }
 
 /// A node's volumes and mute, from its props param (None when it has no channel volumes).
+/// A node's own volume (`volume`, one for all its channels), from its props param.
+fn volume_of(pod: &spa::pod::Pod) -> Option<f32> {
+    use spa::pod::Value;
+    let (_, Value::Object(obj)) = spa::pod::deserialize::PodDeserializer::deserialize_any_from(pod.as_bytes()).ok()? else { return None };
+    obj.properties.into_iter().find_map(|p| match (p.key, p.value) {
+        (PROP_VOLUME, Value::Float(v)) => Some(v),
+        _ => None,
+    })
+}
+
 fn mix_of(pod: &spa::pod::Pod) -> Option<(Vec<f32>, bool)> {
     use spa::pod::{Value, ValueArray};
     let (_, Value::Object(obj)) = spa::pod::deserialize::PodDeserializer::deserialize_any_from(pod.as_bytes()).ok()? else { return None };
@@ -464,15 +478,19 @@ fn mix_of(pod: &spa::pod::Pod) -> Option<(Vec<f32>, bool)> {
     Some((vols?, mute))
 }
 
-/// The props param that sets a node's channel volumes and mute.
-fn mix_param(volumes: Vec<f32>, mute: bool) -> Option<Vec<u8>> {
+/// The props param that sets a node's channel volumes (none: left as they are), its mute, and
+/// its own volume (`master`, when given).
+fn mix_param(volumes: Vec<f32>, mute: bool, master: Option<f32>) -> Option<Vec<u8>> {
     use spa::pod::{Property, PropertyFlags, Value, ValueArray};
     let prop = |key, value| Property { key, flags: PropertyFlags::empty(), value };
-    let obj = spa::pod::Object {
-        type_: spa::utils::SpaTypes::ObjectParamProps.as_raw(),
-        id: spa::param::ParamType::Props.as_raw(),
-        properties: vec![prop(PROP_CHANNEL_VOLUMES, Value::ValueArray(ValueArray::Float(volumes))), prop(PROP_MUTE, Value::Bool(mute))],
-    };
+    let mut properties = vec![prop(PROP_MUTE, Value::Bool(mute))];
+    if !volumes.is_empty() {
+        properties.push(prop(PROP_CHANNEL_VOLUMES, Value::ValueArray(ValueArray::Float(volumes))));
+    }
+    if let Some(v) = master {
+        properties.push(prop(PROP_VOLUME, Value::Float(v)));
+    }
+    let obj = spa::pod::Object { type_: spa::utils::SpaTypes::ObjectParamProps.as_raw(), id: spa::param::ParamType::Props.as_raw(), properties };
     pod_bytes(obj)
 }
 
@@ -991,6 +1009,9 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                                         && let Some((volumes, mute)) = pod.and_then(mix_of)
                                     {
                                         mev.send(Event::Mix { id, volumes, mute });
+                                        if let Some(volume) = pod.and_then(volume_of) {
+                                            mev.send(Event::NodeVolume { id, volume });
+                                        }
                                     }
                                     // the inspector asked for this node's params
                                     if let Some(pod) = pod
@@ -1518,10 +1539,10 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                     None => events.send(Event::Error("cannot set the default device".into())),
                 }
             }
-            Cmd::SetMix { node, volumes, mute } => {
+            Cmd::SetMix { node, volumes, mute, master } => {
                 let b = bound.borrow();
                 let n = b.get(&node).and_then(|b| b.proxy.downcast_ref::<pw::node::Node>());
-                match (n, mix_param(volumes, mute)) {
+                match (n, mix_param(volumes, mute, master)) {
                     (Some(n), Some(bytes)) => {
                         if let Some(pod) = spa::pod::Pod::from_bytes(&bytes) {
                             n.set_param(spa::param::ParamType::Props, 0, pod);
@@ -1947,7 +1968,7 @@ mod tests {
 
     #[test]
     fn a_volume_sent_reads_back_the_same() {
-        let bytes = mix_param(vec![0.6141, 0.1327], true).expect("serialized");
+        let bytes = mix_param(vec![0.6141, 0.1327], true, None).expect("serialized");
         let pod = spa::pod::Pod::from_bytes(&bytes).expect("a pod");
         assert_eq!(mix_of(pod), Some((vec![0.6141, 0.1327], true)));
     }
