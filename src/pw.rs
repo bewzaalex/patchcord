@@ -1649,6 +1649,10 @@ unsafe extern "C" fn on_profile(data: *mut std::os::raw::c_void, pod: *const spa
     }
 }
 
+/// The profiler's follower clock block (spa/param/profiler.h: SPA_PROFILER_START_Follower + 2),
+/// by its number: PipeWire 1.0's headers, which the release is built with, don't have it.
+const PROFILER_FOLLOWER_CLOCK: u32 = 0x20002;
+
 /// A profile: a struct of objects, one per driver: its info (load, xruns), its clock (quantum,
 /// rate), its own block and its followers' (see spa/param/profiler.h).
 fn timings_of(pod: &spa::pod::Pod) -> Vec<DriverTiming> {
@@ -1731,7 +1735,7 @@ fn timings_of(pod: &spa::pod::Pod) -> Vec<DriverTiming> {
                     b.raw.push(("followerBlock".to_owned(), named(&f, FOLLOWER)));
                     d.followers.push(b);
                 }
-                spa::sys::SPA_PROFILER_followerClock => {
+                PROFILER_FOLLOWER_CLOCK => {
                     if let Some(b) = d.followers.last_mut() {
                         b.raw.push(("followerClock".to_owned(), named(&f, FOLLOWER_CLOCK)));
                     }
