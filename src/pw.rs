@@ -100,6 +100,10 @@ pub struct NodeTiming {
     /// when it was signalled and finished, in the last cycle (to find when the graph finished)
     signal_ns: i64,
     finish_ns: i64,
+    /// the last cycle as the profiler gave it, for the inspector (ADR 0024): its blocks by kind
+    /// (info, clock, driverBlock for a driver; followerBlock, followerClock for a follower), each
+    /// field named as spa/param/profiler.h names it
+    pub raw: Vec<(String, PVal)>,
 }
 
 /// A driver's cycles over the last half second: its clock (quantum and rate), the DSP load, when
@@ -126,6 +130,7 @@ impl NodeTiming {
         self.busy_max_ns = self.busy_max_ns.max(n.busy_ns);
         self.cycles += 1;
         (self.name, self.latency, self.xruns) = (n.name.clone(), n.latency, n.xruns);
+        self.raw = n.raw.clone();
     }
 
     /// Totals into averages.
@@ -160,6 +165,27 @@ impl DriverTiming {
     }
 }
 
+/// A value as PipeWire gives it, for ENGINE's inspector (ADR 0024): a plain one written as pw-dump
+/// writes it (a string quoted, a number, an id by its short name: F32P, audio), a list, or an
+/// object's keys in their order.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PVal {
+    Text(String),
+    List(Vec<PVal>),
+    Obj(Vec<(String, PVal)>),
+}
+
+impl PVal {
+    /// The same with every plain value passed through `f` (MAC addresses masked, for pictures).
+    pub fn map(&self, f: &dyn Fn(&str) -> String) -> PVal {
+        match self {
+            PVal::Text(t) => PVal::Text(f(t)),
+            PVal::List(l) => PVal::List(l.iter().map(|v| v.map(f)).collect()),
+            PVal::Obj(o) => PVal::Obj(o.iter().map(|(k, v)| (k.clone(), v.map(f))).collect()),
+        }
+    }
+}
+
 /// From PipeWire to the app.
 pub enum Event {
     Added { id: u32, kind: Kind, props: Props },
@@ -187,9 +213,14 @@ pub enum Event {
     Meta { id: u32, subject: u32, key: Option<String>, ty: Option<String>, value: Option<String> },
     /// Each driver's last cycle, twice a second while the profiler runs (ENGINE is open).
     Profile(Vec<DriverTiming>),
-    /// One of a node's params, asked for by ENGINE's inspector: its kind (Format, Props…), its
-    /// index and the pod as text.
-    Param { id: u32, kind: String, index: u32, text: String },
+    /// One of a node's, port's or device's params, asked for by ENGINE's inspector: its kind
+    /// (Format, Props…), its index and its value as PipeWire gives it.
+    Param { id: u32, kind: String, index: u32, value: PVal },
+    /// An object's info fields as PipeWire gives them (state, error, n-input-ports, direction,
+    /// format, filename, args, version…: all but its properties), each time they change.
+    Fields { id: u32, fields: Vec<(String, PVal)> },
+    /// An object as the registry gives it: its type, version and permissions (pw-cli's r-x-).
+    Object { id: u32, ty: String, version: u32, perms: String },
     /// Everything that existed when we connected has been reported.
     Synced,
     Error(String),
@@ -216,7 +247,7 @@ pub enum Cmd {
     Cue { sources: Vec<CueSource>, level: f32 },
     /// Run the profiler (ENGINE is open) or stop it: it costs a little on every cycle.
     Profile(bool),
-    /// Read a node's params (formats, props, latency…) for ENGINE's inspector.
+    /// Read a node's, port's or device's params (all it has) for ENGINE's inspector.
     Params(u32),
     Quit,
 }
@@ -269,6 +300,42 @@ impl Sender {
 
 fn props_of(d: &spa::utils::dict::DictRef) -> Props {
     d.iter().map(|(k, v)| (k.to_owned(), v.to_owned())).collect()
+}
+
+/// A change mask as pw-dump writes it: its flags' names (input-ports, state, params…).
+fn mask_names(m: &dyn std::fmt::Debug) -> PVal {
+    let d = format!("{m:?}");
+    let inner = d.split_once('(').map_or("", |(_, r)| r.trim_end_matches(')'));
+    PVal::List(inner.split(" | ").filter(|n| !n.is_empty() && !n.starts_with("0x")).map(|n| PVal::Text(format!("{:?}", n.to_lowercase().replace('_', "-")))).collect())
+}
+
+/// The params an object says it has, as pw-cli writes them: each id and whether it can be read
+/// and written (EnumFormat r-, Props rw).
+fn params_list(ps: &[spa::param::ParamInfo]) -> PVal {
+    use spa::param::ParamInfoFlags as F;
+    PVal::List(
+        ps.iter()
+            .map(|p| PVal::Text(format!("{} {}{}", param_name(p.id()), if p.flags().contains(F::READ) { 'r' } else { '-' }, if p.flags().contains(F::WRITE) { 'w' } else { '-' })))
+            .collect(),
+    )
+}
+
+/// The params of these that can be read.
+fn readable(ps: &[spa::param::ParamInfo]) -> Vec<spa::param::ParamType> {
+    ps.iter().filter(|p| p.flags().contains(spa::param::ParamInfoFlags::READ)).map(|p| p.id()).collect()
+}
+
+/// A param id's name (EnumFormat, Props, Route…).
+fn param_name(id: spa::param::ParamType) -> String {
+    format!("{id:?}").trim_start_matches("ParamType::").to_owned()
+}
+
+/// A plain value for the inspector: a number or a word as it is, a string quoted.
+fn num(n: impl std::fmt::Display) -> PVal {
+    PVal::Text(n.to_string())
+}
+fn quoted(s: &str) -> PVal {
+    PVal::Text(format!("{s:?}"))
 }
 
 // keys of a profile object (spa/param/profile.h) and the availability values
@@ -823,6 +890,11 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
     let want_profiler: Rc<std::cell::Cell<bool>> = Default::default();
     let profiler_module: Rc<std::cell::Cell<bool>> = Default::default();
     let inspect: Rc<RefCell<std::collections::HashSet<u32>>> = Default::default();
+    // the params each node, port and device says it has and can be read (from its info): what
+    // the inspector asks for, one kind at a time (asking for all at once, PipeWire refuses)
+    let param_ids: Rc<RefCell<HashMap<u32, Vec<spa::param::ParamType>>>> = Default::default();
+    // the core's properties, from its info, sent once the registry has added it
+    let core_props: Rc<RefCell<Option<Props>>> = Default::default();
     // every link's output and input port, and every port there is: a meter's link gone is made
     // again while what it measures is there
     let link_in: Rc<RefCell<HashMap<u32, (u32, u32)>>> = Default::default();
@@ -834,6 +906,8 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
             let events = events.clone();
             let registry = registry.clone();
             let bound = bound.clone();
+            let core_props = core_props.clone();
+            let param_ids = param_ids.clone();
             let meters = meters.clone();
             let stale = stale.clone();
             let core = core.clone();
@@ -909,6 +983,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                             let mev = events.clone();
                             let stale = stale.clone();
                             let inspect = inspect.clone();
+                            let param_ids = param_ids.clone();
                             let l = node
                                 .add_listener_local()
                                 .param(move |_, kind, index, _, pod| {
@@ -921,8 +996,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                                     if let Some(pod) = pod
                                         && inspect.borrow().contains(&id)
                                     {
-                                        let kind = format!("{kind:?}").trim_start_matches("ParamType::").to_owned();
-                                        mev.send(Event::Param { id, kind, index, text: pod_text(pod) });
+                                        mev.send(Event::Param { id, kind: param_name(kind), index, value: pod_value(pod) });
                                     }
                                 })
                                 .info(move |info| {
@@ -940,9 +1014,27 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                                         pw::node::NodeState::Error(_) => "error",
                                     };
                                     ev.send(Event::Info { id, props: info.props().map(props_of).unwrap_or_default(), state: Some(state) });
-                                    if let pw::node::NodeState::Error(why) = info.state() {
-                                        ev.send(Event::Failed { id, why: why.to_owned() });
-                                    }
+                                    let error = match info.state() {
+                                        pw::node::NodeState::Error(why) => {
+                                            ev.send(Event::Failed { id, why: why.to_owned() });
+                                            quoted(why)
+                                        }
+                                        _ => num("null"),
+                                    };
+                                    param_ids.borrow_mut().insert(id, readable(info.params()));
+                                    ev.send(Event::Fields {
+                                        id,
+                                        fields: vec![
+                                            ("max-input-ports".into(), num(info.max_input_ports())),
+                                            ("max-output-ports".into(), num(info.max_output_ports())),
+                                            ("change-mask".into(), mask_names(&info.change_mask())),
+                                            ("n-input-ports".into(), num(info.n_input_ports())),
+                                            ("n-output-ports".into(), num(info.n_output_ports())),
+                                            ("state".into(), quoted(state)),
+                                            ("error".into(), error),
+                                            ("params".into(), params_list(info.params())),
+                                        ],
+                                    });
                                 })
                                 .register();
                             if app {
@@ -960,6 +1052,8 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                             let routes: RefCell<(BTreeMap<u32, Route>, BTreeMap<i32, Route>)> = Default::default();
                             let pev = events.clone();
                             let stale = stale.clone();
+                            let dinspect = inspect.clone();
+                            let dparam_ids = param_ids.clone();
                             let l = dev
                                 .add_listener_local()
                                 .info(move |info| {
@@ -972,9 +1066,17 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                                             s.push(id);
                                         }
                                     }
-                                    ev.send(Event::Info { id, props: info.props().map(props_of).unwrap_or_default(), state: None })
+                                    ev.send(Event::Info { id, props: info.props().map(props_of).unwrap_or_default(), state: None });
+                                    dparam_ids.borrow_mut().insert(id, readable(info.params()));
+                                    ev.send(Event::Fields { id, fields: vec![("change-mask".into(), mask_names(&info.change_mask())), ("params".into(), params_list(info.params()))] });
                                 })
                                 .param(move |_, kind, index, _, pod| {
+                                    // the inspector asked for this device's params
+                                    if let Some(pod) = pod
+                                        && dinspect.borrow().contains(&id)
+                                    {
+                                        pev.send(Event::Param { id, kind: param_name(kind), index, value: pod_value(pod) });
+                                    }
                                     if matches!(kind, spa::param::ParamType::EnumRoute | spa::param::ParamType::Route) {
                                         let Some(r) = pod.and_then(route_of) else { return };
                                         let mut s = routes.borrow_mut();
@@ -1033,6 +1135,31 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                                 m.link(&core);
                             }
                         }
+                        // its full properties, its direction, and its params when the inspector
+                        // asks (ADR 0024)
+                        if let Ok(port) = registry.bind::<pw::port::Port, _>(g) {
+                            let ev = events.clone();
+                            let pev = events.clone();
+                            let inspect = inspect.clone();
+                            let pparam_ids = param_ids.clone();
+                            let l = port
+                                .add_listener_local()
+                                .info(move |info| {
+                                    ev.send(Event::Info { id, props: info.props().map(props_of).unwrap_or_default(), state: None });
+                                    let dir = if info.direction() == spa::utils::Direction::Input { "input" } else { "output" };
+                                    pparam_ids.borrow_mut().insert(id, readable(info.params()));
+                                    ev.send(Event::Fields { id, fields: vec![("direction".into(), quoted(dir)), ("change-mask".into(), mask_names(&info.change_mask())), ("params".into(), params_list(info.params()))] });
+                                })
+                                .param(move |_, kind, index, _, pod| {
+                                    if let Some(pod) = pod
+                                        && inspect.borrow().contains(&id)
+                                    {
+                                        pev.send(Event::Param { id, kind: param_name(kind), index, value: pod_value(pod) });
+                                    }
+                                })
+                                .register();
+                            bound.borrow_mut().insert(id, Bound { _listener: Box::new(l), proxy: Box::new(port) });
+                        }
                     }
                     Kind::Link => {
                         let port = |k: &str| props.get(k).and_then(|p| p.parse::<u32>().ok());
@@ -1055,9 +1182,26 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                                         pw::link::LinkState::Error(_) => "error",
                                     };
                                     ev.send(Event::Info { id, props: info.props().map(props_of).unwrap_or_default(), state: Some(state) });
-                                    if let pw::link::LinkState::Error(why) = info.state() {
-                                        ev.send(Event::Failed { id, why: why.to_owned() });
-                                    }
+                                    let error = match info.state() {
+                                        pw::link::LinkState::Error(why) => {
+                                            ev.send(Event::Failed { id, why: why.to_owned() });
+                                            quoted(why)
+                                        }
+                                        _ => num("null"),
+                                    };
+                                    ev.send(Event::Fields {
+                                        id,
+                                        fields: vec![
+                                            ("output-node-id".into(), num(info.output_node_id())),
+                                            ("output-port-id".into(), num(info.output_port_id())),
+                                            ("input-node-id".into(), num(info.input_node_id())),
+                                            ("input-port-id".into(), num(info.input_port_id())),
+                                            ("change-mask".into(), mask_names(&info.change_mask())),
+                                            ("state".into(), quoted(state)),
+                                            ("error".into(), error),
+                                            ("format".into(), info.format().map_or(num("null"), pod_value)),
+                                        ],
+                                    });
                                 })
                                 .register();
                             bound.borrow_mut().insert(id, Bound { _listener: Box::new(l), proxy: Box::new(link) });
@@ -1073,19 +1217,68 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                                 .add_listener_local()
                                 .info(move |info| {
                                     ev.send(Event::Info { id, props: info.props().map(props_of).unwrap_or_default(), state: None });
+                                    ev.send(Event::Fields { id, fields: vec![("change-mask".into(), mask_names(&info.change_mask()))] });
                                 })
                                 .register();
                             bound.borrow_mut().insert(id, Bound { _listener: Box::new(l), proxy: Box::new(client) });
                         }
                     }
-                    Kind::Other => {}
+                    Kind::Other => {
+                        // a module's and a factory's info (its file and arguments; what it makes):
+                        // the registry gives little of them (ADR 0024)
+                        if g.type_ == ObjectType::Module
+                            && let Ok(module) = registry.bind::<pw::module::Module, _>(g)
+                        {
+                            let ev = events.clone();
+                            let l = module
+                                .add_listener_local()
+                                .info(move |info| {
+                                    ev.send(Event::Info { id, props: info.props().map(props_of).unwrap_or_default(), state: None });
+                                    ev.send(Event::Fields {
+                                        id,
+                                        fields: vec![("name".into(), quoted(info.name())), ("filename".into(), quoted(info.filename())), ("args".into(), info.args().map_or(num("null"), quoted)), ("change-mask".into(), mask_names(&info.change_mask()))],
+                                    });
+                                })
+                                .register();
+                            bound.borrow_mut().insert(id, Bound { _listener: Box::new(l), proxy: Box::new(module) });
+                        }
+                        if g.type_ == ObjectType::Factory
+                            && let Ok(factory) = registry.bind::<pw::factory::Factory, _>(g)
+                        {
+                            let ev = events.clone();
+                            let l = factory
+                                .add_listener_local()
+                                .info(move |info| {
+                                    ev.send(Event::Info { id, props: info.props().map(props_of).unwrap_or_default(), state: None });
+                                    // SAFETY: the info's own name, a C string while the info lives
+                                    let name = unsafe { std::ffi::CStr::from_ptr(info.as_raw().name).to_string_lossy().into_owned() };
+                                    ev.send(Event::Fields {
+                                        id,
+                                        fields: vec![("name".into(), quoted(&name)), ("type".into(), quoted(info.type_().to_str())), ("version".into(), num(info.version())), ("change-mask".into(), mask_names(&info.change_mask()))],
+                                    });
+                                })
+                                .register();
+                            bound.borrow_mut().insert(id, Bound { _listener: Box::new(l), proxy: Box::new(factory) });
+                        }
+                    }
                 }
+                let p = g.permissions;
+                use pw::permissions::PermissionFlags as P;
+                let perms: String = [(P::R, 'r'), (P::W, 'w'), (P::X, 'x'), (P::M, 'm')].iter().map(|(f, c)| if p.contains(*f) { *c } else { '-' }).collect();
+                events.send(Event::Object { id, ty: g.type_.to_str().to_owned(), version: g.version, perms });
                 events.send(Event::Added { id, kind, props });
+                // the core's full properties came with its info, before it was added
+                if g.type_ == ObjectType::Core
+                    && let Some(p) = core_props.borrow_mut().take()
+                {
+                    events.send(Event::Info { id, props: p, state: None });
+                }
             }
         })
         .global_remove({
             let events = events.clone();
             let bound = bound.clone();
+            let param_ids = param_ids.clone();
             let meters = meters.clone();
             let cue = cue.clone();
             let inspect = inspect.clone();
@@ -1094,6 +1287,7 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
             let profiler_id = profiler_id.clone();
             move |id| {
                 bound.borrow_mut().remove(&id);
+                param_ids.borrow_mut().remove(&id);
                 if profiler_id.get() == Some(id) {
                     profiler_id.set(None);
                 }
@@ -1168,7 +1362,22 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
         })
         .info({
             let events = events.clone();
-            move |info| events.send(Event::Version(info.version().to_owned()))
+            let core_props = core_props.clone();
+            move |info| {
+                events.send(Event::Version(info.version().to_owned()));
+                *core_props.borrow_mut() = info.props().map(props_of);
+                events.send(Event::Fields {
+                    id: info.id(),
+                    fields: vec![
+                        ("cookie".into(), num(info.cookie())),
+                        ("user-name".into(), quoted(info.user_name())),
+                        ("host-name".into(), quoted(info.host_name())),
+                        ("version".into(), quoted(info.version())),
+                        ("name".into(), quoted(info.name())),
+                        ("change-mask".into(), mask_names(&info.change_mask())),
+                    ],
+                });
+            }
         })
         .register();
 
@@ -1350,11 +1559,16 @@ fn run(events: Sender, cmds: pw::channel::Receiver<Cmd>) {
                 }
             }
             Cmd::Params(id) => {
+                // every param it has (no id: all of them)
                 let b = bound.borrow();
-                if let Some(n) = b.get(&id).and_then(|b| b.proxy.downcast_ref::<pw::node::Node>()) {
-                    inspect.borrow_mut().insert(id);
-                    use spa::param::ParamType as P;
-                    for kind in [P::EnumFormat, P::Format, P::Props, P::PortConfig, P::Latency, P::ProcessLatency] {
+                let Some(p) = b.get(&id).map(|b| &b.proxy) else { return };
+                inspect.borrow_mut().insert(id);
+                for kind in param_ids.borrow().get(&id).into_iter().flatten().copied() {
+                    if let Some(n) = p.downcast_ref::<pw::node::Node>() {
+                        n.enum_params(0, Some(kind), 0, u32::MAX);
+                    } else if let Some(n) = p.downcast_ref::<pw::port::Port>() {
+                        n.enum_params(0, Some(kind), 0, u32::MAX);
+                    } else if let Some(n) = p.downcast_ref::<pw::device::Device>() {
                         n.enum_params(0, Some(kind), 0, u32::MAX);
                     }
                 }
@@ -1471,13 +1685,28 @@ fn timings_of(pod: &spa::pod::Pod) -> Vec<DriverTiming> {
             ..Default::default()
         }
     };
+    // each block's fields by the names spa/param/profiler.h gives them; one it doesn't name, by its
+    // place
+    const INFO: &[&str] = &["counter", "cpu_load fast", "cpu_load medium", "cpu_load slow", "xrun-count"];
+    const CLOCK: &[&str] = &["clock flags", "clock id", "clock name", "clock nsec", "clock rate", "clock position", "clock duration", "clock delay", "clock rate_diff", "clock next_nsec", "transport_state", "clock cycle", "xrun duration"];
+    const DRIVER: &[&str] = &["driver_id", "name", "driver prev_signal", "driver signal", "driver awake", "driver finish", "driver status", "latency", "xrun_count"];
+    const FOLLOWER: &[&str] = &["id", "name", "prev_signal", "signal", "awake", "finish", "status", "latency", "xrun_count"];
+    const FOLLOWER_CLOCK: &[&str] = &["clock id", "clock name", "clock nsec", "clock rate", "clock position", "clock duration", "clock delay", "clock rate_diff", "clock next_nsec", "transport_state", "clock cycle", "xrun duration"];
+    let named = |f: &[Value], names: &[&str]| PVal::Obj(f.iter().enumerate().map(|(i, v)| (names.get(i).map_or_else(|| format!("[{i}]"), |n| (*n).to_owned()), value_of(v, std::ptr::null()))).collect());
     let mut out = Vec::new();
     for o in objects {
         let Value::Object(o) = o else { continue };
         let mut d = DriverTiming::default();
         let mut driver = false;
+        let mut raw = Vec::new();
         for p in o.properties {
             let Value::Struct(f) = p.value else { continue };
+            match p.key {
+                spa::sys::SPA_PROFILER_info => raw.push(("info".to_owned(), named(&f, INFO))),
+                spa::sys::SPA_PROFILER_clock => raw.push(("clock".to_owned(), named(&f, CLOCK))),
+                spa::sys::SPA_PROFILER_driverBlock => raw.push(("driverBlock".to_owned(), named(&f, DRIVER))),
+                _ => {}
+            }
             match p.key {
                 spa::sys::SPA_PROFILER_info => {
                     d.load = match f.get(1) {
@@ -1497,11 +1726,21 @@ fn timings_of(pod: &spa::pod::Pod) -> Vec<DriverTiming> {
                     d.node = block(&f);
                     driver = true;
                 }
-                spa::sys::SPA_PROFILER_followerBlock => d.followers.push(block(&f)),
+                spa::sys::SPA_PROFILER_followerBlock => {
+                    let mut b = block(&f);
+                    b.raw.push(("followerBlock".to_owned(), named(&f, FOLLOWER)));
+                    d.followers.push(b);
+                }
+                spa::sys::SPA_PROFILER_followerClock => {
+                    if let Some(b) = d.followers.last_mut() {
+                        b.raw.push(("followerClock".to_owned(), named(&f, FOLLOWER_CLOCK)));
+                    }
+                }
                 _ => {}
             }
         }
         if driver {
+            d.node.raw = raw;
             // when the last of its nodes finished, from the start of the cycle
             let start = d.node.signal_ns;
             d.end_ns = std::iter::once(&d.node).chain(&d.followers).filter(|n| start > 0 && n.finish_ns >= start).map(|n| n.finish_ns - start).max().unwrap_or(0);
@@ -1511,12 +1750,11 @@ fn timings_of(pod: &spa::pod::Pod) -> Vec<DriverTiming> {
     out
 }
 
-/// A param as text, the way pw-dump shows it: the object's keys by name (rate, channels,
-/// channelVolumes…), enumerated values by name (audio, raw, F32P), one key a line.
-fn pod_text(pod: &spa::pod::Pod) -> String {
+/// A param (or a link's format) as PipeWire gives it, for ENGINE's inspector (ADR 0024).
+pub fn pod_value(pod: &spa::pod::Pod) -> PVal {
     match spa::pod::deserialize::PodDeserializer::deserialize_any_from(pod.as_bytes()) {
-        Ok((_, v)) => value_text(&v, std::ptr::null(), 0),
-        Err(_) => "(cannot read)".into(),
+        Ok((_, v)) => value_of(&v, std::ptr::null()),
+        Err(_) => PVal::Text("(cannot read)".into()),
     }
 }
 
@@ -1548,10 +1786,19 @@ fn channel_id(name: &str) -> Option<u32> {
     None
 }
 
-/// `enums`: the table an Id value is named from (the property's own values).
-fn value_text(v: &spa::pod::Value, enums: *const spa::sys::spa_type_info, depth: usize) -> String {
-    use spa::pod::Value;
-    let pad = "  ".repeat(depth + 1);
+/// A float as pw-dump writes it: always with its decimal point (1.0, not 1).
+fn float(f: f64) -> String {
+    format!("{f:?}")
+}
+
+/// A value as PipeWire gives it (ADR 0024): an object's keys by name (rate, channels,
+/// channelVolumes…) in their order, ids by name (audio, raw, F32P), a choice as pw-dump writes it
+/// ({ default, min, max }, { default, alt1, alt2… }), a fraction and a rectangle as pw-cli writes
+/// them (1/48000, 640x480). `enums`: the table an Id value is named from (the property's own).
+fn value_of(v: &spa::pod::Value, enums: *const spa::sys::spa_type_info) -> PVal {
+    use spa::pod::{Value, ValueArray as A};
+    let t = |s: String| PVal::Text(s);
+    let id = |i: u32| type_name(enums, i).unwrap_or_else(|| i.to_string());
     match v {
         Value::Object(o) => {
             // SAFETY: libspa's static type tables
@@ -1559,7 +1806,7 @@ fn value_text(v: &spa::pod::Value, enums: *const spa::sys::spa_type_info, depth:
                 let t = spa::sys::spa_debug_type_find(spa::sys::spa_types, o.type_);
                 if t.is_null() { std::ptr::null() } else { (*t).values }
             };
-            let mut s = String::from("{\n");
+            let mut keys = Vec::new();
             for p in &o.properties {
                 // SAFETY: as above
                 let (name, values) = unsafe {
@@ -1574,57 +1821,63 @@ fn value_text(v: &spa::pod::Value, enums: *const spa::sys::spa_type_info, depth:
                 // channel positions are arrays of ids: named from the channel table
                 // SAFETY: libspa's static table
                 let values = if name == "position" || name == "channelMap" { unsafe { spa::sys::spa_type_audio_channel } } else { values };
-                s += &format!("{pad}{name}: {}\n", value_text(&p.value, values, depth + 1));
+                keys.push((name, value_of(&p.value, values)));
             }
-            s + &"  ".repeat(depth) + "}"
+            PVal::Obj(keys)
         }
-        Value::Struct(items) => format!("[ {} ]", items.iter().map(|i| value_text(i, std::ptr::null(), depth + 1)).collect::<Vec<_>>().join(", ")),
-        Value::Id(id) => type_name(enums, id.0).unwrap_or_else(|| id.0.to_string()),
-        Value::String(t) => format!("\"{t}\""),
-        Value::Bool(b) => b.to_string(),
-        Value::Int(i) => i.to_string(),
-        Value::Long(l) => l.to_string(),
-        Value::Float(f) => format!("{f}"),
-        Value::Double(f) => format!("{f}"),
-        Value::Fraction(f) => format!("{}/{}", f.num, f.denom),
-        Value::Rectangle(r) => format!("{}x{}", r.width, r.height),
-        Value::ValueArray(spa::pod::ValueArray::Id(ids)) => format!("[ {} ]", ids.iter().map(|i| type_name(enums, i.0).unwrap_or_else(|| i.0.to_string())).collect::<Vec<_>>().join(", ")),
-        Value::ValueArray(a) => format!("{a:?}").split_once('(').map_or_else(|| format!("{a:?}"), |(_, r)| r.trim_end_matches(')').to_owned()),
-        Value::Choice(c) => choice_text(c, enums),
-        other => format!("{other:?}"),
+        Value::Struct(items) => PVal::List(items.iter().map(|i| value_of(i, std::ptr::null())).collect()),
+        Value::None => t("null".into()),
+        Value::Id(i) => t(id(i.0)),
+        Value::String(s) => t(format!("{s:?}")),
+        Value::Bool(b) => t(b.to_string()),
+        Value::Int(i) => t(i.to_string()),
+        Value::Long(l) => t(l.to_string()),
+        Value::Float(f) => t(float(*f as f64)),
+        Value::Double(f) => t(float(*f)),
+        Value::Fraction(f) => t(format!("{}/{}", f.num, f.denom)),
+        Value::Rectangle(r) => t(format!("{}x{}", r.width, r.height)),
+        Value::ValueArray(a) => PVal::List(match a {
+            A::None(v) => v.iter().map(|_| t("null".into())).collect(),
+            A::Bool(v) => v.iter().map(|x| t(x.to_string())).collect(),
+            A::Id(v) => v.iter().map(|x| t(id(x.0))).collect(),
+            A::Int(v) => v.iter().map(|x| t(x.to_string())).collect(),
+            A::Long(v) => v.iter().map(|x| t(x.to_string())).collect(),
+            A::Float(v) => v.iter().map(|x| t(float(*x as f64))).collect(),
+            A::Double(v) => v.iter().map(|x| t(float(*x))).collect(),
+            A::Rectangle(v) => v.iter().map(|r| t(format!("{}x{}", r.width, r.height))).collect(),
+            A::Fraction(v) => v.iter().map(|f| t(format!("{}/{}", f.num, f.denom))).collect(),
+            A::Fd(v) => v.iter().map(|f| t(format!("{f:?}"))).collect(),
+        }),
+        Value::Choice(c) => choice_of(c, enums),
+        other => t(format!("{other:?}")),
     }
 }
 
-/// A choice (what a format may be): its default, then the alternatives.
-fn choice_text(c: &spa::pod::ChoiceValue, enums: *const spa::sys::spa_type_info) -> String {
+/// A choice as pw-dump writes it: the value alone when there is no choice; else its default and
+/// its range ({ default, min, max[, step] }) or its alternatives ({ default, alt1, alt2… }).
+fn choice_of(c: &spa::pod::ChoiceValue, enums: *const spa::sys::spa_type_info) -> PVal {
     use spa::pod::ChoiceValue as C;
     use spa::utils::ChoiceEnum as E;
-    fn list<T: std::fmt::Display + spa::pod::CanonicalFixedSizedPod>(e: &E<T>) -> String {
+    fn of<T: spa::pod::CanonicalFixedSizedPod>(e: &E<T>, f: &dyn Fn(&T) -> String) -> PVal {
+        let o = |kv: Vec<(String, &T)>| PVal::Obj(kv.into_iter().map(|(k, v)| (k, PVal::Text(f(v)))).collect());
         match e {
-            E::None(v) => v.to_string(),
-            E::Range { default, min, max } => format!("{default} ({min}…{max})"),
-            E::Step { default, min, max, step } => format!("{default} ({min}…{max} by {step})"),
-            E::Enum { default, alternatives } => format!("{default} (one of {})", alternatives.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")),
-            E::Flags { default, flags } => format!("{default} (flags {})", flags.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")),
+            E::None(v) => PVal::Text(f(v)),
+            E::Range { default, min, max } => o(vec![("default".into(), default), ("min".into(), min), ("max".into(), max)]),
+            E::Step { default, min, max, step } => o(vec![("default".into(), default), ("min".into(), min), ("max".into(), max), ("step".into(), step)]),
+            E::Enum { default, alternatives } => o(std::iter::once(("default".to_owned(), default)).chain(alternatives.iter().enumerate().map(|(i, a)| (format!("alt{}", i + 1), a))).collect()),
+            E::Flags { default, flags } => o(std::iter::once(("default".to_owned(), default)).chain(flags.iter().enumerate().map(|(i, a)| (format!("alt{}", i + 1), a))).collect()),
         }
     }
-    let id = |i: &spa::utils::Id| type_name(enums, i.0).unwrap_or_else(|| i.0.to_string());
     match c {
-        C::Int(ch) => list(&ch.1),
-        C::Long(ch) => list(&ch.1),
-        C::Float(ch) => list(&ch.1),
-        C::Double(ch) => list(&ch.1),
-        C::Id(ch) => match &ch.1 {
-            E::None(v) => id(v),
-            E::Enum { default, alternatives } => format!("{} (one of {})", id(default), alternatives.iter().map(id).collect::<Vec<_>>().join(", ")),
-            other => format!("{other:?}"),
-        },
-        C::Fraction(ch) => match &ch.1 {
-            E::None(v) => format!("{}/{}", v.num, v.denom),
-            E::Range { default, min, max } => format!("{}/{} ({}/{}…{}/{})", default.num, default.denom, min.num, min.denom, max.num, max.denom),
-            other => format!("{other:?}"),
-        },
-        other => format!("{other:?}"),
+        C::Bool(ch) => of(&ch.1, &|v| v.to_string()),
+        C::Int(ch) => of(&ch.1, &|v| v.to_string()),
+        C::Long(ch) => of(&ch.1, &|v| v.to_string()),
+        C::Float(ch) => of(&ch.1, &|v| float(*v as f64)),
+        C::Double(ch) => of(&ch.1, &|v| float(*v)),
+        C::Id(ch) => of(&ch.1, &|v| type_name(enums, v.0).unwrap_or_else(|| v.0.to_string())),
+        C::Rectangle(ch) => of(&ch.1, &|r| format!("{}x{}", r.width, r.height)),
+        C::Fraction(ch) => of(&ch.1, &|f| format!("{}/{}", f.num, f.denom)),
+        other => PVal::Text(format!("{other:?}")),
     }
 }
 

@@ -29,3 +29,4 @@ General rules live in [principles](../principles.md). New ADRs start from [the t
 | 0021 | [FIND · SHOW in ENGINE; its keys along the graph's top](0021-find-and-show-in-engine.md) | 2026-11-26 |
 | 0022 | [ISSUES: only what is wrong](0022-issues-only-what-is-wrong.md) | 2026-11-26 |
 | 0023 | [Jacks without the nut](0023-jacks-without-the-nut.md) | 2026-11-26 |
+| 0024 | [The inspector shows PipeWire's data as it is](0024-the-inspector-shows-data-as-it-is.md) | 2026-11-27 |

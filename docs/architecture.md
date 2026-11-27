@@ -34,7 +34,10 @@ PipeWire ──(pw.rs thread)── Event ──► Graph (graph.rs) ──devic
 - **`ui/app.rs`** is the window: input, the top panel, drop-down lists (PROFILE, PORT),
   and switching between MIXER, RACK (its two views, rails and desk) and ENGINE.
 - **`ui/engine.rs`** is ENGINE: the real graph (nodes, ports, links by driver), the inspector,
-  and the diagnostics tables.
+  and the diagnostics tables. The inspector (`insp_svg`, laid out by `IBody`) shows what
+  `pw.rs` sends as it came: properties (`Event::Info`), info fields (`Event::Fields`), the
+  registry's type and permissions (`Event::Object`) and params (`Event::Param`, a `PVal` tree),
+  ADR 0024.
 - **`ui/mixer.rs`** is MIXER: a module for each strip of the scene (a device's input or output,
   an app's; `mixer::role_of` says which groups are strips), drawn as one picture each on the
   painter's threads, the faders' caps, knobs, lit LEDs and numbers as small pictures over it. Its keys go through `Scene` (`reroute` for

@@ -14,6 +14,12 @@ tidier.
 - A cord must never lead nowhere. A device with a cord is never hidden. A hidden device that gets
   a cord comes back by itself.
 - ENGINE is the plain truth: every node, port and link as PipeWire reports it.
+- ENGINE's inspector shows PipeWire's data as it is: every key and value as PipeWire spells it,
+  no reading of it, no summary, no value turned into a nicer one, no explanation of our own. It
+  may only be laid out well (grouped by PipeWire's own structure, searched, folded, copied). What
+  Patchcord adds (where a node is in the rack, numbers worked out from the profiler) stands apart,
+  under its own heading. Its tabs come in one order for every kind of object: INFO, PROPS, PARAMS,
+  TIMING, CONN, each only where the object has it ([ADR 0024](decisions/0024-the-inspector-shows-data-as-it-is.md)).
 
 ## Only what PipeWire says
 

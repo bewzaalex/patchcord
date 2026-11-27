@@ -19,7 +19,7 @@ use super::{face, painter, panel};
 use super::scene::{Layer, View, next_id, rasterize};
 use super::text::{self, esc};
 use crate::graph::{Device, Dir, Graph, Media, block_kind, port_role};
-use crate::pw::{CUE_NODE, Cmd, DriverTiming, Event, Kind, METER_PREFIX, NodeTiming, Props};
+use crate::pw::{CUE_NODE, Cmd, DriverTiming, Event, Kind, METER_PREFIX, NodeTiming, PVal, Props};
 
 /// What can be selected and inspected.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -82,6 +82,17 @@ enum Hit {
     Bar(usize),
     /// a port's LINK TO (LINK FROM) row: the link (output, input) it makes or takes away
     LinkTo(u32, u32),
+    /// the inspector's search field: typed into
+    ISearch,
+    /// a namespace chip in PROPS ("": all)
+    INs(String),
+    /// a section's head in the inspector: folds or opens it
+    IFold(String),
+    /// a param's row (or one of its entries) in PARAMS: opens or folds it; with Ctrl, copies
+    /// it (the text)
+    IOpen(String, String),
+    /// a row in the inspector: copies its value; with Ctrl, its key = value
+    Copy(String, String),
 }
 
 /// A picture to draw: (layer, x, y, w, h) in window pixels, where it may draw (if not
@@ -153,6 +164,8 @@ pub enum Action {
     Report,
     /// links to make and to take away (output port, input port), as one step to undo
     Link { add: Vec<(u32, u32)>, del: Vec<(u32, u32)> },
+    /// this text to the clipboard (a value in the inspector)
+    Copy(String),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -416,6 +429,284 @@ fn node_h(n: &ENode) -> f64 {
 
 /// Lines of at most `n` characters, broken between words where it can (a long word, a path,
 /// is cut where it must).
+/// An object's params: by kind (in the order they came), each entry by its index.
+type ParamsOf = Vec<(String, BTreeMap<u32, PVal>)>;
+
+/// Property keys and info fields whose value is another object's id: a click there goes to it.
+const ID_KEYS: [&str; 15] = ["client.id", "device.id", "node.id", "factory.id", "module.id", "node.driver-id", "link.output.node", "link.output.port", "link.input.node", "link.input.port", "output-node-id", "output-port-id", "input-node-id", "input-port-id", "object.id"];
+
+/// A param's entry on one line, for its folded row: the whole of it where it is plain enough,
+/// else its keys with what is nested left as {…} and […].
+fn one_line(v: &PVal) -> String {
+    match (pval_inline(v), v) {
+        (Some(t), _) => t,
+        (None, PVal::Obj(o)) => format!(
+            "{{ {} }}",
+            o.iter()
+                .map(|(k, x)| format!(
+                    "{k}: {}",
+                    pval_inline(x).unwrap_or_else(|| match x {
+                        PVal::List(_) => "[…]".into(),
+                        _ => "{…}".into(),
+                    })
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        (None, _) => "[…]".into(),
+    }
+}
+
+/// A character of the inspector's 11 px monospace.
+const CW: f64 = 6.6;
+
+/// The inspector's body as it is laid out: its SVG, how far down it reaches, and what in it is
+/// clicked (in its own numbers, before it is scrolled).
+struct IBody<'a> {
+    svg: String,
+    y: f64,
+    w: f64,
+    /// the search, lower case ("": none)
+    q: String,
+    hits: Vec<(Hit, [f64; 4])>,
+    /// the sections folded
+    shut: &'a HashSet<String>,
+}
+
+impl IBody<'_> {
+    /// Whether the search finds something in `t` (or there is no search).
+    fn found(&self, t: &str) -> bool {
+        self.q.is_empty() || t.to_lowercase().contains(&self.q)
+    }
+
+    /// `t` escaped, what the search found in it lit.
+    fn lit(&self, t: &str) -> String {
+        let l = t.to_lowercase();
+        if !self.q.is_empty()
+            && l.len() == t.len()
+            && let Some(i) = l.find(&self.q)
+        {
+            let j = i + self.q.len();
+            return format!(r##"{}<tspan fill="#ffb02e" font-weight="bold">{}</tspan>{}"##, esc(&t[..i]), esc(&t[i..j]), esc(&t[j..]));
+        }
+        esc(t)
+    }
+
+    /// A line of text, wrapped.
+    fn note(&mut self, t: &str, fill: &str) {
+        for l in wrap(t, ((self.w - 24.0) / CW) as usize) {
+            let _ = write!(self.svg, r##"<text x="12" y="{}" font-size="11" fill="{fill}" xml:space="preserve">{}</text>"##, self.y + 13.0, esc(&l));
+            self.y += 16.0;
+        }
+    }
+
+    /// A section's head, its title in amber (Patchcord's own, `ours`, in blue), a click folds it:
+    /// whether it is open.
+    fn section(&mut self, key: &str, title: &str, count: &str, ours: bool) -> bool {
+        self.y += 8.0;
+        let open = !self.shut.contains(key);
+        let c = if ours { "#6fa8dc" } else { "#e58f2c" };
+        let y = self.y;
+        let arrow = if open { format!("M12,{} l3.5,4 l3.5,-4", y + 6.0) } else { format!("M13.5,{} l4,3.5 l-4,3.5", y + 4.5) };
+        let tw = text::width(text::BOLD, title, 10.0, 1.0);
+        let _ = write!(
+            self.svg,
+            r##"<path d="{arrow}" fill="none" stroke="#55585d" stroke-width="1.4"/><text x="24" y="{}" font-size="10" font-family="Noto Sans" font-weight="bold" letter-spacing="1" fill="{c}" xml:space="preserve">{}</text><text x="{}" y="{}" font-size="10" fill="#55585d">{}</text>"##,
+            y + 11.0,
+            esc(title),
+            30.0 + tw,
+            y + 11.0,
+            esc(count)
+        );
+        self.hits.push((Hit::IFold(key.to_owned()), [0.0, y - 2.0, self.w, 18.0]));
+        self.y += 20.0;
+        open
+    }
+
+    /// A key and its value, both wrapped, the key's first `faint` characters (its namespace)
+    /// faint; a description under the value (its source, its words: PipeWire's own); `go`: a
+    /// click on the row goes to that object.
+    fn row(&mut self, indent: f64, (k, faint): (&str, usize), (v, vfill): (&str, &str), desc: Option<(&str, &str)>, go: Option<Hit>) {
+        let x0 = 12.0 + indent;
+        let kw = ((self.w - 24.0 - indent) * 0.42).max(96.0);
+        let vx = x0 + kw;
+        let kl = wrap(k, ((kw - 8.0) / CW).max(4.0) as usize);
+        let vl = wrap(v, ((self.w - 12.0 - vx) / CW).max(4.0) as usize);
+        let y0 = self.y;
+        for (i, l) in kl.iter().enumerate() {
+            let ty = y0 + 13.0 + i as f64 * 15.0;
+            let t = if i == 0 && faint > 0 && l.chars().count() > faint {
+                let cut = l.char_indices().nth(faint).map_or(l.len(), |(b, _)| b);
+                format!(r##"<tspan fill="#55585d">{}</tspan>{}"##, self.lit(&l[..cut]), self.lit(&l[cut..]))
+            } else {
+                self.lit(l)
+            };
+            let _ = write!(self.svg, r##"<text x="{x0}" y="{ty}" font-size="11" fill="#a8abae" xml:space="preserve">{t}</text>"##);
+        }
+        for (i, l) in vl.iter().enumerate() {
+            let ty = y0 + 13.0 + i as f64 * 15.0;
+            let _ = write!(self.svg, r##"<text x="{vx}" y="{ty}" font-size="11" fill="{vfill}" xml:space="preserve">{}</text>"##, self.lit(l));
+            if go.is_some() {
+                let _ = write!(self.svg, r##"<path d="M{vx},{} h{}" stroke="#6b6e72" stroke-dasharray="1 2"/>"##, ty + 2.5, l.chars().count() as f64 * CW);
+            }
+        }
+        let mut y = y0 + kl.len().max(vl.len()).max(1) as f64 * 15.0 + 4.0;
+        if let Some((src, d)) = desc {
+            for l in wrap(&format!("{src}{}{d}", if src.is_empty() { "" } else { " " }), ((self.w - 12.0 - vx) / 6.0).max(4.0) as usize) {
+                let _ = write!(self.svg, r##"<text x="{vx}" y="{}" font-family="Noto Sans" font-size="10.5" fill="#7d8085" xml:space="preserve">{}</text>"##, y + 9.0, self.lit(&l));
+                y += 14.0;
+            }
+            y += 2.0;
+        }
+        let _ = write!(self.svg, r##"<path d="M{x0},{} H{}" stroke="#222326"/>"##, y - 1.5, self.w - 12.0);
+        let hit = go.unwrap_or_else(|| Hit::Copy(k.to_owned(), v.to_owned()));
+        self.hits.push((hit, [0.0, y0, self.w, y - y0]));
+        self.y = y;
+    }
+
+    /// A value as PipeWire gave it under its key: on one line where it fits ({ default: 1,
+    /// min: 1, max: 32 }, [ "FL", "FR" ]), else nested under it, a step in; a struct of key,
+    /// value pairs (Props' params, a route's info) a pair a row. `desc`: PipeWire's descriptions
+    /// of keys (PropInfo's); `go`: where a key's value is an id, the object it goes to.
+    fn value(&mut self, indent: f64, k: &str, v: &PVal, desc: &HashMap<String, String>, go: &dyn Fn(&str, &str) -> Option<Hit>) {
+        if !self.found(&format!("{k} {}", pval_all(v))) {
+            return;
+        }
+        let d = desc.get(k).map(|d| ("PropInfo", d.as_str()));
+        let inline = pval_inline(v);
+        let fits = match (&inline, v) {
+            (Some(_), PVal::Text(_)) => true,
+            (Some(t), PVal::List(l)) => t.len() <= 44 || l.len() <= 8,
+            (Some(t), _) => t.len() <= 44,
+            _ => false,
+        };
+        if fits {
+            let t = inline.unwrap_or_default();
+            let g = go(k, &t);
+            self.row(indent, (k, 0), (&t, if g.is_some() { "#e6e7e8" } else { "#c9cbcd" }), d, g);
+            return;
+        }
+        let y0 = self.y;
+        let none = HashMap::new();
+        match v {
+            PVal::List(l) => {
+                self.row(indent, (k, 0), (&format!("[ {} ]", l.len()), "#55585d"), d, None);
+                self.copy_last(v);
+                // key, value pairs: as many strings as values, the strings first (a dict's
+                // count before them, as a route's info has it)
+                let start = usize::from(l.len() % 2 == 1 && matches!(l.first(), Some(PVal::Text(t)) if t.parse::<usize>().is_ok_and(|n| n * 2 + 1 == l.len())));
+                let pairs = l.len() > start && (l.len() - start).is_multiple_of(2) && l[start..].chunks(2).all(|c| matches!(&c[0], PVal::Text(t) if t.starts_with('"')));
+                if pairs {
+                    if start == 1 {
+                        self.value(indent + 12.0, "[0]", &l[0], &none, go);
+                    }
+                    for c in l[start..].chunks(2) {
+                        let key = pval_inline(&c[0]).unwrap_or_default();
+                        self.value(indent + 12.0, key.trim_matches('"'), &c[1], &none, go);
+                    }
+                } else {
+                    for (i, x) in l.iter().enumerate() {
+                        self.value(indent + 12.0, &format!("[{i}]"), x, &none, go);
+                    }
+                }
+            }
+            PVal::Obj(o) => {
+                self.row(indent, (k, 0), (&format!("{{ {} }}", o.len()), "#55585d"), d, None);
+                self.copy_last(v);
+                for (ck, cv) in o {
+                    self.value(indent + 12.0, ck, cv, &none, go);
+                }
+            }
+            PVal::Text(_) => {}
+        }
+        let _ = write!(self.svg, r##"<path d="M{},{} V{}" stroke="#2c2d31"/>"##, 16.0 + indent, y0 + 19.0, self.y - 4.0);
+    }
+
+    /// The row just made copies all of `v` (a nested value), not what its row shows.
+    fn copy_last(&mut self, v: &PVal) {
+        if let Some((Hit::Copy(_, val), _)) = self.hits.last_mut() {
+            *val = pval_text(v, 0);
+        }
+    }
+
+    /// A row of PARAMS' outline: ▸ or ▾, its name, a count, and while folded its first entry on
+    /// one line; a click opens or folds it, Ctrl+click copies `text`.
+    fn outline(&mut self, indent: f64, key: &str, open: bool, (name, fill): (&str, &str), (count, preview): (&str, &str), text: String) {
+        let (x, y) = (12.0 + indent, self.y);
+        let arrow = if open { format!("M{x},{} l3.5,4 l-0,0 l3.5,-4", y + 8.0) } else { format!("M{},{} l4,3.5 l-4,3.5", x + 1.5, y + 6.5) };
+        let nx = x + 12.0;
+        let nw = (name.chars().count() as f64 * CW).max(if indent == 0.0 { 110.0 } else { 24.0 });
+        let px = nx + nw + 8.0 + count.chars().count() as f64 * 6.0 + 8.0;
+        let room = ((self.w - 12.0 - px) / 6.0).max(0.0) as usize;
+        let _ = write!(
+            self.svg,
+            r##"<path d="{arrow}" fill="none" stroke="#55585d" stroke-width="1.4"/><text x="{nx}" y="{}" font-size="11" fill="{fill}" xml:space="preserve">{}</text><text x="{}" y="{}" font-size="10" fill="#55585d">{}</text><text x="{px}" y="{}" font-size="10" fill="#7d8085" xml:space="preserve">{}</text><path d="M{x},{} H{}" stroke="#222326"/>"##,
+            y + 14.0,
+            self.lit(name),
+            nx + nw + 8.0,
+            y + 14.0,
+            esc(count),
+            y + 14.0,
+            esc(&cut(preview, room)),
+            y + 20.5,
+            self.w - 12.0
+        );
+        self.hits.push((Hit::IOpen(key.to_owned(), text), [0.0, y, self.w, 21.0]));
+        self.y += 22.0;
+    }
+}
+
+/// A port's links in the inspector, a row each, `indent` in: its id, its state, which way it goes
+/// and the port at its other end; a click goes to it.
+fn port_links(b: &mut IBody, m: &Model, port: u32, indent: f64) {
+    for l in m.links.iter().filter(|l| l.out_port == port || l.in_port == port) {
+        let (o, op) = if l.out_port == port { (l.in_node, l.in_port) } else { (l.out_node, l.out_port) };
+        let end = m.node(o).map_or_else(|| o.to_string(), |n| format!("{}:{}", n.desc, port_name(n, op)));
+        b.row(indent, (&format!("link {}", l.id), 0), (&format!("{} {} {end}", l.state, if l.out_port == port { "→" } else { "←" }), "#e6e7e8"), None, Some(Hit::Sel(Sel::Link(l.id))));
+    }
+}
+
+/// A value as text, an object's keys one a line, indented `depth` steps (a report's PARAMS).
+fn pval_text(v: &PVal, depth: usize) -> String {
+    let pad = "  ".repeat(depth);
+    match v {
+        PVal::Text(t) => format!("{pad}{t}"),
+        _ if pval_inline(v).is_some_and(|t| t.len() <= 60) => format!("{pad}{}", pval_inline(v).unwrap_or_default()),
+        PVal::List(l) => l.iter().map(|x| pval_text(x, depth)).collect::<Vec<_>>().join("\n"),
+        PVal::Obj(o) => o
+            .iter()
+            .map(|(k, x)| match pval_inline(x).filter(|t| t.len() <= 60) {
+                Some(t) => format!("{pad}{k}: {t}"),
+                None => format!("{pad}{k}:\n{}", pval_text(x, depth + 1)),
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+/// A value on one line as pw-dump would write it compactly, if it has nothing nested that won't:
+/// `{ default: 1, min: 1, max: 32 }`, `[ "FL", "FR" ]`.
+fn pval_inline(v: &PVal) -> Option<String> {
+    match v {
+        PVal::Text(t) => Some(t.clone()),
+        PVal::List(l) if l.is_empty() => Some("[ ]".into()),
+        PVal::List(l) => l.iter().map(|x| match x {
+            PVal::Text(t) => Some(t.clone()),
+            _ => None,
+        }).collect::<Option<Vec<_>>>().map(|v| format!("[ {} ]", v.join(", "))),
+        PVal::Obj(o) => o.iter().map(|(k, x)| pval_inline(x).map(|t| format!("{k}: {t}"))).collect::<Option<Vec<_>>>().map(|v| format!("{{ {} }}", v.join(", "))),
+    }
+}
+
+/// Every plain value of `v`, and its keys, joined: what the inspector's search looks in.
+fn pval_all(v: &PVal) -> String {
+    match v {
+        PVal::Text(t) => t.clone(),
+        PVal::List(l) => l.iter().map(pval_all).collect::<Vec<_>>().join(" "),
+        PVal::Obj(o) => o.iter().map(|(k, x)| format!("{k} {}", pval_all(x))).collect::<Vec<_>>().join(" "),
+    }
+}
+
 fn wrap(t: &str, n: usize) -> Vec<String> {
     let n = n.max(4);
     let mut out = Vec::new();
@@ -456,8 +747,23 @@ pub struct Engine {
     // what PipeWire told
     meta: BTreeMap<(u32, u32, String), (Option<String>, String)>,
     timings: Vec<DriverTiming>,
-    params: HashMap<u32, BTreeMap<(String, u32), String>>,
+    /// each node's, port's and device's params as PipeWire gave them: by kind (in the order they
+    /// came), each entry by its index
+    params: HashMap<u32, ParamsOf>,
     asked: HashSet<u32>,
+    /// each object's info fields as PipeWire gave them (state, error, direction, format…)
+    fields: HashMap<u32, Vec<(String, PVal)>>,
+    /// each object as the registry gave it: its type, version and permissions
+    objinfo: HashMap<u32, (String, u32, String)>,
+    /// the inspector's search, whether it is being typed into, its namespace chip in PROPS ("":
+    /// all), its folded sections and its opened params (by key)
+    isearch: String,
+    isearch_on: bool,
+    /// whether Ctrl is held, for the click being handled (set by the app)
+    pub ctrl: bool,
+    ins: String,
+    ishut: HashSet<String>,
+    iopen: HashSet<String>,
     /// each node's B/Q (average, peak), and each driver's graph end over its period (average,
     /// worst), half a second apart
     hist: HashMap<u32, VecDeque<(f32, f32)>>,
@@ -600,6 +906,14 @@ impl Engine {
             timings: Vec::new(),
             params: HashMap::new(),
             asked: HashSet::new(),
+            fields: HashMap::new(),
+            objinfo: HashMap::new(),
+            isearch: String::new(),
+            isearch_on: false,
+            ctrl: false,
+            ins: String::new(),
+            ishut: HashSet::new(),
+            iopen: HashSet::new(),
             hist: HashMap::new(),
             ends: HashMap::new(),
             load: VecDeque::new(),
@@ -731,13 +1045,31 @@ impl Engine {
                 self.dirty = true;
                 self.on
             }
-            Event::Param { id, kind, index, text } => {
+            Event::Param { id, kind, index, value } => {
                 let p = self.params.entry(*id).or_default();
+                let at = match p.iter().position(|(k, _)| k == kind) {
+                    Some(i) => i,
+                    None => {
+                        p.push((kind.clone(), BTreeMap::new()));
+                        p.len() - 1
+                    }
+                };
+                // a new round of this kind: what is gone goes
                 if *index == 0 {
-                    p.retain(|(k, _), _| k != kind);
+                    p[at].1.clear();
                 }
-                p.insert((kind.clone(), *index), text.clone());
+                let value = if self.private { value.map(&mask_macs) } else { value.clone() };
+                p[at].1.insert(*index, value);
                 self.on
+            }
+            Event::Fields { id, fields } => {
+                let f = if self.private { fields.iter().map(|(k, v)| (k.clone(), v.map(&mask_macs))).collect() } else { fields.clone() };
+                self.fields.insert(*id, f);
+                self.on
+            }
+            Event::Object { id, ty, version, perms } => {
+                self.objinfo.insert(*id, (ty.clone(), *version, perms.clone()));
+                false
             }
             _ => false,
         }
@@ -1036,8 +1368,12 @@ impl Engine {
         self.hist.retain(|id, _| alive.contains(id));
         self.ends.retain(|id, _| alive.contains(id));
         self.xruns.retain(|id, _| alive.contains(id));
-        self.params.retain(|id, _| alive.contains(id));
-        self.asked.retain(|id| alive.contains(id));
+        // (params, fields: of any object that is still there)
+        let there: HashSet<u32> = self.props.keys().copied().collect();
+        self.params.retain(|id, _| there.contains(id));
+        self.asked.retain(|id| there.contains(id));
+        self.fields.retain(|id, _| there.contains(id) || *id == 0);
+        self.objinfo.retain(|id, _| there.contains(id));
         self.issues = self.find_issues(graph);
         // pictures for others to see: no MAC addresses (Bluetooth devices are named by them)
         if self.private {
@@ -1159,7 +1495,27 @@ impl Engine {
 
     /// Whether FIND's card is open: what is typed goes to its field.
     pub fn finding(&self) -> bool {
-        self.on && self.find_open
+        self.on && self.find_open && !self.isearch_on
+    }
+
+    /// Whether what is typed goes to the inspector's search.
+    pub fn isearching(&self) -> bool {
+        self.on && self.isearch_on && self.sel.is_some()
+    }
+
+    /// The inspector's search; changed, its details go back to their top.
+    pub fn isearch_text(&mut self) -> &mut String {
+        self.scroll[0] = 0.0;
+        &mut self.isearch
+    }
+
+    /// Esc in the inspector's search: what was typed goes; again, the field is left.
+    pub fn isearch_esc(&mut self) {
+        if self.isearch.is_empty() {
+            self.isearch_on = false;
+        } else {
+            self.isearch.clear();
+        }
     }
 
     /// Opens or closes FIND · SHOW's card (one card at a time: the legend closes).
@@ -2276,393 +2632,69 @@ impl Engine {
         (format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" font-family="Noto Sans Mono">{o}</svg>"#), hits, h)
     }
 
-    /// The inspector: what is selected, with its tabs.
+    /// The object a PipeWire id names, as the inspector chooses it: a node, a port, a link, or
+    /// another object (a device, a client…).
+    fn sel_of(&self, id: u32) -> Option<Sel> {
+        if self.model.node(id).is_some() {
+            Some(Sel::Node(id))
+        } else if self.model.port(id).is_some() {
+            Some(Sel::Port(id))
+        } else if self.model.links.iter().any(|l| l.id == id) {
+            Some(Sel::Link(id))
+        } else if self.objects.iter().any(|o| o.1 == id) {
+            Some(Sel::Obj(id))
+        } else {
+            None
+        }
+    }
+
+    /// The inspector: what is selected, with its tabs (INFO, PROPS, PARAMS, TIMING, CONN, each
+    /// where the object has it). PipeWire's data as it is (ADR 0024): its info fields, properties
+    /// and params verbatim, only laid out; what Patchcord adds (where a node is on the desk,
+    /// numbers worked out from the profiler's, making links) apart, under PATCHCORD.
     fn insp_svg(&mut self, a: [f64; 4]) -> (String, Vec<(Hit, [f64; 4])>, Scrolled) {
         let (w, h) = (a[2].max(1.0), a[3].max(1.0));
         let mut hits = Vec::new();
-        let mut head = String::new();
-        // the body: lines of (y, svg), measured as they go
-        let mut body = String::new();
-        let mut y = 0.0;
-        let chars = ((w - 24.0) / 6.6) as usize;
-        let line = |body: &mut String, y: &mut f64, t: &str, fill: &str, x: f64| {
-            for l in wrap(t, chars.saturating_sub((x / 6.6) as usize)) {
-                let _ = write!(body, r##"<text x="{}" y="{}" font-size="11" fill="{fill}" xml:space="preserve">{}</text>"##, 12.0 + x, *y + 13.0, esc(&l));
-                *y += 16.0;
-            }
+        let frame = |head: &str| format!(r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" font-family="Noto Sans Mono"><rect width="{w}" height="{h}" fill="#17181a"/><path d="M.5,0 V{h}" stroke="#000"/>{head}</svg>"##);
+        let Some(sel) = self.sel else { return (frame(""), hits, Scrolled { w, ..Default::default() }) };
+        let (id, ty) = match sel {
+            Sel::Node(id) => (id, "Node".to_owned()),
+            Sel::Port(id) => (id, "Port".to_owned()),
+            Sel::Link(id) => (id, "Link".to_owned()),
+            Sel::Obj(id) => (id, self.objects.iter().find(|o| o.1 == id).map_or_else(|| "?".to_owned(), |o| o.0.clone())),
         };
-        let kv = |body: &mut String, y: &mut f64, rows: &[(&str, String)]| {
-            // the keys' column as wide as the longest key needs, up to half the width; longer
-            // keys and values wrap
-            let longest = rows.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0) as f64 * 6.6 + 24.0;
-            let kcol = longest.clamp(90.0, w * 0.5);
-            let kchars = ((kcol - 22.0) / 6.6) as usize;
-            let vchars = ((w - kcol - 16.0) / 6.6) as usize;
-            for (k, v) in rows {
-                let lines = wrap(v, vchars);
-                let klines = wrap(k, kchars);
-                for (i, l) in klines.iter().enumerate() {
-                    let _ = write!(body, r##"<text x="12" y="{}" font-size="11" fill="#7d8085" xml:space="preserve">{}</text>"##, *y + 13.0 + i as f64 * 15.0, esc(l));
-                }
-                for (i, l) in lines.iter().enumerate() {
-                    let _ = write!(body, r##"<text x="{kcol}" y="{}" font-size="11" fill="#c9cbcd" xml:space="preserve">{}</text>"##, *y + 13.0 + i as f64 * 15.0, esc(l));
-                }
-                *y += lines.len().max(klines.len()).max(1) as f64 * 15.0 + 4.0;
-                let _ = write!(body, r##"<path d="M12,{} H{}" stroke="#222326"/>"##, *y - 1.5, w - 12.0);
-            }
+        let tabs: Vec<ITab> = match ty.as_str() {
+            "Node" => vec![ITab::Info, ITab::Props, ITab::Params, ITab::Timing],
+            "Port" => vec![ITab::Info, ITab::Props, ITab::Params, ITab::Conn],
+            "Device" => vec![ITab::Info, ITab::Props, ITab::Params],
+            _ => vec![ITab::Info, ITab::Props],
         };
-        let heading = |body: &mut String, y: &mut f64, t: &str| {
-            *y += 8.0;
-            let _ = write!(body, r##"<text x="12" y="{}" font-size="10" font-family="Noto Sans" font-weight="bold" letter-spacing="1" fill="#e58f2c">{}</text>"##, *y + 12.0, esc(t));
-            *y += 20.0;
-        };
-        // rows that select something: (y, h) in body units, made hits once scrolled
-        let mut rows: Vec<(Sel, f64)> = Vec::new();
-        // a port's LINK TO (LINK FROM) rows: the link each makes or takes away, its y
-        let mut link_rows: Vec<((u32, u32), f64)> = Vec::new();
-        let mut desk_button: Option<(String, f64)> = None;
-        let tabs: Vec<ITab>;
+        if !tabs.contains(&self.itab) {
+            self.itab = ITab::Info;
+        }
+        // its params are asked for each time PARAMS opens on it
+        if self.itab == ITab::Params && self.asked.insert(id) {
+            self.outbox.push(Cmd::Params(id));
+        }
         let m = &self.model;
-        let props_of = |id: u32| -> Vec<(String, String)> { self.props.get(&id).map(|p| p.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default() };
-        let (title, sub, led) = match self.sel {
-            // not drawn: the inspector shows only with a selection
-            None => {
-                tabs = Vec::new();
-                (String::new(), String::new(), "#4a4c50")
-            }
-            Some(Sel::Node(id)) => {
-                let n = m.node(id).cloned().unwrap_or_else(|| ENode { id, name: "?".into(), desc: "?".into(), class: String::new(), kind: NKind::Other, state: "—", ins: vec![], outs: vec![], color: [0; 3], desk: None, system: false });
-                tabs = vec![ITab::Info, ITab::Props, ITab::Params, ITab::Timing];
-                if !tabs.contains(&self.itab) {
-                    self.itab = ITab::Info;
-                }
-                let g = m.group(id);
-                let t = m.timing.get(&id);
-                let xr = self.xruns.get(&id).map_or(0, |x| x.0);
-                let running = g.is_some();
-                match self.itab {
-                    ITab::Info | ITab::Conn => {
-                        let p = self.props.get(&id);
-                        let pget = |k: &str| p.and_then(|p| p.get(k)).cloned();
-                        let client = pget("client.id").and_then(|c| c.parse::<u32>().ok());
-                        let client_name = client.and_then(|c| self.objects.iter().find(|o| o.0 == "Client" && o.1 == c)).map(|o| o.2.clone());
-                        let mut r: Vec<(&str, String)> = vec![
-                            ("STATE", format!("{}{}", if running { "running" } else { n.state }, if xr > 0 { format!(" · {xr} xruns") } else { String::new() })),
-                            ("NAME", n.name.clone()),
-                            ("CLASS", n.class.clone()),
-                            ("CLIENT", client.map_or("—".into(), |c| format!("{} ({c})", client_name.unwrap_or_default()))),
-                            (
-                                "DRIVER",
-                                match g {
-                                    Some(g) if g.driver == id => format!("this node: it clocks {} other{}", g.members.len() - 1, if g.members.len() == 2 { "" } else { "s" }),
-                                    Some(g) => format!("{} ({})", m.node(g.driver).map_or("?".into(), |d| d.desc.clone()), g.driver),
-                                    None => "— (not running)".into(),
-                                },
-                            ),
-                        ];
-                        if let Some(g) = g {
-                            r.push(("CLOCK", format!("{} Hz · quantum {} · {}", g.rate, g.quantum, ms(g.quantum, g.rate))));
-                        }
-                        if let (Some(g), Some(t)) = (g, t)
-                            && t.latency.1 > 0
-                        {
-                            r.push(("OWN CLOCK", format!("{}/{}{}", t.latency.0, t.latency.1, if t.latency.1 != g.rate && g.driver != id { " · resampled" } else { "" })));
-                        }
-                        if let Some(l) = pget("node.latency") {
-                            r.push(("ASKS FOR", format!("{l} (node.latency)")));
-                        }
-                        if let Some(t) = t.filter(|_| running) {
-                            r.push(("TIMING", format!("wait {:.1} µs · busy {:.1} µs", t.wait_ns as f64 / 1000.0, t.busy_ns as f64 / 1000.0)));
-                        }
-                        kv(&mut body, &mut y, &r);
-                        // its card: a device of its own, with an id of its own
-                        if let Some(d) = pget("device.id").and_then(|d| d.parse::<u32>().ok())
-                            && let Some(o) = self.objects.iter().find(|o| o.0 == "Device" && o.1 == d)
-                        {
-                            rows.push((Sel::Obj(d), y));
-                            kv(&mut body, &mut y, &[("DEVICE", format!("{} (device {d}) ›", o.2))]);
-                        }
-                        heading(&mut body, &mut y, "ON THE DESK");
-                        let desk = match (&n.desk, n.kind) {
-                            (_, NKind::Meter) => "Patchcord's own: a meter (the LEDs in a frame). Passive: it follows what runs and wakes nothing. Not on the desk.".to_owned(),
-                            (_, NKind::Cue) if n.name == CUE_NODE => "Patchcord's cue, its in side: what you listen to (CUE, a click on a jack or a port) comes in here. Its links wake what they come from while it is listened to (a mic asleep), and it sleeps again after. Not on the desk.".to_owned(),
-                            (_, NKind::Cue) => "Patchcord's cue, its out side: what you listen to plays from here into the default output, at the CUE LEVEL. Not on the desk.".to_owned(),
-                            (_, NKind::Driver) => "A clock of PipeWire itself, for nodes without a device. Not on the desk.".to_owned(),
-                            (Some((_, name, labels, hidden)), _) => format!("{name} · {}{}", labels.join(" + "), if *hidden { " · hidden on the desk" } else { "" }),
-                            (None, _) if n.system => "Plumbing Patchcord leaves out: WirePlumber's behind a headset's MIC, or another program's level meter. HIDDEN lists it under SYSTEM.".to_owned(),
-                            (None, _) => "Not on the desk.".to_owned(),
-                        };
-                        line(&mut body, &mut y, &desk, "#c9cbcd", 0.0);
-                        if let Some((key, _, _, false)) = &n.desk {
-                            desk_button = Some((key.clone(), y + 4.0));
-                            y += 32.0;
-                        }
-                        heading(&mut body, &mut y, &format!("PORTS {} IN · {} OUT", n.ins.len(), n.outs.len()));
-                        for (input, p) in n.ins.iter().map(|p| (true, p)).chain(n.outs.iter().map(|p| (false, p))) {
-                            let k = m.links.iter().filter(|l| l.out_port == p.id || l.in_port == p.id).count();
-                            rows.push((Sel::Port(p.id), y));
-                            let _ = write!(
-                                body,
-                                r##"<circle cx="16" cy="{}" r="3.5" fill="{}"/><text x="26" y="{}" font-size="11" fill="#c9cbcd" xml:space="preserve">{} {}</text><text x="{}" y="{}" font-size="11" fill="#7d8085" text-anchor="end">{k} link{}</text>"##,
-                                y + 9.0,
-                                hex(n.color),
-                                y + 13.0,
-                                if input { "IN " } else { "OUT" },
-                                esc(&cut(&p.name, chars.saturating_sub(16))),
-                                w - 12.0,
-                                y + 13.0,
-                                if k == 1 { "" } else { "s" }
-                            );
-                            y += 19.0;
-                        }
-                        let ls: Vec<&ELink> = m.links.iter().filter(|l| l.out_node == id || l.in_node == id).collect();
-                        heading(&mut body, &mut y, &format!("LINKS {}", ls.len()));
-                        for l in ls {
-                            let (arrow, other, port) = if l.out_node == id { ("→", l.in_node, l.in_port) } else { ("←", l.out_node, l.out_port) };
-                            let on = m.node(other);
-                            let what = format!("{arrow} {}:{}", on.map_or("?".into(), |n| n.desc.clone()), on.map_or(String::new(), |n| port_name(n, port)));
-                            rows.push((Sel::Link(l.id), y));
-                            let _ = write!(
-                                body,
-                                r##"<circle cx="16" cy="{}" r="3.5" fill="{}"/><text x="26" y="{}" font-size="11" fill="#c9cbcd" xml:space="preserve">{}</text><text x="{}" y="{}" font-size="11" fill="#7d8085" text-anchor="end">{}</text>"##,
-                                y + 9.0,
-                                led_color(l.state, false),
-                                y + 13.0,
-                                esc(&cut(&what, chars.saturating_sub(12))),
-                                w - 12.0,
-                                y + 13.0,
-                                if l.passive { "passive" } else { l.state }
-                            );
-                            y += 19.0;
-                        }
-                    }
-                    ITab::Props => kv(&mut body, &mut y, &props_of(id).iter().map(|(k, v)| (k.as_str(), v.clone())).collect::<Vec<_>>()),
-                    ITab::Params => {
-                        if !self.asked.contains(&id) {
-                            self.asked.insert(id);
-                            self.outbox.push(Cmd::Params(id));
-                        }
-                        match self.params.get(&id) {
-                            Some(p) if !p.is_empty() => {
-                                let mut last = String::new();
-                                for ((kind, _), text) in p {
-                                    if *kind != last {
-                                        heading(&mut body, &mut y, &kind.to_uppercase());
-                                        last = kind.clone();
-                                    }
-                                    line(&mut body, &mut y, text, "#a8abae", 0.0);
-                                }
-                            }
-                            _ => line(&mut body, &mut y, "asking PipeWire…", "#7d8085", 0.0),
-                        }
-                    }
-                    ITab::Timing => {
-                        let gw = w - 24.0;
-                        // a chart of (average, peak) half a second apart, the last minute
-                        let chart = |body: &mut String, y: &mut f64, hv: Option<&VecDeque<(f32, f32)>>, title: &str, line1: bool| {
-                            let _ = write!(body, r##"<rect x="12" y="{y}" width="{gw}" height="90" rx="3" fill="#0e0f10"/>"##, y = *y);
-                            match hv.filter(|h| h.len() > 1) {
-                                Some(hv) => {
-                                    let top = if line1 { 1.15 } else { hv.iter().map(|v| v.1).fold(0.02, f32::max) as f64 * 1.2 };
-                                    let pts = |f: &dyn Fn(&(f32, f32)) -> f32| hv.iter().enumerate().map(|(i, v)| format!("{:.1},{:.1}", 12.0 + i as f64 / 119.0 * gw, *y + 88.0 - (f(v) as f64 / top).min(1.0) * 80.0)).collect::<Vec<_>>().join(" ");
-                                    if line1 {
-                                        // the deadline
-                                        let ly = *y + 88.0 - 80.0 / top;
-                                        let _ = write!(body, r##"<path d="M12,{ly} H{}" stroke="#ff4a32" stroke-opacity=".6" stroke-dasharray="4 3"/><text x="{}" y="{}" font-size="9" fill="#ff6a52" text-anchor="end">DEADLINE</text>"##, 12.0 + gw, 8.0 + gw, ly - 3.0);
-                                    }
-                                    let _ = write!(
-                                        body,
-                                        r##"<polyline points="{}" fill="none" stroke="#ffb02e" stroke-width="1.2" stroke-opacity=".8"/><polyline points="{}" fill="none" stroke="#5cff7a" stroke-width="1.6"/><text x="18" y="{}" font-size="10" fill="#7d8085">{title} · <tspan fill="#5cff7a">average</tspan> · <tspan fill="#ffb02e">peak</tspan></text>"##,
-                                        pts(&|v| v.1),
-                                        pts(&|v| v.0),
-                                        *y + 14.0
-                                    );
-                                }
-                                None => {
-                                    let _ = write!(body, r##"<text x="18" y="{}" font-size="10" fill="#7d8085">no cycles: it is not running</text>"##, *y + 14.0);
-                                }
-                            }
-                            *y += 100.0;
-                        };
-                        // a driver: how close its graph comes to the deadline
-                        if let Some(g) = g.filter(|g| g.driver == id) {
-                            heading(&mut body, &mut y, "TIME LEFT IN THE CYCLE");
-                            chart(&mut body, &mut y, self.ends.get(&id), "graph done, of the period", true);
-                            let per = g.period_ns();
-                            let left = 100.0 * (1.0 - g.end_max_ns as f64 / per);
-                            kv(
-                                &mut body,
-                                &mut y,
-                                &[
-                                    ("DONE IN", format!("{:.0} µs on average, {:.0} µs at worst", g.end_ns as f64 / 1000.0, g.end_max_ns as f64 / 1000.0)),
-                                    ("OF", format!("{:.0} µs (quantum {} at {} Hz)", per / 1000.0, g.quantum, g.rate)),
-                                    ("LEFT", format!("{left:.0}% at worst")),
-                                ],
-                            );
-                            line(&mut body, &mut y, "From the start of a cycle to when the last node of the group has finished. Over the deadline, the sound card runs out of sound: an xrun, a click.", "#7d8085", 0.0);
-                            heading(&mut body, &mut y, "THIS NODE");
-                        }
-                        chart(&mut body, &mut y, self.hist.get(&id), "B/Q", false);
-                        let per = g.map_or(0.0, Group::period_ns);
-                        let r: Vec<(&str, String)> = match (t.filter(|_| running), g) {
-                            (Some(t), Some(_)) => vec![
-                                ("WAIT", format!("{:.1} µs · peak {:.1}", t.wait_ns as f64 / 1000.0, t.wait_max_ns as f64 / 1000.0)),
-                                ("BUSY", format!("{:.1} µs · peak {:.1}", t.busy_ns as f64 / 1000.0, t.busy_max_ns as f64 / 1000.0)),
-                                ("W/Q", format!("{:.3}", t.wait_ns as f64 / per)),
-                                ("B/Q", format!("{:.3} · peak {:.3}", t.busy_ns as f64 / per, t.busy_max_ns as f64 / per)),
-                                ("CYCLES", format!("{} in the last half second", t.cycles)),
-                                ("XRUNS", xr.to_string()),
-                            ],
-                            _ => vec![("XRUNS", xr.to_string())],
-                        };
-                        kv(&mut body, &mut y, &r);
-                        y += 6.0;
-                        line(&mut body, &mut y, "Every cycle of the last half second counts: the average, and the peak (one slow cycle is enough for a click). BUSY: how long the node took; B/Q: of the time the cycle had.", "#7d8085", 0.0);
-                    }
-                }
-                (n.desc.clone(), format!("node {id} · {}", n.class), led_color(if running { "running" } else { n.state }, xr > 0))
-            }
-            Some(Sel::Port(id)) => {
-                tabs = vec![ITab::Info, ITab::Conn, ITab::Props];
-                if !tabs.contains(&self.itab) {
-                    self.itab = ITab::Info;
-                }
-                let (n, p, input) = match m.port(id) {
-                    Some((n, p, i)) => (n.clone(), p.clone(), i),
-                    None => return (String::new(), hits, Scrolled { w, ..Default::default() }),
-                };
-                if self.itab == ITab::Props {
-                    kv(&mut body, &mut y, &props_of(id).iter().map(|(k, v)| (k.as_str(), v.clone())).collect::<Vec<_>>());
-                } else if self.itab == ITab::Conn {
-                    // where it can go: every port it fits, block by block, a row each; one linked
-                    // in the amber of what is chosen (a click links, or unlinks)
-                    let fit: Vec<(&ENode, Vec<&EPort>)> = m.nodes.iter().map(|o| (o, o.ins.iter().chain(&o.outs).filter(|q| m.fits(id, q.id)).collect::<Vec<_>>())).filter(|(_, ps)| !ps.is_empty()).collect();
-                    heading(&mut body, &mut y, if input { "LINK FROM" } else { "LINK TO" });
-                    if fit.is_empty() {
-                        line(&mut body, &mut y, "No port takes it: a link goes from an output to an input of one kind (audio, MIDI, video), on another block, not Patchcord's own.", "#7d8085", 0.0);
-                    } else {
-                        for (o, ps) in fit {
-                            let _ = write!(body, r##"<text x="12" y="{}" font-family="Noto Sans" font-size="11" font-weight="bold" fill="#c9cbcd" xml:space="preserve">{} <tspan font-family="Noto Sans Mono" font-weight="normal" font-size="10" fill="#7d8085">#{}</tspan></text>"##, y + 12.0, esc(&cut(&o.desc, chars.saturating_sub(8))), o.id);
-                            y += 18.0;
-                            for q in ps {
-                                let pair = m.pair(id, q.id);
-                                let on = m.linked(pair);
-                                let (kx, kw) = (24.0, w - 36.0);
-                                let _ = write!(
-                                    body,
-                                    r##"<rect x="{kx}" y="{y}" width="{kw}" height="20" rx="4" fill="{}" stroke="#0b0b0c"/><circle cx="{}" cy="{}" r="4" fill="{}" stroke="#0f1011" stroke-width="1.5"/><text x="{}" y="{}" font-size="10"{} fill="{}" xml:space="preserve">{}</text>"##,
-                                    if on { SEL } else { "#1d1e21" },
-                                    kx + 12.0,
-                                    y + 10.0,
-                                    face::role_colour(q.role),
-                                    kx + 22.0,
-                                    y + 14.0,
-                                    if on { r#" font-weight="bold""# } else { "" },
-                                    if on { SEL_TEXT } else { "#a8abae" },
-                                    esc(&cut(&q.name, chars.saturating_sub(16)))
-                                );
-                                if on {
-                                    let _ = write!(body, r##"<text x="{}" y="{}" text-anchor="end" font-size="9" font-weight="bold" fill="{SEL_TEXT}">LINKED</text>"##, kx + kw - 10.0, y + 14.0);
-                                }
-                                link_rows.push((pair, y));
-                                y += 24.0;
-                            }
-                            y += 4.0;
-                        }
-                        y += 2.0;
-                        line(&mut body, &mut y, "Click: link it · again: unlink it · or drag from the port on the graph.", "#7d8085", 0.0);
-                    }
-                } else {
-                    rows.push((Sel::Node(n.id), y));
-                    kv(
-                        &mut body,
-                        &mut y,
-                        &[
-                            ("NODE", format!("{} ({})", n.desc, n.id)),
-                            ("DIRECTION", if input { "input: takes sound".into() } else { "output: makes sound".into() }),
-                            ("CHANNEL", if p.channel.is_empty() { "—".into() } else { p.channel.clone() }),
-                            ("FORMAT", if p.midi { "8 bit raw midi".into() } else { "32 bit float mono audio".into() }),
-                            ("MONITOR", if p.monitor { "yes: a copy of what the sink plays".into() } else { "no".into() }),
-                        ],
-                    );
-                    let ls: Vec<&ELink> = m.links.iter().filter(|l| l.out_port == id || l.in_port == id).collect();
-                    heading(&mut body, &mut y, &format!("LINKS {}", ls.len()));
-                    for l in ls {
-                        let (arrow, other, port) = if l.out_port == id { ("→", l.in_node, l.in_port) } else { ("←", l.out_node, l.out_port) };
-                        let on = m.node(other);
-                        let what = format!("{arrow} {}:{}", on.map_or("?".into(), |n| n.desc.clone()), on.map_or(String::new(), |n| port_name(n, port)));
-                        rows.push((Sel::Link(l.id), y));
-                        let _ = write!(body, r##"<circle cx="16" cy="{}" r="3.5" fill="{}"/><text x="26" y="{}" font-size="11" fill="#c9cbcd" xml:space="preserve">{}</text>"##, y + 9.0, led_color(l.state, false), y + 13.0, esc(&cut(&what, chars.saturating_sub(4))));
-                        y += 19.0;
-                    }
-                }
-                (format!("{}: {}", n.desc, p.name), format!("port {id} · {}", if input { "input" } else { "output" }), led_color(if m.group_of.contains_key(&n.id) { "running" } else { n.state }, false))
-            }
-            Some(Sel::Link(id)) => {
-                tabs = vec![ITab::Info, ITab::Props];
-                if !tabs.contains(&self.itab) {
-                    self.itab = ITab::Info;
-                }
-                let Some(l) = m.links.iter().find(|l| l.id == id).cloned() else { return (String::new(), hits, Scrolled { w, ..Default::default() }) };
-                let (on, inn) = (m.node(l.out_node), m.node(l.in_node));
-                let end = |n: Option<&ENode>, port: u32| n.map_or("?".into(), |n| format!("{}:{}", n.desc, port_name(n, port)));
-                if self.itab == ITab::Props {
-                    kv(&mut body, &mut y, &props_of(id).iter().map(|(k, v)| (k.as_str(), v.clone())).collect::<Vec<_>>());
-                } else {
-                    rows.push((Sel::Port(l.out_port), y));
-                    kv(&mut body, &mut y, &[("FROM", end(on, l.out_port))]);
-                    rows.push((Sel::Port(l.in_port), y));
-                    kv(
-                        &mut body,
-                        &mut y,
-                        &[
-                            ("TO", end(inn, l.in_port)),
-                            ("STATE", l.state.to_owned()),
-                            ("PASSIVE", if l.passive { "yes: it does not keep the nodes running".into() } else { "no: it wakes and runs both nodes".into() }),
-                        ],
-                    );
-                    y += 6.0;
-                    line(&mut body, &mut y, if l.passive { "Patchcord's meters and cue link passively: when nothing else plays, the device can suspend." } else { "One link carries one channel: a stereo cord on the desk is two links here." }, "#7d8085", 0.0);
-                }
-                (format!("link {id}"), format!("{} → {}", on.map_or("?".into(), |n| n.desc.clone()), inn.map_or("?".into(), |n| n.desc.clone())), led_color(l.state, false))
-            }
-            Some(Sel::Obj(id)) => {
-                tabs = vec![ITab::Props];
-                self.itab = ITab::Props;
-                let o = self.objects.iter().find(|o| o.1 == id).cloned().unwrap_or_default();
-                // a device's or a client's nodes: the ids the graph shows
-                if o.0 == "Device" || o.0 == "Client" {
-                    let ns = self.nodes_of(id);
-                    heading(&mut body, &mut y, &format!("NODES {}", ns.len()));
-                    for nid in ns {
-                        let Some(n) = m.node(nid) else { continue };
-                        rows.push((Sel::Node(nid), y));
-                        let _ = write!(
-                            body,
-                            r##"<circle cx="16" cy="{}" r="3.5" fill="{}"/><text x="26" y="{}" font-size="11" fill="#c9cbcd" xml:space="preserve">{} · {}</text><text x="{}" y="{}" font-size="11" fill="#7d8085" text-anchor="end">node {nid}</text>"##,
-                            y + 9.0,
-                            led_color(if m.group_of.contains_key(&nid) { "running" } else { n.state }, false),
-                            y + 13.0,
-                            esc(&cut(&n.desc, chars.saturating_sub(30))),
-                            esc(&n.class),
-                            w - 12.0,
-                            y + 13.0
-                        );
-                        y += 19.0;
-                    }
-                    heading(&mut body, &mut y, "PROPERTIES");
-                }
-                kv(&mut body, &mut y, &props_of(id).iter().map(|(k, v)| (k.as_str(), v.clone())).collect::<Vec<_>>());
-                // a metadata's keys
-                if o.0 == "Metadata" {
-                    heading(&mut body, &mut y, "KEYS");
-                    let keys: Vec<(&str, String)> = self.meta.iter().filter(|((m, _, _), _)| *m == id).map(|((_, s, k), (_, v))| (k.as_str(), format!("{v}{}", if *s != 0 { format!(" (subject {s})") } else { String::new() }))).collect();
-                    kv(&mut body, &mut y, &keys);
-                }
-                (o.2.clone(), format!("{} {id}", o.0.to_lowercase()), "#5cff7a")
-            }
+        let field = |k: &str| self.fields.get(&id).and_then(|f| f.iter().find(|(n, _)| n == k)).and_then(|(_, v)| pval_inline(v)).map(|t| t.trim_matches('"').to_owned());
+        let props = self.props.get(&id);
+        let state = field("state");
+        // the head: its name, then what it is as PipeWire says it (type, id, media.class, state)
+        let title = match sel {
+            Sel::Node(id) => m.node(id).map_or_else(|| format!("node {id}"), |n| n.desc.clone()),
+            Sel::Port(id) => m.port(id).map_or_else(|| format!("port {id}"), |(n, p, _)| format!("{}: {}", n.desc, p.name)),
+            Sel::Link(id) => format!("link {id}"),
+            Sel::Obj(id) => self.objects.iter().find(|o| o.1 == id).map_or_else(|| format!("{id}"), |o| o.2.clone()),
         };
-        // the head and the tabs
+        let sub = [Some(format!("{ty} {id}")), props.and_then(|p| p.get("media.class")).cloned(), state.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+        let led = match sel {
+            Sel::Node(id) => led_color(if m.group_of.contains_key(&id) { "running" } else { state.as_deref().unwrap_or("suspended") }, self.xruns.get(&id).is_some_and(|x| x.0 > 0)),
+            Sel::Link(_) => led_color(state.as_deref().unwrap_or(""), false),
+            Sel::Port(p) => led_color(m.port(p).map_or("suspended", |(n, _, _)| if m.group_of.contains_key(&n.id) { "running" } else { n.state }), false),
+            Sel::Obj(_) => "#5cff7a",
+        };
+        let mut head = String::new();
         let _ = write!(
             head,
             r##"<rect width="{w}" height="50" fill="#1f2023"/><path d="M0,50.5 H{w}" stroke="#000"/><circle cx="16" cy="25" r="4.5" fill="{led}"/><text x="28" y="23" font-family="Noto Sans" font-weight="bold" font-size="13" fill="#e6e7e8">{}</text><text x="28" y="39" font-size="10.5" fill="#7d8085">{}</text>"##,
@@ -2672,52 +2704,389 @@ impl Engine {
         // closes it (and drops the selection); choosing something opens it again
         let _ = write!(head, r##"<path d="M{},{} l8,8 M{},{} l-8,8" stroke="#7d8085" stroke-width="1.8" stroke-linecap="round"/>"##, w - 24.0, 21.0, w - 16.0, 21.0);
         hits.push((Hit::Close, [a[0] + w - 34.0, a[1] + 8.0, 30.0, 30.0]));
-        let mut top = 51.0;
-        if !tabs.is_empty() {
-            let name = |t: &ITab| match t {
-                ITab::Info => "INFO",
-                ITab::Conn => "CONN",
-                ITab::Props => "PROPS",
-                ITab::Params => "PARAMS",
-                ITab::Timing => "TIMING",
-            };
-            let names: Vec<(&str, bool)> = tabs.iter().map(|t| (name(t), *t == self.itab)).collect();
-            // the chosen tab opens into the details under it
-            let at = tab_row(&mut head, 51.0, 80.0, w, &names, "#17181a");
-            for (t, (x, tw)) in tabs.iter().zip(at) {
-                hits.push((Hit::ITab(*t), [a[0] + x, a[1] + 57.0, tw, 23.0]));
+        let name = |t: &ITab| match t {
+            ITab::Info => "INFO",
+            ITab::Props => "PROPS",
+            ITab::Params => "PARAMS",
+            ITab::Timing => "TIMING",
+            ITab::Conn => "CONN",
+        };
+        let names: Vec<(&str, bool)> = tabs.iter().map(|t| (name(t), *t == self.itab)).collect();
+        // the chosen tab opens into the details under it
+        let at = tab_row(&mut head, 51.0, 80.0, w, &names, "#17181a");
+        for (t, (x, tw)) in tabs.iter().zip(at) {
+            hits.push((Hit::ITab(*t), [a[0] + x, a[1] + 57.0, tw, 23.0]));
+        }
+        let mut top = 80.0;
+        let id_go = |k: &str, v: &str| -> Option<Hit> { ID_KEYS.contains(&k).then(|| v.trim_matches('"').parse::<u32>().ok()).flatten().and_then(|i| self.sel_of(i)).map(Hit::Sel) };
+        let none: HashMap<String, String> = HashMap::new();
+        let mut b = IBody { svg: String::new(), y: 0.0, w, q: self.isearch.trim().to_lowercase(), hits: Vec::new(), shut: &self.ishut };
+        // the search over PROPS, PARAMS and CONN: what it found, of how many
+        let mut found = (0usize, 0usize);
+        match self.itab {
+            ITab::Info => {
+                if b.section("obj", "OBJECT", "", false) {
+                    if let Some((t, v, p)) = self.objinfo.get(&id) {
+                        for (k, v) in [("id", id.to_string()), ("type", t.clone()), ("version", v.to_string()), ("permissions", p.clone())] {
+                            b.row(0.0, (k, 0), (&v, "#c9cbcd"), None, None);
+                        }
+                    }
+                }
+                if let Some(f) = self.fields.get(&id).filter(|f| !f.is_empty())
+                    && b.section("info", "INFO", "", false)
+                {
+                    for (k, v) in f {
+                        b.value(0.0, k, v, &none, &id_go);
+                    }
+                }
+                // what points here by its id, under the key that says so
+                match sel {
+                    Sel::Node(id) => {
+                        if let Some(n) = m.node(id) {
+                            let ports: Vec<(&EPort, &str)> = n.ins.iter().map(|p| (p, "input")).chain(n.outs.iter().map(|p| (p, "output"))).collect();
+                            if b.section("ports", &format!("PORTS · node.id = {id}"), &ports.len().to_string(), false) {
+                                for (p, dir) in ports {
+                                    b.row(0.0, (&format!("port {}", p.id), 0), (&format!("{} · {dir}", p.name), "#e6e7e8"), None, Some(Hit::Sel(Sel::Port(p.id))));
+                                    port_links(&mut b, m, p.id, 12.0);
+                                }
+                            }
+                            // where Patchcord shows it: Patchcord's, not PipeWire's
+                            if b.section("pc", "PATCHCORD", "", true) {
+                                let desk = match (&n.desk, n.kind) {
+                                    (_, NKind::Meter) => "Patchcord's own: a meter (the LEDs in a frame). Not on the desk.".to_owned(),
+                                    (_, NKind::Cue) if n.name == CUE_NODE => "Patchcord's cue, its in side: what you listen to comes in here. Not on the desk.".to_owned(),
+                                    (_, NKind::Cue) => "Patchcord's cue, its out side: what you listen to plays from here into the default output. Not on the desk.".to_owned(),
+                                    (_, NKind::Driver) => "Not on the desk: a clock of PipeWire itself.".to_owned(),
+                                    (Some((_, name, labels, hidden)), _) => format!("On the desk: {name} · {}{}", labels.join(" + "), if *hidden { " · hidden there" } else { "" }),
+                                    (None, _) if n.system => "Not on the desk: HIDDEN lists it under SYSTEM.".to_owned(),
+                                    (None, _) => "Not on the desk.".to_owned(),
+                                };
+                                b.note(&desk, "#c9cbcd");
+                                if let Some((key, _, _, false)) = &n.desk {
+                                    let y = b.y + 4.0;
+                                    let _ = write!(b.svg, r##"<rect x="12" y="{y}" width="150" height="24" rx="4" fill="#38393d"/><text x="87" y="{}" font-family="Noto Sans" font-weight="bold" font-size="10" fill="#e6e7e8" text-anchor="middle">SHOW ON DESK</text>"##, y + 16.0);
+                                    b.hits.push((Hit::Desk(key.clone()), [12.0, y, 150.0, 24.0]));
+                                    b.y += 32.0;
+                                }
+                            }
+                        }
+                    }
+                    Sel::Port(id) => {
+                        let n = m.links.iter().filter(|l| l.out_port == id || l.in_port == id).count();
+                        if b.section("links", &format!("LINKS · port {id}"), &n.to_string(), false) {
+                            port_links(&mut b, m, id, 0.0);
+                        }
+                    }
+                    Sel::Obj(id) if ty == "Metadata" => {
+                        let es: Vec<_> = self.meta.iter().filter(|((md, _, _), _)| *md == id).collect();
+                        if b.section("meta", "METADATA", &es.len().to_string(), false) {
+                            for ((_, s, k), (t, v)) in es {
+                                let d = format!("subject {s}{}", t.as_deref().map(|t| format!(" · {t}")).unwrap_or_default());
+                                b.row(0.0, (k, 0), (v, "#c9cbcd"), Some(("", &d)), None);
+                            }
+                        }
+                    }
+                    Sel::Obj(id) => {
+                        // a device's nodes, a client's objects
+                        let key = if ty == "Device" { "device.id" } else { "client.id" };
+                        let idt = id.to_string();
+                        let mine: Vec<u32> = self.objects.iter().filter(|o| self.props.get(&o.1).is_some_and(|p| p.get(key) == Some(&idt))).map(|o| o.1).collect();
+                        if (ty == "Device" || ty == "Client") && b.section("mine", &format!("OBJECTS · {key} = {id}"), &mine.len().to_string(), false) {
+                            for o in mine {
+                                let (t, n) = self.objects.iter().find(|x| x.1 == o).map_or(("?", ""), |x| (x.0.as_str(), x.2.as_str()));
+                                b.row(0.0, (&format!("{} {o}", t.to_lowercase()), 0), (n, "#e6e7e8"), None, self.sel_of(o).map(Hit::Sel));
+                            }
+                        }
+                    }
+                    Sel::Link(_) => {}
+                }
             }
-            top = 80.0;
+            ITab::Props => {
+                let all: Vec<(&String, &String)> = props.map(|p| p.iter().collect()).unwrap_or_default();
+                let space = |k: &str| k.split_once('.').map_or("(no namespace)", |(s, _)| s).to_owned();
+                let shown: Vec<(&String, &String)> = all.iter().copied().filter(|(k, v)| (self.ins.is_empty() || space(k) == self.ins) && (b.found(k) || b.found(v))).collect();
+                found = (shown.len(), all.len());
+                if all.is_empty() {
+                    b.note("PipeWire gives no properties for it.", "#7d8085");
+                } else if shown.is_empty() {
+                    b.note("No key or value has that.", "#7d8085");
+                }
+                let mut groups: Vec<(String, Vec<(&String, &String)>)> = Vec::new();
+                for (k, v) in shown {
+                    let s = space(k);
+                    match groups.iter_mut().find(|g| g.0 == s) {
+                        Some(g) => g.1.push((k, v)),
+                        None => groups.push((s, vec![(k, v)])),
+                    }
+                }
+                for (s, rows) in groups {
+                    let t = if s == "(no namespace)" { s.clone() } else { format!("{s}.*") };
+                    if b.section(&format!("ns:{s}"), &t, &rows.len().to_string(), false) {
+                        for (k, v) in rows {
+                            let faint = if s == "(no namespace)" { 0 } else { s.chars().count() + 1 };
+                            let go = id_go(k, v);
+                            b.row(0.0, (k, faint), (if v.is_empty() { "\"\"" } else { v }, if go.is_some() { "#e6e7e8" } else { "#c9cbcd" }), None, go);
+                        }
+                    }
+                }
+            }
+            ITab::Params => {
+                let ps = self.params.get(&id);
+                // in the order the object lists them (its info's params), then any other
+                let listed: Vec<String> = self.fields.get(&id).and_then(|f| f.iter().find(|(k, _)| k == "params")).map(|(_, v)| match v {
+                    PVal::List(l) => l.iter().filter_map(pval_inline).map(|t| t.split(' ').next().unwrap_or("").to_owned()).collect(),
+                    _ => Vec::new(),
+                }).unwrap_or_default();
+                let mut kinds: Vec<String> = listed.clone();
+                for (k, _) in ps.into_iter().flatten() {
+                    if !kinds.contains(k) {
+                        kinds.push(k.clone());
+                    }
+                }
+                let entries = |k: &str| ps.and_then(|p| p.iter().find(|(n, _)| n == k)).map(|(_, e)| e);
+                // PropInfo's descriptions, by the Props key each is for
+                let mut desc: HashMap<String, String> = HashMap::new();
+                for e in entries("PropInfo").into_iter().flat_map(|e| e.values()) {
+                    if let PVal::Obj(o) = e {
+                        let get = |k: &str| o.iter().find(|(n, _)| n == k).and_then(|(_, v)| pval_inline(v)).map(|t| t.trim_matches('"').to_owned());
+                        if let (Some(i), Some(d)) = (get("id"), get("description")) {
+                            desc.insert(i, d);
+                        }
+                    }
+                }
+                let shown: Vec<&String> = kinds.iter().filter(|k| b.found(k) || entries(k).is_some_and(|e| e.values().any(|v| b.found(&pval_all(v))))).collect();
+                found = (shown.len(), kinds.len());
+                if kinds.is_empty() {
+                    b.note(if ps.is_none() && self.fields.contains_key(&id) { "PipeWire gives no params for it." } else { "asking PipeWire…" }, "#7d8085");
+                } else if shown.is_empty() {
+                    b.note("No param has that.", "#7d8085");
+                }
+                let searching = !b.q.is_empty();
+                for k in shown {
+                    let es: Vec<(u32, &PVal)> = entries(k).map(|e| e.iter().map(|(i, v)| (*i, v)).collect()).unwrap_or_default();
+                    let key = format!("{id}:{k}");
+                    let open = self.iopen.contains(&key) || searching;
+                    let preview = if open { String::new() } else { es.first().map_or_else(|| "[ ]".to_owned(), |(_, v)| one_line(v)) };
+                    let all = es.iter().map(|(i, v)| format!("[{i}]\n{}", pval_text(v, 1))).collect::<Vec<_>>().join("\n");
+                    b.outline(0.0, &key, open, (k, "#e58f2c"), (&format!("[{}]", es.len()), &preview), format!("{k}\n{all}"));
+                    if !open {
+                        continue;
+                    }
+                    for (i, v) in es {
+                        if searching && !b.found(&pval_all(v)) && !b.found(k) {
+                            continue;
+                        }
+                        let ekey = format!("{key}:{i}");
+                        let eopen = self.iopen.contains(&ekey) || searching;
+                        b.outline(14.0, &ekey, eopen, (&format!("[{i}]"), "#7d8085"), ("", &if eopen { String::new() } else { one_line(v) }), pval_text(v, 0));
+                        if eopen {
+                            let d = if k == "Props" { &desc } else { &none };
+                            match v {
+                                PVal::Obj(o) => {
+                                    for (ck, cv) in o {
+                                        b.value(28.0, ck, cv, d, &id_go);
+                                    }
+                                }
+                                other => b.value(28.0, "", other, d, &id_go),
+                            }
+                        }
+                    }
+                }
+            }
+            ITab::Timing => {
+                let t = m.timing.get(&id);
+                let g = m.group(id);
+                let raw = t.map(|t| &t.raw).filter(|r| !r.is_empty());
+                match raw {
+                    Some(raw) => {
+                        for (k, v) in raw {
+                            if b.section(&format!("prof:{k}"), k, "", false) {
+                                match v {
+                                    PVal::Obj(o) => {
+                                        for (ck, cv) in o {
+                                            b.value(0.0, ck, cv, &none, &id_go);
+                                        }
+                                    }
+                                    other => b.value(0.0, "", other, &none, &id_go),
+                                }
+                            }
+                        }
+                    }
+                    None => b.note(&format!("The profiler gives nothing for it: it is in none of the cycles it reports{}.", state.as_deref().map(|s| format!(" (state {s})")).unwrap_or_default()), "#7d8085"),
+                }
+                // what Patchcord works out of the profiler's times, as pw-top does
+                if b.section("pc-timing", "PATCHCORD", "", true) {
+                    b.note("Worked out by Patchcord from the profiler's times, every cycle of the last half second: the average, and the peak.", "#7d8085");
+                    let gw = w - 24.0;
+                    // a chart of (average, peak) half a second apart, the last minute
+                    let chart = |b: &mut IBody, hv: Option<&VecDeque<(f32, f32)>>, title: &str, line1: bool| {
+                        let y = b.y;
+                        let _ = write!(b.svg, r##"<rect x="12" y="{y}" width="{gw}" height="90" rx="3" fill="#0e0f10"/>"##);
+                        match hv.filter(|h| h.len() > 1) {
+                            Some(hv) => {
+                                let top = if line1 { 1.15 } else { hv.iter().map(|v| v.1).fold(0.02, f32::max) as f64 * 1.2 };
+                                let pts = |f: &dyn Fn(&(f32, f32)) -> f32| hv.iter().enumerate().map(|(i, v)| format!("{:.1},{:.1}", 12.0 + i as f64 / 119.0 * gw, y + 88.0 - (f(v) as f64 / top).min(1.0) * 80.0)).collect::<Vec<_>>().join(" ");
+                                if line1 {
+                                    // the deadline
+                                    let ly = y + 88.0 - 80.0 / top;
+                                    let _ = write!(b.svg, r##"<path d="M12,{ly} H{}" stroke="#ff4a32" stroke-opacity=".6" stroke-dasharray="4 3"/><text x="{}" y="{}" font-size="9" fill="#ff6a52" text-anchor="end">DEADLINE</text>"##, 12.0 + gw, 8.0 + gw, ly - 3.0);
+                                }
+                                let _ = write!(
+                                    b.svg,
+                                    r##"<polyline points="{}" fill="none" stroke="#ffb02e" stroke-width="1.2" stroke-opacity=".8"/><polyline points="{}" fill="none" stroke="#5cff7a" stroke-width="1.6"/><text x="18" y="{}" font-size="10" fill="#7d8085">{title} · <tspan fill="#5cff7a">average</tspan> · <tspan fill="#ffb02e">peak</tspan></text>"##,
+                                    pts(&|v| v.1),
+                                    pts(&|v| v.0),
+                                    y + 14.0
+                                );
+                            }
+                            None => {
+                                let _ = write!(b.svg, r##"<text x="18" y="{}" font-size="10" fill="#7d8085">no cycles: it is not running</text>"##, y + 14.0);
+                            }
+                        }
+                        b.y += 100.0;
+                    };
+                    // a driver: how close its graph comes to the deadline
+                    if let Some(g) = g.filter(|g| g.driver == id) {
+                        chart(&mut b, self.ends.get(&id), "graph done, of the period", true);
+                        let per = g.period_ns();
+                        b.row(0.0, ("DONE IN", 0), (&format!("{:.0} µs on average, {:.0} µs at worst", g.end_ns as f64 / 1000.0, g.end_max_ns as f64 / 1000.0), "#c9cbcd"), None, None);
+                        b.row(0.0, ("OF", 0), (&format!("{:.0} µs (quantum {} at {} Hz)", per / 1000.0, g.quantum, g.rate), "#c9cbcd"), None, None);
+                        b.row(0.0, ("LEFT", 0), (&format!("{:.0}% at worst", 100.0 * (1.0 - g.end_max_ns as f64 / per)), "#c9cbcd"), None, None);
+                        b.y += 6.0;
+                    }
+                    chart(&mut b, self.hist.get(&id), "B/Q", false);
+                    let per = g.map_or(0.0, Group::period_ns);
+                    let xr = self.xruns.get(&id).map_or(0, |x| x.0);
+                    if let (Some(t), Some(_)) = (t, g) {
+                        for (k, v) in [
+                            ("WAIT", format!("{:.1} µs · peak {:.1}", t.wait_ns as f64 / 1000.0, t.wait_max_ns as f64 / 1000.0)),
+                            ("BUSY", format!("{:.1} µs · peak {:.1}", t.busy_ns as f64 / 1000.0, t.busy_max_ns as f64 / 1000.0)),
+                            ("W/Q", format!("{:.3}", t.wait_ns as f64 / per)),
+                            ("B/Q", format!("{:.3} · peak {:.3}", t.busy_ns as f64 / per, t.busy_max_ns as f64 / per)),
+                            ("CYCLES", format!("{} in the last half second", t.cycles)),
+                        ] {
+                            b.row(0.0, (k, 0), (&v, "#c9cbcd"), None, None);
+                        }
+                    }
+                    b.row(0.0, ("XRUNS", 0), (&format!("{xr} since ENGINE opened"), "#c9cbcd"), None, None);
+                    b.y += 6.0;
+                    b.note("WAIT: awake − signal; BUSY: finish − awake; B/Q: busy of the cycle's time.", "#7d8085");
+                }
+            }
+            ITab::Conn => {
+                // where it can go: every port it fits, block by block, a row each; one linked in
+                // the amber of what is chosen (a click links, or unlinks): Patchcord's, not data
+                let input = m.port(id).is_some_and(|(_, _, i)| i);
+                let fit: Vec<(&ENode, Vec<&EPort>)> = m.nodes.iter().map(|o| (o, o.ins.iter().chain(&o.outs).filter(|q| m.fits(id, q.id) && (b.found(&o.desc) || b.found(&q.name))).collect::<Vec<_>>())).filter(|(_, ps)| !ps.is_empty()).collect();
+                found = (fit.iter().map(|f| f.1.len()).sum(), m.nodes.iter().map(|o| o.ins.iter().chain(&o.outs).filter(|q| m.fits(id, q.id)).count()).sum());
+                if b.section("pc-conn", &format!("PATCHCORD · {}", if input { "LINK FROM" } else { "LINK TO" }), "", true) {
+                    if fit.is_empty() {
+                        b.note("No port takes it: a link goes from an output to an input of one kind (audio, MIDI, video), on another block, not Patchcord's own.", "#7d8085");
+                    }
+                    let chars = ((w - 24.0) / 6.6) as usize;
+                    for (o, ps) in fit {
+                        let _ = write!(b.svg, r##"<text x="12" y="{}" font-family="Noto Sans" font-size="11" font-weight="bold" fill="#c9cbcd" xml:space="preserve">{} <tspan font-family="Noto Sans Mono" font-weight="normal" font-size="10" fill="#7d8085">#{}</tspan></text>"##, b.y + 12.0, b.lit(&cut(&o.desc, chars.saturating_sub(8))), o.id);
+                        b.y += 18.0;
+                        for q in ps {
+                            let pair = m.pair(id, q.id);
+                            let on = m.linked(pair);
+                            let (kx, kw, y) = (24.0, w - 36.0, b.y);
+                            let _ = write!(
+                                b.svg,
+                                r##"<rect x="{kx}" y="{y}" width="{kw}" height="20" rx="4" fill="{}" stroke="#0b0b0c"/><circle cx="{}" cy="{}" r="4" fill="{}" stroke="#0f1011" stroke-width="1.5"/><text x="{}" y="{}" font-size="10"{} fill="{}" xml:space="preserve">{}</text>"##,
+                                if on { SEL } else { "#1d1e21" },
+                                kx + 12.0,
+                                y + 10.0,
+                                face::role_colour(q.role),
+                                kx + 22.0,
+                                y + 14.0,
+                                if on { r#" font-weight="bold""# } else { "" },
+                                if on { SEL_TEXT } else { "#a8abae" },
+                                b.lit(&cut(&q.name, chars.saturating_sub(16)))
+                            );
+                            if on {
+                                let _ = write!(b.svg, r##"<text x="{}" y="{}" text-anchor="end" font-size="9" font-weight="bold" fill="{SEL_TEXT}">LINKED</text>"##, kx + kw - 10.0, y + 14.0);
+                            }
+                            b.hits.push((Hit::LinkTo(pair.0, pair.1), [kx, y, kw, 20.0]));
+                            b.y += 24.0;
+                        }
+                        b.y += 4.0;
+                    }
+                    b.y += 2.0;
+                    b.note("Click: link it · again: unlink it · or drag from the port on the graph.", "#7d8085");
+                }
+            }
+        }
+        let IBody { svg: body, y, hits: bhits, .. } = b;
+        // the search, over what is long to look through: its field, what it found of how many;
+        // PROPS' namespaces as chips under it
+        if matches!(self.itab, ITab::Props | ITab::Params | ITab::Conn) {
+            let fy = top + 8.0;
+            let on = self.isearch_on;
+            let shown = if self.isearch.is_empty() && !on { "search keys and values".to_owned() } else { format!("{}{}", self.isearch, if on { "▏" } else { "" }) };
+            let count = if found.0 == found.1 { found.1.to_string() } else { format!("{} of {}", found.0, found.1) };
+            let _ = write!(
+                head,
+                r##"<rect x="10" y="{fy}" width="{}" height="24" rx="4" fill="#0e0f10" stroke="{}"/><text x="20" y="{}" font-size="11" fill="{}" xml:space="preserve">{}</text><text x="{}" y="{}" font-size="10" fill="#7d8085" text-anchor="end">{count}</text>"##,
+                w - 20.0,
+                if on { "#5a4518" } else { "#000" },
+                fy + 16.0,
+                if self.isearch.is_empty() && !on { "#55585d" } else { "#e6e7e8" },
+                esc(&cut(&shown, ((w - 110.0) / 6.6) as usize)),
+                w - 18.0,
+                fy + 16.0
+            );
+            hits.push((Hit::ISearch, [a[0] + 10.0, a[1] + fy, w - 20.0, 24.0]));
+            top = fy + 30.0;
+            if self.itab == ITab::Props {
+                let mut counts: Vec<(String, usize)> = Vec::new();
+                for k in props.into_iter().flat_map(|p| p.keys()) {
+                    let s = k.split_once('.').map_or("(no namespace)", |(s, _)| s).to_owned();
+                    match counts.iter_mut().find(|c| c.0 == s) {
+                        Some(c) => c.1 += 1,
+                        None => counts.push((s, 1)),
+                    }
+                }
+                counts.sort_by(|x, y| y.1.cmp(&x.1).then(x.0.cmp(&y.0)));
+                let total = counts.iter().map(|c| c.1).sum::<usize>();
+                let chips: Vec<(String, String, usize)> = std::iter::once((String::new(), "ALL".to_owned(), total)).chain(counts.into_iter().map(|(s, n)| (s.clone(), if s == "(no namespace)" { s } else { format!("{s}.*") }, n))).collect();
+                let (mut x, mut cy) = (10.0, top);
+                for (key, label, n) in chips {
+                    let cw = (label.chars().count() + n.to_string().len() + 1) as f64 * 6.0 + 14.0;
+                    if x + cw > w - 10.0 && x > 10.0 {
+                        x = 10.0;
+                        cy += 22.0;
+                    }
+                    let on = self.ins == key;
+                    let _ = write!(
+                        head,
+                        r##"<rect x="{x}" y="{cy}" width="{cw}" height="18" rx="9" fill="{}" stroke="{}"/><text x="{}" y="{}" font-size="10" fill="{}" xml:space="preserve">{} <tspan fill="#55585d">{n}</tspan></text>"##,
+                        if on { "#2a2418" } else { "#1f2023" },
+                        if on { "#5a4518" } else { "#000" },
+                        x + 7.0,
+                        cy + 12.5,
+                        if on { "#ffb02e" } else { "#8d9095" },
+                        esc(&label)
+                    );
+                    hits.push((Hit::INs(key), [a[0] + x, a[1] + cy, cw, 18.0]));
+                    x += cw + 4.0;
+                }
+                top = cy + 24.0;
+            }
+            let _ = write!(head, r##"<path d="M0,{} H{w}" stroke="#232428"/>"##, top - 0.5);
         }
         // the body, scrolled
         let body_h = h - top;
         let sc = self.scroll[0].clamp(0.0, (y + 16.0 - body_h).max(0.0));
         self.scroll[0] = sc;
         let by = top + 6.0 - sc;
-        for (s, ry) in rows {
-            let (yy, hh) = (by + ry, 19.0);
-            if yy + hh > top && yy < h {
-                hits.push((Hit::Sel(s), [a[0], a[1] + yy, w, hh]));
+        for (hit, [x, yy, ww, hh]) in bhits {
+            let sy = by + yy;
+            if sy + hh > top && sy < h {
+                hits.push((hit, [a[0] + x, a[1] + sy, ww, hh]));
             }
         }
-        for ((o, i), ry) in link_rows {
-            let yy = by + ry;
-            if yy + 20.0 > top && yy < h {
-                hits.push((Hit::LinkTo(o, i), [a[0] + 24.0, a[1] + yy, w - 36.0, 20.0]));
-            }
-        }
-        if let Some((key, ry)) = &desk_button {
-            let _ = write!(body, r##"<rect x="12" y="{ry}" width="150" height="24" rx="4" fill="#38393d"/><text x="87" y="{}" font-family="Noto Sans" font-weight="bold" font-size="10" fill="#e6e7e8" text-anchor="middle">SHOW ON DESK</text>"##, ry + 16.0);
-            let yy = by + ry;
-            if yy + 24.0 > top && yy < h {
-                hits.push((Hit::Desk(key.clone()), [a[0] + 12.0, a[1] + yy, 150.0, 24.0]));
-            }
-        }
-        // the frame; the body is a picture of its own (`Scrolled`)
-        let svg = format!(
-            r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" font-family="Noto Sans Mono"><rect width="{w}" height="{h}" fill="#17181a"/><path d="M.5,0 V{h}" stroke="#000"/>{head}</svg>"##
-        );
-        (svg, hits, Scrolled { body, w, top, view_h: body_h, by, content: y + 16.0 })
+        (frame(&head), hits, Scrolled { body, w, top, view_h: body_h, by, content: y + 16.0 })
     }
 
     /// The tabs below the graph: TOP, ISSUES, OBJECTS, METADATA, EVENTS.
@@ -3073,7 +3442,12 @@ impl Engine {
     /// graph it may become a pan.
     pub fn press(&mut self, p: (f64, f64), size: (u32, u32), dpi: f64) -> Option<Action> {
         let (lx, ly) = (p.0 / dpi, p.1 / dpi);
-        if let Some((hit, _)) = self.hits.iter().find(|(_, [x, y, w, h])| lx >= *x && lx <= x + w && ly >= *y && ly <= y + h).cloned() {
+        let hit = self.hits.iter().find(|(_, [x, y, w, h])| lx >= *x && lx <= x + w && ly >= *y && ly <= y + h).cloned();
+        // a click anywhere else leaves the inspector's search
+        if !matches!(hit, Some((Hit::ISearch, _))) {
+            self.isearch_on = false;
+        }
+        if let Some((hit, _)) = hit {
             match hit {
                 Hit::Tab(t) => {
                     self.tab = t;
@@ -3081,9 +3455,38 @@ impl Engine {
                     self.scroll[1] = 0.0;
                 }
                 Hit::ITab(t) => {
+                    if self.itab != t {
+                        self.isearch.clear();
+                        self.ins.clear();
+                    }
                     self.itab = t;
                     self.scroll[0] = 0.0;
+                    // its params asked for again, as they are now
+                    if t == ITab::Params
+                        && let Some(Sel::Node(id) | Sel::Port(id) | Sel::Obj(id)) = self.sel
+                    {
+                        self.asked.remove(&id);
+                    }
                 }
+                Hit::ISearch => self.isearch_on = true,
+                Hit::INs(k) => {
+                    self.ins = k;
+                    self.scroll[0] = 0.0;
+                }
+                Hit::IFold(k) => {
+                    if !self.ishut.remove(&k) {
+                        self.ishut.insert(k);
+                    }
+                }
+                Hit::IOpen(k, text) => {
+                    if self.ctrl {
+                        return Some(Action::Copy(text));
+                    }
+                    if !self.iopen.remove(&k) {
+                        self.iopen.insert(k);
+                    }
+                }
+                Hit::Copy(k, v) => return Some(Action::Copy(if self.ctrl { format!("{k} = {v}") } else { v })),
                 Hit::Show(i) => {
                     self.show[i] = !self.show[i];
                     self.fitted = false;
@@ -3350,16 +3753,12 @@ impl Engine {
         if self.sel != s {
             self.sel = s;
             self.scroll[0] = 0.0;
-            if matches!(s, Some(Sel::Obj(_))) {
-                self.itab = ITab::Props;
-            } else if self.itab == ITab::Props && s.is_none() {
-                self.itab = ITab::Info;
-            }
-            if self.itab == ITab::Params
-                && let Some(Sel::Node(id)) = s
-                && self.asked.insert(id)
-            {
-                self.outbox.push(Cmd::Params(id));
+            self.isearch.clear();
+            self.isearch_on = false;
+            self.ins.clear();
+            // its params asked for again when PARAMS shows them
+            if let Some(Sel::Node(id) | Sel::Port(id) | Sel::Obj(id)) = s {
+                self.asked.remove(&id);
             }
         }
     }
@@ -3487,11 +3886,13 @@ impl Engine {
     }
 
     /// The wheel at window pixel `p`: zooms the graph, or scrolls the inspector or the tabs.
-    pub fn wheel(&mut self, p: (f64, f64), f: f64, size: (u32, u32), dpi: f64) {
+    /// The wheel over ENGINE: zooms the graph by `f`; the details and the tables scroll by `dy`
+    /// logical pixels (a mouse's click 60, a touchpad by as much as the fingers moved).
+    pub fn wheel(&mut self, p: (f64, f64), f: f64, dy: f64, size: (u32, u32), dpi: f64) {
         let [_, insp, bottom] = self.areas(size.0 as f64 / dpi, size.1 as f64 / dpi);
         let (lx, ly) = (p.0 / dpi, p.1 / dpi);
         let inside = |a: [f64; 4]| lx >= a[0] && lx < a[0] + a[2] && ly >= a[1] && ly < a[1] + a[3];
-        let step = if f > 1.0 { -60.0 } else if f < 1.0 { 60.0 } else { 0.0 };
+        let step = dy;
         let max = |i: usize| self.bars[i].map_or(0.0, |b| b.max);
         if inside(insp) {
             self.scroll[0] = (self.scroll[0].min(max(0)) + step).clamp(0.0, max(0));
@@ -3636,14 +4037,16 @@ impl Engine {
         rasterize(&text::svg_options(), svg, scale)
     }
 
-    /// For pictures (`--render … engine`): selects the node named so, and opens these tabs.
+    /// For pictures (`--render … engine`): selects the node named so (or any object by its id),
+    /// and opens these tabs.
     pub fn demo(&mut self, node: Option<&str>, tab: Option<&str>, itab: Option<&str>, shut: Option<&str>) {
         let shut = shut.unwrap_or_default();
         self.bottom_shut = shut == "bottom";
-        if let Some(name) = node
-            && let Some(n) = self.model.nodes.iter().find(|n| n.name == name || n.desc == name)
-        {
-            self.sel = Some(Sel::Node(n.id));
+        if let Some(name) = node {
+            self.sel = match self.model.nodes.iter().find(|n| n.name == name || n.desc == name) {
+                Some(n) => Some(Sel::Node(n.id)),
+                None => name.parse().ok().and_then(|id| self.sel_of(id)),
+            };
         }
         self.tab = match tab {
             Some("top") => Tab::Top,
@@ -3661,7 +4064,7 @@ impl Engine {
             _ => ITab::Info,
         };
         if self.itab == ITab::Params
-            && let Some(Sel::Node(id)) = self.sel
+            && let Some(Sel::Node(id) | Sel::Port(id) | Sel::Obj(id)) = self.sel
             && self.asked.insert(id)
         {
             self.outbox.push(Cmd::Params(id));
@@ -3681,6 +4084,12 @@ impl Engine {
             Hit::Close => "close the details (choosing something opens them again)".into(),
             Hit::Report => "save what PipeWire has to a text file for a bug report, without names, addresses or what plays".into(),
             Hit::Tab(_) => "click: show this table".into(),
+            Hit::ISearch => "search the keys and values (Esc clears it, again leaves it)".into(),
+            Hit::IFold(_) => "fold or open this part".into(),
+            Hit::IOpen(..) => "click: open or fold it · Ctrl+click: copy it".into(),
+            Hit::Copy(..) => "click: copy the value · Ctrl+click: copy key = value".into(),
+            Hit::INs(k) if k.is_empty() => "every property".into(),
+            Hit::INs(k) => format!("only the properties {k}.*"),
             _ => return None,
         })
     }
@@ -4136,10 +4545,12 @@ impl Engine {
             }
         }
         if !self.params.is_empty() {
-            rule(&mut o, "PARAMS (of the nodes inspected)");
+            rule(&mut o, "PARAMS (of the objects inspected)");
             for (id, ps) in &self.params {
-                for ((kind, i), text) in ps {
-                    let _ = writeln!(o, "node {id} {kind} #{i}\n{text}");
+                for (kind, es) in ps {
+                    for (i, v) in es {
+                        let _ = writeln!(o, "{id} {kind} [{i}]\n{}", pval_text(v, 1));
+                    }
                 }
             }
         }

@@ -120,7 +120,8 @@ pub struct Device {
     /// colour of the cords that leave this device
     pub color: [u8; 3],
     pub groups: Vec<Group>,
-    /// "running", "idle" or "suspended": the busiest of its nodes
+    /// "running", "idle" or "suspended": the busiest of its nodes; "off" with no nodes (a card
+    /// whose profile is off), "" while PipeWire hasn't said
     pub state: &'static str,
     /// a program's several nodes, in the order its sound goes through them, each its inputs then
     /// its outputs: the face keeps its frames in this order (not all inputs at the left)
@@ -366,7 +367,7 @@ impl Graph {
                 new || changed_state || before != after
             }
             Event::Failed { id, why } => self.failed.insert(*id, why.clone()).as_deref() != Some(why.as_str()),
-            Event::Levels(_) | Event::Setting { .. } | Event::Version(_) | Event::Meta { .. } | Event::Profile(_) | Event::Param { .. } => false,
+            Event::Levels(_) | Event::Setting { .. } | Event::Version(_) | Event::Meta { .. } | Event::Profile(_) | Event::Param { .. } | Event::Fields { .. } | Event::Object { .. } => false,
             Event::Synced => {
                 self.synced = true;
                 true
@@ -688,7 +689,9 @@ impl Graph {
                         "idle" => 1,
                         _ => 2,
                     })
-                    .unwrap_or("suspended");
+                    // (PipeWire has no state for a device without nodes, a card whose profile is
+                    // off: OFF says what it is; a node whose state hasn't come yet says none)
+                    .unwrap_or(if nodes.is_empty() { "off" } else { "" });
                 let several = program.is_some() && nodes.len() > 1;
                 let mut groups: Vec<Group> = Vec::new();
                 for n in &nodes {

@@ -13,6 +13,9 @@ license = "MIT"
 pipewire = { version = "0.10", features = ["v0_3_49"] }
 pollster = "1"
 resvg = { version = "0.45", default-features = false, features = ["text", "raster-images"] }
+# the clipboard, on Wayland (what ENGINE's inspector copies); 0.7.2: the smithay-client-toolkit
+# winit 0.30 has, not a second one
+smithay-clipboard = "=0.7.2"
 # text widths, to fit long device names on the panel
 ttf-parser = "0.25"
 # Vulkan (Linux), OpenGL as the fallback

@@ -46,8 +46,8 @@ newer C library and PipeWire. Their contents are set in `Cargo.toml` under
 
    The README's animation is a short scripted session, played on your live graph (nothing is
    linked in PipeWire; the meters show what really plays): an app patched into speakers or headphones it isn't patched to yet, MIDI
-   from Midi-Bridge to BLE MIDI, a device dragged into line, the rack and back, then ENGINE with
-   an app's details. So start an app playing first; a step whose devices aren't there is skipped:
+   from Midi-Bridge to BLE MIDI, a device dragged into line, the rack, MIXER, then ENGINE with an
+   app's details, and back to the desk: all four screens. So start an app playing first; a step whose devices aren't there is skipped:
 
    ```sh
    cfg=$(mktemp -d) frames=$(mktemp -d)

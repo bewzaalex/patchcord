@@ -2854,7 +2854,7 @@ impl Scene {
             }
             Hover::Device(key) => {
                 let Some(d) = self.devs.iter().find(|d| d.dev.key == *key) else { return Vec::new() };
-                vec![d.dev.name.clone(), format!("{} · {}", d.dev.model, d.dev.state)]
+                vec![d.dev.name.clone(), if d.dev.state.is_empty() { d.dev.model.clone() } else { format!("{} · {}", d.dev.model, d.dev.state) }]
             }
         }
     }

@@ -152,6 +152,8 @@ pub struct App {
     conn: Connection,
     scene: Scene,
     win: Option<Surface>,
+    /// the clipboard (Wayland's, through the window's own connection; none under X11)
+    clipboard: Option<smithay_clipboard::Clipboard>,
     size: (u32, u32),
     view: View,
     /// where the view is gliding to (fit, arrange)
@@ -226,6 +228,7 @@ impl App {
             conn,
             scene,
             win: None,
+            clipboard: None,
             size: (1, 1),
             view: View { x: 0.0, y: 0.0, s: 1.0 },
             view_to: None,
@@ -366,6 +369,28 @@ impl App {
 
     /// Typing into the save field. True when the key was used.
     fn type_key(&mut self, code: KeyCode, text: Option<&str>) -> bool {
+        // ENGINE's inspector's search: what is typed goes to its field; Esc clears it, again
+        // leaves it
+        if self.engine.isearching() && !self.mods.control_key() && !self.mods.alt_key() {
+            match code {
+                KeyCode::Escape => self.engine.isearch_esc(),
+                KeyCode::Backspace => {
+                    self.engine.isearch_text().pop();
+                }
+                KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Tab => {}
+                _ => {
+                    let t = self.engine.isearch_text();
+                    for c in text.unwrap_or("").chars().filter(|c| !c.is_control()) {
+                        if t.chars().count() < 60 {
+                            t.push(c);
+                        }
+                    }
+                }
+            }
+            self.send_engine();
+            self.redraw();
+            return true;
+        }
         // ENGINE's FIND: what is typed goes to its field; Enter and the arrows go through what it
         // picks out, Esc closes it
         if self.engine.finding() && !self.mods.control_key() && !self.mods.alt_key() {
@@ -423,6 +448,18 @@ impl App {
     }
 
     /// Shows a short notice under the panel.
+    /// Puts `text` on the clipboard, and says so.
+    fn copy(&mut self, text: String) {
+        match &self.clipboard {
+            Some(c) => {
+                let shown: String = text.lines().next().unwrap_or_default().chars().take(60).collect();
+                c.store(text);
+                self.say(&format!("Copied: {shown}"));
+            }
+            None => self.say("No clipboard here: copying needs a Wayland session"),
+        }
+    }
+
     fn say(&mut self, msg: &str) {
         self.notice = Some((Instant::now() + NOTICE, panel::notice(msg, self.dpi())));
         self.redraw();
@@ -1556,7 +1593,9 @@ impl App {
                 return self.redraw();
             }
             if button == MouseButton::Left {
+                self.engine.ctrl = self.mods.control_key();
                 match self.engine.press(self.cursor, self.size, self.dpi()) {
+                    Some(Action::Copy(text)) => self.copy(text),
                     Some(Action::Report) => self.save_report(),
                     Some(Action::Desk(key)) => {
                         self.set_engine(false);
@@ -2490,7 +2529,13 @@ impl App {
                         _ => {}
                     }
                 } else if self.cursor.1 <= bottom && self.engine.on {
-                    self.engine.wheel(self.cursor, f, self.size, dpi);
+                    // (the details and tables: as far as a touchpad moved, not a step for each of
+                    // its many small events)
+                    let dy = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => -60.0 * y as f64,
+                        MouseScrollDelta::PixelDelta(p) => -p.y / dpi,
+                    };
+                    self.engine.wheel(self.cursor, f, dy, self.size, dpi);
                     self.redraw();
                 } else if self.cursor.1 <= bottom && self.mixer_shown() {
                     let d = match delta {
@@ -2567,6 +2612,14 @@ impl ApplicationHandler<()> for App {
         }
         let s = window.inner_size();
         self.size = (s.width.max(1), s.height.max(1));
+        // the clipboard, on Wayland: what the inspector copies goes there
+        if let Ok(h) = winit::raw_window_handle::HasDisplayHandle::display_handle(&*window)
+            && let winit::raw_window_handle::RawDisplayHandle::Wayland(w) = h.as_raw()
+        {
+            // SAFETY: winit's own Wayland display; the event loop that owns it outlives the app
+            // (main.rs), and so this clipboard
+            self.clipboard = Some(unsafe { smithay_clipboard::Clipboard::new(w.display.as_ptr()) });
+        }
         self.win = Some(Surface { window, gpu });
         // the screen it was closed on: ENGINE too (MIXER and the rack's view come with the settings)
         if self.settings.engine {

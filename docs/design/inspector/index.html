@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ENGINE inspector</title>
+<!--
+  ENGINE's inspector, the panel at the right of the graph: every tab of every kind of object, as
+  ADR 0024 has it: PipeWire's data as it is. Pick an object at the left; the panel is at its real
+  size (340 wide).
+
+  The data is a real pw-dump (2026-11-27), cut to a few objects, with MAC addresses, the user, the
+  host, machine and session ids and the stream's title masked (this file is public; the live
+  inspector masks nothing). Two things are made up and say so in the list: a link in error, and
+  the profiler's blocks on TIMING (pw-dump has no profiler).
+
+  The rules, from ADR 0024:
+  - keys and values verbatim: an info field by its name (max-input-ports, change-mask), a property
+    as its key, a param by its id (EnumFormat, Props, Route) and each of its entries as it comes;
+    values as pw-dump writes them (strings quoted in params; properties are all strings, unquoted);
+  - no summaries, no readings, no units or percentages, no renamed values, no explanations of
+    ours; a description only where PipeWire has one (PropInfo's, beside the Props key it is for);
+  - only the layout is ours: info, properties and params apart; properties by namespace; a search
+    over keys and values, the match lit; folding; a click on a row copies its value; an id that
+    names an object (client.id, link.output.port, output-node-id) a link to it;
+  - what other objects point here by id (a node's ports: node.id = 301) is listed under the
+    key that says so;
+  - what is Patchcord's stands apart under PATCHCORD: where a node is in the rack (SHOW), a port's
+    CONN (making links), the numbers worked out from the profiler's.
+  PARAMS as an outline, all folded: a row a param id with its count and its first entry on one
+  line; a click opens it. Values on one line where they fit ({ default: 1, min: 1, max: 32 }),
+  only what doesn't fit nests (chosen of three layouts, 2026-11-27).
+
+  The first version of this mockup (summaries, percentages, rack kinds, a CONVERTER group, our
+  explanations; never committed) is what ADR 0024 rejects: its Context says what it had.
+-->
+<style>
+:root {
+  --bg: #121315; --panel: #17181a; --head: #1f2023; --line: #232428; --row: #1c1d20;
+  --ink: #c9cbcd; --bright: #e6e7e8; --dim: #7d8085; --faint: #55585d;
+  --amber: #ffb02e; --amber-ink: #e8932e; --green: #5cff7a; --red: #ff4a32; --pc: #6fa8dc;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 13px "Noto Sans", sans-serif; }
+.wrap { display: flex; gap: 28px; padding: 24px; align-items: flex-start; flex-wrap: wrap; }
+.pick { width: 250px; }
+h2 { font-size: 11px; letter-spacing: 1.5px; color: var(--amber-ink); margin: 14px 0 6px; }
+h2:first-child { margin-top: 0; }
+.pick button { display: flex; width: 100%; gap: 8px; align-items: center; text-align: left; background: #1b1c1f; color: var(--ink); border: 1px solid #000; border-radius: 4px; padding: 6px 9px; margin-bottom: 4px; font: 12px inherit; cursor: pointer; }
+.pick button.on { background: #2a2418; border-color: var(--amber); color: var(--bright); }
+.pick button span.t { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pick small { color: var(--dim); font-family: "Noto Sans Mono", monospace; }
+.pick em { color: var(--red); font-style: normal; font-size: 10px; }
+.notes { max-width: 380px; color: #a8abae; line-height: 1.5; font-size: 12.5px; }
+.notes li { margin-bottom: 6px; }
+code { font-family: "Noto Sans Mono", monospace; font-size: 11.5px; color: var(--bright); }
+
+.insp { width: 340px; height: 780px; background: var(--panel); display: flex; flex-direction: column; box-shadow: 0 0 0 1px #000; }
+.ihead { background: var(--head); padding: 10px 34px 9px 12px; border-bottom: 1px solid #000; position: relative; }
+.ihead .t { display: flex; align-items: center; gap: 8px; }
+.lamp { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.ihead .name { font-weight: bold; font-size: 14px; color: var(--bright); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ihead .sub { margin: 4px 0 0 17px; font: 10.5px "Noto Sans Mono", monospace; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ihead .x { position: absolute; right: 12px; top: 9px; color: var(--dim); font-size: 18px; }
+.tabs { display: flex; gap: 3px; padding: 7px 10px 0; background: #111214; border-bottom: 1px solid #2c2d31; }
+.tab { padding: 5px 10px; font-size: 11px; font-weight: bold; letter-spacing: 1px; color: #8d9095; background: #1f2023; border: 1px solid #000; border-bottom: none; border-radius: 4px 4px 0 0; cursor: pointer; }
+.tab.on { background: var(--panel); color: var(--bright); box-shadow: inset 0 2px 0 var(--amber); position: relative; top: 1px; }
+.body { flex: 1; overflow-y: auto; padding: 0 0 16px; }
+.body::-webkit-scrollbar { width: 8px; } .body::-webkit-scrollbar-thumb { background: #2c2d31; border-radius: 4px; }
+
+.bar { position: sticky; top: 0; background: var(--panel); padding: 9px 10px 7px; border-bottom: 1px solid var(--line); z-index: 1; }
+.search { display: flex; align-items: center; gap: 6px; background: #0e0f10; border: 1px solid #000; border-radius: 4px; padding: 0 8px; }
+.search input { flex: 1; min-width: 0; background: none; border: none; outline: none; color: var(--bright); font: 12px "Noto Sans Mono", monospace; padding: 6px 0; }
+.search .n { font-size: 10px; color: var(--dim); white-space: nowrap; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; }
+.chip { font: 10px "Noto Sans Mono", monospace; padding: 2px 7px; border-radius: 9px; background: #1f2023; color: #8d9095; border: 1px solid #000; cursor: pointer; }
+.chip b { font-weight: normal; color: var(--faint); margin-left: 3px; }
+.chip.on { background: #2a2418; color: var(--amber); border-color: #5a4518; }
+
+.sec { margin: 12px 10px 0; }
+.sec > h3 { display: flex; align-items: baseline; gap: 6px; font-size: 10.5px; letter-spacing: 1.3px; color: var(--amber-ink); margin: 0 0 4px; font-weight: bold; cursor: pointer; }
+.sec > h3::before { content: "▾"; color: var(--faint); font-size: 9px; }
+.sec.shut > h3::before { content: "▸"; }
+.sec.shut > :not(h3) { display: none; }
+.sec > h3 .c { color: var(--faint); letter-spacing: 0; font-weight: normal; font-family: "Noto Sans Mono", monospace; }
+.sec > h3 code { color: var(--amber-ink); font-size: 10.5px; font-weight: normal; letter-spacing: 0; }
+.sec.pc > h3 { color: var(--pc); }
+.sec.pc { border-left: 2px solid #2c4a66; padding-left: 8px; margin-left: 8px; }
+.pcnote { font-size: 10.5px; color: var(--dim); margin: 0 0 6px; }
+
+.row { display: grid; grid-template-columns: minmax(96px, 42%) 1fr; column-gap: 10px; padding: 3px 2px; border-bottom: 1px solid var(--line); cursor: copy; font: 11.5px "Noto Sans Mono", monospace; }
+.row:hover { background: var(--row); }
+.row .k { color: #a8abae; word-break: break-all; }
+.row .k i { font-style: normal; color: var(--faint); }
+.row .v { color: var(--bright); word-break: break-all; }
+.row .v.null { color: var(--faint); }
+.row .d { grid-column: 2; color: var(--dim); font: 10.5px "Noto Sans", sans-serif; }
+.row .d b { font-weight: normal; color: var(--faint); font-family: "Noto Sans Mono", monospace; font-size: 9.5px; }
+.nest { margin-left: 12px; border-left: 1px solid #2c2d31; padding-left: 6px; }
+.idx { font: 10.5px "Noto Sans Mono", monospace; color: var(--faint); padding: 4px 2px 1px; }
+a.id { color: var(--bright); text-decoration: none; border-bottom: 1px dotted #6b6e72; cursor: pointer; }
+mark { background: #5a4518; color: var(--bright); border-radius: 2px; }
+.copied { position: fixed; background: #2a2418; border: 1px solid var(--amber); color: var(--amber); font-size: 10.5px; font-weight: bold; letter-spacing: 1px; padding: 3px 8px; border-radius: 3px; pointer-events: none; opacity: 0; transition: opacity .15s; }
+.empty { color: var(--faint); font-size: 11.5px; margin: 14px 12px; }
+.tools { display: flex; gap: 6px; margin: 8px 10px 0; }
+.tool { font-size: 9.5px; font-weight: bold; letter-spacing: 1px; color: #8d9095; border: 1px solid #2c2d31; border-radius: 3px; padding: 2px 7px; cursor: pointer; }
+.tool.on { color: var(--amber); border-color: #5a4518; }
+pre.json { margin: 4px 0 0; padding: 8px; background: #0e0f10; border: 1px solid #000; border-radius: 4px; font: 10.5px/1.45 "Noto Sans Mono", monospace; color: #a8abae; white-space: pre-wrap; word-break: break-all; }
+.where { display: flex; align-items: center; gap: 8px; background: #111214; border: 1px solid #000; border-radius: 4px; padding: 7px 8px; font-size: 12px; }
+.where .s { flex: 1; }
+.key { font: bold 10px "Noto Sans", sans-serif; letter-spacing: 1px; color: #e6e7e8; background: linear-gradient(#34363a, #26272b); border: 1px solid #000; border-radius: 4px; padding: 5px 9px; cursor: pointer; }
+.chart { background: #0e0f10; border: 1px solid #000; border-radius: 4px; padding: 6px 8px 4px; margin-top: 6px; }
+.chart .ct { font-size: 10px; color: var(--dim); }
+.chart svg { display: block; width: 100%; height: 80px; }
+.cport { display: flex; align-items: center; gap: 8px; height: 22px; padding: 0 9px; margin: 0 0 4px 0; background: #1d1e21; border: 1px solid #0b0b0c; border-radius: 4px; font: 11px "Noto Sans Mono", monospace; color: #a8abae; cursor: pointer; }
+.cport.on { background: var(--amber); color: #1d1408; font-weight: bold; }
+table.meta { width: 100%; border-collapse: collapse; font: 11px "Noto Sans Mono", monospace; }
+table.meta th { text-align: left; font: bold 9.5px "Noto Sans", sans-serif; letter-spacing: 1.2px; color: var(--dim); padding: 4px; border-bottom: 1px solid #2c2d31; }
+table.meta td { padding: 4px; border-bottom: 1px solid var(--line); vertical-align: top; word-break: break-all; }
+table.meta td.s { color: var(--dim); }
+table.meta td.k { color: #a8abae; }
+table.meta td.k small { display: block; color: var(--faint); font-size: 9.5px; }
+table.meta td.v { color: var(--bright); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="pick" id="pick"></div>
+  <div class="insp" id="insp"></div>
+  <div class="notes">
+    <h2>AS IT IS (ADR 0024)</h2>
+    <ul>
+      <li>Keys and values verbatim: info fields by their names (<code>max-input-ports</code>), properties as keys, params by their ids (<code>EnumFormat</code>, <code>Route</code>), each entry as it comes.</li>
+      <li>No summaries, units, percentages or readings; a description only where PipeWire gives one (PropInfo, beside its Props key).</li>
+      <li>Only the layout is ours: search with the match lit, namespace chips, folding, a click copies, an id is a link.</li>
+      <li>What other objects point here by id is listed under the key that says so (<code>node.id = 301</code>).</li>
+      <li>Patchcord's own (where a node is in the rack, CONN, the numbers worked out from the profiler's) stands apart, under <span style="color:var(--pc);font-weight:bold">PATCHCORD</span>.</li>
+      <li>Data: a real pw-dump, masked because this file is public. The live inspector masks nothing.</li>
+    </ul>
+    <h2>TABS</h2>
+    <ul>
+      <li>One order everywhere: <b>INFO, PROPS, PARAMS, TIMING, CONN</b>, each only where the object has it.</li>
+      <li><b>Node:</b> INFO (object, info fields, its ports and their links), PROPS, PARAMS, TIMING.</li>
+      <li><b>Port:</b> INFO, PROPS, PARAMS, CONN. <b>Link:</b> INFO (with <code>format</code> and <code>error</code>), PROPS.</li>
+      <li><b>Device:</b> INFO (its nodes), PROPS, PARAMS (EnumProfile, Profile, EnumRoute, Route, Props, PropInfo).</li>
+      <li><b>Client:</b> INFO (what has its client.id), PROPS. <b>Metadata:</b> INFO (its entries), PROPS.</li>
+      <li><b>Module, factory, core:</b> INFO (their info fields: filename, args; type; version, user-name…), PROPS.</li>
+    </ul>
+  </div>
+</div>
+<div class="copied" id="copied">COPIED</div>
+<script>
+// a real pw-dump, cut to these objects and masked (see the comment at the top)
+const DATA = [
+{"id": 0, "type": "PipeWire:Interface:Core", "version": 4, "permissions": ["r", "x", "m"], "info": {"cookie": 1234567890, "user-name": "user", "host-name": "host", "version": "1.6.9", "name": "pipewire-0", "change-mask": ["props"], "props": {"application.language": "C.UTF-8", "application.name": "pipewire", "application.process.binary": "pipewire", "application.process.host": "host", "application.process.id": "4211", "application.process.user": "user", "clock.power-of-two-quantum": true, "config.name": "pipewire.conf", "core.daemon": true, "core.name": "pipewire-0", "cpu.max-align": 64, "default.clock.max-quantum": 2048, "default.clock.min-quantum": 32, "default.clock.quantum": 1024, "default.clock.quantum-floor": 4, "default.clock.quantum-limit": 8192, "default.clock.rate": 48000, "default.video.height": 480, "default.video.rate.denom": 1, "default.video.rate.num": 25, "default.video.width": 640, "link.max-buffers": 16, "log.level": 2, "mem.allow-mlock": true, "mem.warn-mlock": true, "object.id": 0, "object.serial": 0, "settings.check-quantum": false, "settings.check-rate": false}}},
+{"id": 18, "type": "PipeWire:Interface:Module", "version": 3, "permissions": ["r", "m"], "info": {"name": "libpipewire-module-adapter", "filename": "/usr/lib64/pipewire-0.3/libpipewire-module-adapter.so", "args": null, "change-mask": ["props"], "props": {"module.author": "Wim Taymans <wim.taymans@gmail.com>", "module.description": "Manage adapter nodes", "module.name": "libpipewire-module-adapter", "module.version": "1.6.9", "object.id": 18, "object.serial": 18}}},
+{"id": 19, "type": "PipeWire:Interface:Factory", "version": 3, "permissions": ["r", "m"], "info": {"name": "adapter", "type": "PipeWire:Interface:Node", "version": 3, "change-mask": ["props"], "props": {"factory.name": "adapter", "factory.type.name": "PipeWire:Interface:Node", "factory.type.version": 3, "factory.usage": "factory.name=<factory-name> (library.name=<library-name>) node.name=<string> ", "module.id": 18, "object.id": 19, "object.serial": 19}}},
+{"id": 38, "type": "PipeWire:Interface:Metadata", "version": 3, "permissions": ["r", "w", "x"], "props": {"client.id": 32, "factory.id": 7, "metadata.name": "default", "module.id": 6, "object.serial": 39}, "metadata": [{"subject": 0, "key": "default.configured.audio.sink", "type": "Spa:String:JSON", "value": {"name": "bluez_output.XX_XX_XX_XX_FD_E3.1"}}, {"subject": 0, "key": "default.configured.audio.source", "type": "Spa:String:JSON", "value": {"name": "bluez_input.XX:XX:XX:XX:FD:E3"}}, {"subject": 0, "key": "default.audio.sink", "type": "Spa:String:JSON", "value": {"name": "bluez_output.XX_XX_XX_XX_FD_E3.1"}}, {"subject": 0, "key": "default.audio.source", "type": "Spa:String:JSON", "value": {"name": "bluez_input.XX:XX:XX:XX:FD:E3"}}]},
+{"id": 199, "type": "PipeWire:Interface:Node", "version": 3, "permissions": ["r", "w", "x", "m"], "info": {"max-input-ports": 0, "max-output-ports": 129, "change-mask": ["input-ports", "output-ports", "state", "props", "params"], "n-input-ports": 0, "n-output-ports": 1, "state": "suspended", "error": null, "props": {"adapt.follower.spa-node": "", "audio.position": "[MONO]", "bluez5.loopback": true, "card.profile.device": 0, "client.id": 367, "clock.quantum-limit": 8192, "device.id": 352, "device.routes": 1, "factory.id": 12, "library.name": "audioconvert/libspa-audioconvert", "media.class": "Audio/Source", "media.name": "JLab GO Work 2 output", "node.autoconnect": true, "node.description": "JLab GO Work 2", "node.group": "loopback-2005-21", "node.link-group": "loopback-2005-21", "node.loop.name": "data-loop.0", "node.name": "bluez_input.XX:XX:XX:XX:FD:E3", "node.trigger": true, "node.virtual": false, "node.want-driver": true, "object.id": 199, "object.register": false, "object.serial": 66204, "port.group": "stream.0", "priority.session": 2010, "resample.disable": true, "resample.prefill": true, "stream.is-live": true}, "params": {"EnumFormat": [{"mediaType": "audio", "mediaSubtype": "raw", "format": "F32P", "channels": 1, "position": ["MONO"]}], "PropInfo": [{"id": "volume", "description": "Volume", "type": {"default": 1.0, "min": 0.0, "max": 10.0}}, {"id": "mute", "description": "Mute", "type": {"default": false, "alt1": false, "alt2": true}}, {"id": "channelVolumes", "description": "Channel Volumes", "type": {"default": 1.0, "min": 0.0, "max": 10.0}, "container": "Array"}, {"id": "channelMap", "description": "Channel Map", "type": "", "container": "Array"}, {"id": "monitorMute", "description": "Monitor Mute", "type": {"default": false, "alt1": false, "alt2": true}}, {"id": "monitorVolumes", "description": "Monitor Volumes", "type": {"default": 1.0, "min": 0.0, "max": 10.0}, "container": "Array"}, {"id": "softMute", "description": "Soft Mute", "type": {"default": false, "alt1": false, "alt2": true}}, {"id": "softVolumes", "description": "Soft Volumes", "type": {"default": 1.0, "min": 0.0, "max": 10.0}, "container": "Array"}, {"name": "monitor.channel-volumes", "description": "Monitor channel volume", "type": {"default": false, "alt1": false, "alt2": true}, "params": true}, {"name": "channelmix.disable", "description": "Disable Channel mixing", "type": {"default": false, "alt1": false, "alt2": true}, "params": true}, {"name": "channelmix.min-volume", "description": "Minimum volume level", "type": {"default": 0.0, "min": 0.0, "max": 10.0}, "params": true}, {"name": "channelmix.max-volume", "description": "Maximum volume level", "type": {"default": 10.0, "min": 0.0, "max": 10.0}, "params": true}, {"name": "channelmix.normalize", "description": "Normalize Volumes", "type": {"default": false, "alt1": false, "alt2": true}, "params": true}, {"name": "channelmix.mix-lfe", "description": "Mix LFE into channels", "type": {"default": true, "alt1": true, "alt2": false}, "params": true}, {"name": "channelmix.upmix", "description": "Enable upmixing", "type": {"default": true, "alt1": true, "alt2": false}, "params": true}, {"name": "channelmix.lfe-cutoff", "description": "LFE cutoff frequency", "type": {"default": 0.0, "min": 0.0, "max": 1000.0}, "params": true}, {"name": "channelmix.fc-cutoff", "description": "FC cutoff frequency (Hz)", "type": {"default": 0.0, "min": 0.0, "max": 48000.0}, "params": true}, {"name": "channelmix.rear-delay", "description": "Rear channels delay (ms)", "type": {"default": 0.0, "min": 0.0, "max": 1000.0}, "params": true}, {"name": "channelmix.stereo-widen", "description": "Stereo widen", "type": {"default": 0.0, "min": 0.0, "max": 1.0}, "params": true}, {"name": "channelmix.hilbert-taps", "description": "Taps for phase shift of rear", "type": {"default": 0, "min": 0, "max": 255}, "params": true}, {"name": "channelmix.upmix-method", "description": "Upmix method to use", "type": "none", "params": true, "labels": ["none", "Disabled", "simple", "Simple upmixing", "psd", "Passive Surround Decoding"]}, {"id": "rate", "description": "Rate scaler", "type": {"default": 1.0, "min": 0.0, "max": 10.0}}, {"id": "quality", "name": "resample.quality", "description": "Resample Quality", "type": {"default": 4, "min": 0, "max": 14}, "params": true}, {"name": "resample.disable", "description": "Disable Resampling", "type": {"default": true, "alt1": true, "alt2": false}, "params": true}, {"name": "dither.noise", "description": "Add noise bits", "type": {"default": 0, "min": 0, "max": 16}, "params": true}, {"name": "dither.method", "description": "The dithering method", "type": "none", "params": true, "labels": ["none", "Disabled", "rectangular", "Rectangular dithering", "triangular", "Triangular dithering", "triangular-hf", "Sloped Triangular dithering", "wannamaker3", "Wannamaker 3 dithering", "shaped5", "Lipshitz 5 dithering"]}, {"name": "debug.wav-path", "description": "Path to WAV file", "type": "", "params": true}, {"name": "channelmix.lock-volumes", "description": "Disable volume updates", "type": {"default": false, "alt1": false, "alt2": true}, "params": true}, {"name": "audioconvert.filter-graph.disable", "description": "Disable Filter graph updates", "type": {"default": false, "alt1": false, "alt2": true}, "params": true}, {"name": "audioconvert.filter-graph.N", "description": "A filter graph to load", "type": "", "params": true}], "Props": [{"volume": 1.0, "mute": false, "channelVolumes": [1.0], "channelMap": ["MONO"], "softMute": false, "softVolumes": [1.0], "monitorMute": false, "monitorVolumes": [1.0], "params": ["monitor.channel-volumes", false, "channelmix.disable", false, "channelmix.min-volume", 0.0, "channelmix.max-volume", 10.0, "channelmix.normalize", false, "channelmix.mix-lfe", true, "channelmix.upmix", true, "channelmix.lfe-cutoff", 0.0, "channelmix.fc-cutoff", 0.0, "channelmix.rear-delay", 0.0, "channelmix.stereo-widen", 0.0, "channelmix.hilbert-taps", 0, "channelmix.upmix-method", "none", "resample.quality", 4, "resample.disable", true, "dither.noise", 0, "dither.method", "none", "debug.wav-path", "", "channelmix.lock-volumes", false, "audioconvert.filter-graph.disable", false, "audioconvert.filter-graph", ""]}], "Format": [], "EnumPortConfig": [{"direction": "Output", "mode": {"default": "none", "alt1": "none", "alt2": "dsp", "alt3": "convert"}, "monitor": {"default": false, "alt1": false, "alt2": true}, "control": {"default": false, "alt1": false, "alt2": true}}], "PortConfig": [{"direction": "Output", "mode": "dsp", "monitor": true, "control": false, "format": {"mediaType": "audio", "mediaSubtype": "raw", "format": "F32P", "channels": 1, "position": ["MONO"]}}], "Latency": [{"direction": "Input", "minQuantum": 0.0, "maxQuantum": 0.0, "minRate": 0, "maxRate": 0, "minNs": 0, "maxNs": 0}, {"direction": "Output", "minQuantum": 0.0, "maxQuantum": 0.0, "minRate": 0, "maxRate": 0, "minNs": 0, "maxNs": 0}], "ProcessLatency": [], "Tag": [{"direction": "Input"}]}}},
+{"id": 301, "type": "PipeWire:Interface:Node", "version": 3, "permissions": ["r", "w", "x", "m"], "info": {"max-input-ports": 0, "max-output-ports": 129, "change-mask": ["input-ports", "output-ports", "state", "props", "params"], "n-input-ports": 0, "n-output-ports": 2, "state": "running", "error": null, "props": {"adapt.follower.spa-node": "", "application.icon-name": "vivaldi", "application.language": "C.UTF-8", "application.name": "Vivaldi", "application.process.binary": "vivaldi-bin (deleted)", "application.process.host": "host", "application.process.id": "4211", "application.process.machine-id": "(left out)", "application.process.session-id": "(left out)", "application.process.user": "user", "client.api": "pipewire-pulse", "client.id": 376, "clock.quantum-limit": 8192, "factory.id": 7, "library.name": "audioconvert/libspa-audioconvert", "media.class": "Stream/Output/Audio", "media.name": "Playback", "node.autoconnect": true, "node.driver-id": 308, "node.latency": "1024/48000", "node.loop.name": "data-loop.0", "node.name": "Vivaldi", "node.rate": "1/48000", "node.want-driver": true, "object.id": 301, "object.register": false, "object.serial": 66433, "port.group": "stream.0", "pulse.attr.maxlength": 4194304, "pulse.attr.minreq": 4096, "pulse.attr.prebuf": 12296, "pulse.attr.tlength": 16384, "pulse.corked": false, "pulse.server.type": "unix", "stream.is-live": true, "window.x11.display": "(left out)"}, "params": {"EnumFormat": [{"mediaType": "audio", "mediaSubtype": "raw", "format": "F32LE", "rate": 48000, "channels": 2, "position": ["FL", "FR"]}], "PropInfo": [{"id": "volume", "description": "Volume", "type": {"default": 1.0, "min": 0.0, "max": 10.0}}, {"id": "mute", "description": "Mute", "type": {"default": false, "alt1": false, "alt2": true}}, {"id": "channelVolumes", "description": "Channel Volumes", "type": {"default": 1.0, "min": 0.0, "max": 10.0}, "container": "Array"}, {"id": "channelMap", "description": "Channel Map", "type": "", "container": "Array"}, {"id": "monitorMute", "description": "Monitor Mute", "type": {"default": false, "alt1": false, "alt2": true}}, {"id": "monitorVolumes", "description": "Monitor Volumes", "type": {"default": 1.0, "min": 0.0, "max": 10.0}, "container": "Array"}, {"id": "softMute", "description": "Soft Mute", "type": {"default": false, "alt1": false, "alt2": true}}, {"id": "softVolumes", "description": "Soft Volumes", "type": {"default": 1.0, "min": 0.0, "max": 10.0}, "container": "Array"}, {"name": "monitor.channel-volumes", "description": "Monitor channel volume", "type": {"default": false, "alt1": false, "alt2": true}, "params": true}, {"name": "channelmix.disable", "description": "Disable Channel mixing", "type": {"default": false, "alt1": false, "alt2": true}, "params": true}, {"name": "channelmix.min-volume", "description": "Minimum volume level", "type": {"default": 0.0, "min": 0.0, "max": 10.0}, "params": true}, {"name": "channelmix.max-volume", "description": "Maximum volume level", "type": {"default": 10.0, "min": 0.0, "max": 10.0}, "params": true}, {"name": "channelmix.normalize", "description": "Normalize Volumes", "type": {"default": false, "alt1": false, "alt2": true}, "params": true}, {"name": "channelmix.mix-lfe", "description": "Mix LFE into channels", "type": {"default": true, "alt1": true, "alt2": false}, "params": true}, {"name": "channelmix.upmix", "description": "Enable upmixing", "type": {"default": true, "alt1": true, "alt2": false}, "params": true}, {"name": "channelmix.lfe-cutoff", "description": "LFE cutoff frequency", "type": {"default": 0.0, "min": 0.0, "max": 1000.0}, "params": true}, {"name": "channelmix.fc-cutoff", "description": "FC cutoff frequency (Hz)", "type": {"default": 0.0, "min": 0.0, "max": 48000.0}, "params": true}, {"name": "channelmix.rear-delay", "description": "Rear channels delay (ms)", "type": {"default": 0.0, "min": 0.0, "max": 1000.0}, "params": true}, {"name": "channelmix.stereo-widen", "description": "Stereo widen", "type": {"default": 0.0, "min": 0.0, "max": 1.0}, "params": true}, {"name": "channelmix.hilbert-taps", "description": "Taps for phase shift of rear", "type": {"default": 0, "min": 0, "max": 255}, "params": true}, {"name": "channelmix.upmix-method", "description": "Upmix method to use", "type": "none", "params": true, "labels": ["none", "Disabled", "simple", "Simple upmixing", "psd", "Passive Surround Decoding"]}, {"id": "rate", "description": "Rate scaler", "type": {"default": 1.0, "min": 0.0, "max": 10.0}}, {"id": "quality", "name": "resample.quality", "description": "Resample Quality", "type": {"default": 4, "min": 0, "max": 14}, "params": true}, {"name": "resample.disable", "description": "Disable Resampling", "type": {"default": false, "alt1": false, "alt2": true}, "params": true}, {"name": "dither.noise", "description": "Add noise bits", "type": {"default": 0, "min": 0, "max": 16}, "params": true}, {"name": "dither.method", "description": "The dithering method", "type": "none", "params": true, "labels": ["none", "Disabled", "rectangular", "Rectangular dithering", "triangular", "Triangular dithering", "triangular-hf", "Sloped Triangular dithering", "wannamaker3", "Wannamaker 3 dithering", "shaped5", "Lipshitz 5 dithering"]}, {"name": "debug.wav-path", "description": "Path to WAV file", "type": "", "params": true}, {"name": "channelmix.lock-volumes", "description": "Disable volume updates", "type": {"default": false, "alt1": false, "alt2": true}, "params": true}, {"name": "audioconvert.filter-graph.disable", "description": "Disable Filter graph updates", "type": {"default": false, "alt1": false, "alt2": true}, "params": true}, {"name": "audioconvert.filter-graph.N", "description": "A filter graph to load", "type": "", "params": true}], "Props": [{"volume": 1.0, "mute": false, "channelVolumes": [1.0, 1.0], "channelMap": ["FL", "FR"], "softMute": false, "softVolumes": [1.0, 1.0], "monitorMute": false, "monitorVolumes": [1.0, 1.0], "params": ["monitor.channel-volumes", false, "channelmix.disable", false, "channelmix.min-volume", 0.0, "channelmix.max-volume", 10.0, "channelmix.normalize", false, "channelmix.mix-lfe", true, "channelmix.upmix", true, "channelmix.lfe-cutoff", 0.0, "channelmix.fc-cutoff", 0.0, "channelmix.rear-delay", 0.0, "channelmix.stereo-widen", 0.0, "channelmix.hilbert-taps", 0, "channelmix.upmix-method", "none", "resample.quality", 4, "resample.disable", false, "dither.noise", 0, "dither.method", "none", "debug.wav-path", "", "channelmix.lock-volumes", false, "audioconvert.filter-graph.disable", false, "audioconvert.filter-graph", ""]}], "Format": [{"mediaType": "audio", "mediaSubtype": "raw", "format": "F32LE", "rate": 48000, "channels": 2, "position": ["FL", "FR"]}], "EnumPortConfig": [{"direction": "Output", "mode": {"default": "none", "alt1": "none", "alt2": "dsp", "alt3": "convert"}, "monitor": {"default": false, "alt1": false, "alt2": true}, "control": {"default": false, "alt1": false, "alt2": true}}], "PortConfig": [{"direction": "Output", "mode": "dsp", "monitor": true, "control": false, "format": {"mediaType": "audio", "mediaSubtype": "raw", "format": "F32P", "channels": 2, "position": ["FL", "FR"]}}], "Latency": [{"direction": "Input", "minQuantum": 0.0, "maxQuantum": 0.0, "minRate": 0, "maxRate": 0, "minNs": 188999999, "maxNs": 188999999}], "ProcessLatency": [], "Tag": [{"direction": "Input"}]}}},
+{"id": 308, "type": "PipeWire:Interface:Node", "version": 3, "permissions": ["r", "w", "x", "m"], "info": {"max-input-ports": 129, "max-output-ports": 0, "change-mask": ["input-ports", "output-ports", "state", "props", "params"], "n-input-ports": 2, "n-output-ports": 2, "state": "running", "error": null, "props": {"api.bluez5.address": "XX:XX:XX:XX:FD:E3", "api.bluez5.codec": "aac", "api.bluez5.profile": "a2dp-sink", "api.bluez5.transport": "", "card.profile.device": 1, "client.id": 41, "clock.quantum-limit": 8192, "device.api": "bluez5", "device.id": 352, "device.routes": 1, "factory.id": 12, "factory.name": "api.bluez5.a2dp.sink", "library.name": "audioconvert/libspa-audioconvert", "media.class": "Audio/Sink", "media.name": "JLab GO Work 2", "node.description": "JLab GO Work 2", "node.driver": true, "node.loop.name": "data-loop.0", "node.name": "bluez_output.XX_XX_XX_XX_FD_E3.1", "node.pause-on-idle": false, "object.id": 308, "object.serial": 66201, "port.group": "stream.0", "priority.driver": 1010, "priority.session": 1010, "spa.object.id": 1}, "params": {"EnumFormat": [{"mediaType": "audio", "mediaSubtype": "raw", "format": "S16LE", "rate": 48000, "channels": 2, "position": ["FL", "FR"]}], "PropInfo": [{"id": "volume", "description": "Volume", "type": {"default": 1.0, "min": 0.0, "max": 10.0}}, {"id": "mute", "description": "Mute", "type": {"default": false, "alt1": false, "alt2": true}}, {"id": "channelVolumes", "description": "Channel Volumes", "type": {"default": 1.0, "min": 0.0, "max": 10.0}, "container": "Array"}, {"id": "channelMap", "description": "Channel Map", "type": "", "container": "Array"}, {"id": "monitorMute", "description": "Monitor Mute", "type": {"default": false, "alt1": false, "alt2": true}}, {"id": "monitorVolumes", "description": "Monitor Volumes", "type": {"default": 1.0, "min": 0.0, "max": 10.0}, "container": "Array"}, {"id": "softMute", "description": "Soft Mute", "type": {"default": false, "alt1": false, "alt2": true}}, {"id": "softVolumes", "description": "Soft Volumes", "type": {"default": 1.0, "min": 0.0, "max": 10.0}, "container": "Array"}, {"name": "monitor.channel-volumes", "description": "Monitor channel volume", "type": {"default": false, "alt1": false, "alt2": true}, "params": true}, {"name": "channelmix.disable", "description": "Disable Channel mixing", "type": {"default": false, "alt1": false, "alt2": true}, "params": true}, {"name": "channelmix.min-volume", "description": "Minimum volume level", "type": {"default": 0.0, "min": 0.0, "max": 10.0}, "params": true}, {"name": "channelmix.max-volume", "description": "Maximum volume level", "type": {"default": 10.0, "min": 0.0, "max": 10.0}, "params": true}, {"name": "channelmix.normalize", "description": "Normalize Volumes", "type": {"default": false, "alt1": false, "alt2": true}, "params": true}, {"name": "channelmix.mix-lfe", "description": "Mix LFE into channels", "type": {"default": true, "alt1": true, "alt2": false}, "params": true}, {"name": "channelmix.upmix", "description": "Enable upmixing", "type": {"default": true, "alt1": true, "alt2": false}, "params": true}, {"name": "channelmix.lfe-cutoff", "description": "LFE cutoff frequency", "type": {"default": 0.0, "min": 0.0, "max": 1000.0}, "params": true}, {"name": "channelmix.fc-cutoff", "description": "FC cutoff frequency (Hz)", "type": {"default": 0.0, "min": 0.0, "max": 48000.0}, "params": true}, {"name": "channelmix.rear-delay", "description": "Rear channels delay (ms)", "type": {"default": 0.0, "min": 0.0, "max": 1000.0}, "params": true}, {"name": "channelmix.stereo-widen", "description": "Stereo widen", "type": {"default": 0.0, "min": 0.0, "max": 1.0}, "params": true}, {"name": "channelmix.hilbert-taps", "description": "Taps for phase shift of rear", "type": {"default": 0, "min": 0, "max": 255}, "params": true}, {"name": "channelmix.upmix-method", "description": "Upmix method to use", "type": "none", "params": true, "labels": ["none", "Disabled", "simple", "Simple upmixing", "psd", "Passive Surround Decoding"]}, {"id": "rate", "description": "Rate scaler", "type": {"default": 1.0, "min": 0.0, "max": 10.0}}, {"id": "quality", "name": "resample.quality", "description": "Resample Quality", "type": {"default": 4, "min": 0, "max": 14}, "params": true}, {"name": "resample.disable", "description": "Disable Resampling", "type": {"default": false, "alt1": false, "alt2": true}, "params": true}, {"name": "dither.noise", "description": "Add noise bits", "type": {"default": 0, "min": 0, "max": 16}, "params": true}, {"name": "dither.method", "description": "The dithering method", "type": "none", "params": true, "labels": ["none", "Disabled", "rectangular", "Rectangular dithering", "triangular", "Triangular dithering", "triangular-hf", "Sloped Triangular dithering", "wannamaker3", "Wannamaker 3 dithering", "shaped5", "Lipshitz 5 dithering"]}, {"name": "debug.wav-path", "description": "Path to WAV file", "type": "", "params": true}, {"name": "channelmix.lock-volumes", "description": "Disable volume updates", "type": {"default": false, "alt1": false, "alt2": true}, "params": true}, {"name": "audioconvert.filter-graph.disable", "description": "Disable Filter graph updates", "type": {"default": false, "alt1": false, "alt2": true}, "params": true}, {"name": "audioconvert.filter-graph.N", "description": "A filter graph to load", "type": "", "params": true}, {"id": "latencyOffsetNsec", "description": "Latency offset (ns)", "type": {"default": 0, "min": -9223372036854775808, "max": 9223372036854775807}}], "Props": [{"volume": 1.0, "mute": false, "channelVolumes": [0.167449, 0.167449], "channelMap": ["FL", "FR"], "softMute": false, "softVolumes": [1.0, 1.0], "monitorMute": false, "monitorVolumes": [1.0, 1.0], "params": ["monitor.channel-volumes", false, "channelmix.disable", false, "channelmix.min-volume", 0.0, "channelmix.max-volume", 10.0, "channelmix.normalize", false, "channelmix.mix-lfe", true, "channelmix.upmix", true, "channelmix.lfe-cutoff", 0.0, "channelmix.fc-cutoff", 0.0, "channelmix.rear-delay", 0.0, "channelmix.stereo-widen", 0.0, "channelmix.hilbert-taps", 0, "channelmix.upmix-method", "none", "resample.quality", 4, "resample.disable", false, "dither.noise", 0, "dither.method", "none", "debug.wav-path", "", "channelmix.lock-volumes", false, "audioconvert.filter-graph.disable", false, "audioconvert.filter-graph", ""]}, {"latencyOffsetNsec": 0}], "Format": [{"mediaType": "audio", "mediaSubtype": "raw", "format": "S16LE", "rate": 48000, "channels": 2, "position": ["FL", "FR"]}], "EnumPortConfig": [{"direction": "Input", "mode": {"default": "none", "alt1": "none", "alt2": "dsp", "alt3": "convert"}, "monitor": {"default": false, "alt1": false, "alt2": true}, "control": {"default": false, "alt1": false, "alt2": true}}], "PortConfig": [{"direction": "Input", "mode": "dsp", "monitor": true, "control": false, "format": {"mediaType": "audio", "mediaSubtype": "raw", "format": "F32P", "channels": 2, "position": ["FL", "FR"]}}], "Latency": [{"direction": "Input", "minQuantum": 0.0, "maxQuantum": 0.0, "minRate": 0, "maxRate": 0, "minNs": 188999999, "maxNs": 188999999}], "ProcessLatency": [], "Tag": []}}},
+{"id": 352, "type": "PipeWire:Interface:Device", "version": 3, "permissions": ["r", "w", "x", "m"], "info": {"change-mask": ["props", "params"], "props": {"api.bluez5.address": "XX:XX:XX:XX:FD:E3", "api.bluez5.class": "0x240404", "api.bluez5.connection": "connected", "api.bluez5.device": "", "api.bluez5.icon": "audio-headset", "api.bluez5.path": "/org/bluez/hci1/dev_XX_XX_XX_XX_FD_E3", "bluez5.profile": "off", "client.id": 41, "device.alias": "JLab GO Work 2", "device.api": "bluez5", "device.bus": "bluetooth", "device.description": "JLab GO Work 2", "device.form-factor": "headset", "device.icon-name": "audio-headset-bluetooth", "device.name": "bluez_card.XX_XX_XX_XX_FD_E3", "device.product.id": "0x000a", "device.string": "XX:XX:XX:XX:FD:E3", "device.vendor.id": "bluetooth:05d6", "factory.id": 15, "media.class": "Audio/Device", "object.id": 352, "object.serial": 66200, "spa.object.id": 5}, "params": {"EnumProfile": [{"index": 0, "name": "off", "description": "Off", "available": "yes", "priority": 0}, {"index": 131073, "name": "a2dp-sink-sbc", "description": "High Fidelity Playback (A2DP Sink, codec SBC)", "available": "yes", "priority": 132, "classes": [["Audio/Sink", 1, "card.profile.devices", [1]]]}, {"index": 131074, "name": "a2dp-sink-sbc_xq", "description": "High Fidelity Playback (A2DP Sink, codec SBC-XQ)", "available": "yes", "priority": 131, "classes": [["Audio/Sink", 1, "card.profile.devices", [1]]]}, {"index": 131076, "name": "a2dp-sink", "description": "High Fidelity Playback (A2DP Sink, codec AAC)", "available": "yes", "priority": 133, "classes": [["Audio/Sink", 1, "card.profile.devices", [1]]]}, {"index": 196864, "name": "headset-head-unit-cvsd", "description": "Headset Head Unit (HSP/HFP, codec CVSD)", "available": "yes", "priority": 5, "classes": [["Audio/Source", 1, "card.profile.devices", [0]], ["Audio/Sink", 1, "card.profile.devices", [1]]]}, {"index": 196865, "name": "headset-head-unit", "description": "Headset Head Unit (HSP/HFP, codec MSBC)", "available": "yes", "priority": 6, "classes": [["Audio/Source", 1, "card.profile.devices", [0]], ["Audio/Sink", 1, "card.profile.devices", [1]]]}], "Profile": [{"index": 131076, "name": "a2dp-sink", "description": "High Fidelity Playback (A2DP Sink, codec AAC)", "available": "yes", "priority": 133, "classes": [["Audio/Sink", 1, "card.profile.devices", [1]]], "save": false}], "EnumRoute": [{"index": 0, "direction": "Input", "name": "headset-input", "description": "Handsfree", "priority": 0, "available": "yes", "info": [1, "port.type", "headset"], "profiles": [196864, 196865], "devices": [0]}, {"index": 1, "direction": "Output", "name": "headset-output", "description": "Headphones", "priority": 0, "available": "yes", "info": [2, "port.type", "headset", "device.icon-name", "audio-headphones-bluetooth"], "profiles": [131073, 131074, 131076], "devices": [1]}, {"index": 2, "direction": "Output", "name": "headset-hf-output", "description": "Handsfree", "priority": 0, "available": "yes", "info": [2, "port.type", "headset", "device.icon-name", "audio-headset-bluetooth"], "profiles": [196864, 196865], "devices": [1]}], "Route": [{"index": 0, "direction": "Input", "name": "headset-input", "description": "Handsfree", "priority": 0, "available": "yes", "info": [1, "port.type", "headset"], "profiles": [196864, 196865], "device": 0, "props": {"mute": false, "channelVolumes": [1.0], "channelMap": ["MONO"]}, "save": false, "profile": 2, "devices": [0]}, {"index": 1, "direction": "Output", "name": "headset-output", "description": "Headphones", "priority": 0, "available": "yes", "info": [2, "port.type", "headset", "device.icon-name", "audio-headphones-bluetooth"], "profiles": [131073, 131074, 131076], "device": 1, "props": {"mute": false, "channelVolumes": [0.167449, 0.167449], "volumeStep": 0.007812, "channelMap": ["FL", "FR"], "latencyOffsetNsec": 0}, "save": true, "profile": 2, "devices": [1]}], "PropInfo": [{"id": "bluetoothAudioCodec", "description": "Air codec", "type": {"default": 4, "alt1": 4, "alt2": 1, "alt3": 2}, "labels": [4, "AAC", 1, "SBC", 2, "SBC-XQ"]}, {"id": "bluetoothOffloadActive", "description": "Bluetooth audio offload active", "type": {"default": false, "alt1": false, "alt2": true}}], "Props": [{"bluetoothAudioCodec": "aac", "bluetoothOffloadActive": false, "params": ["bluez5.disable-dummy-call", false, "bluez5.autoswitch-routes", false]}]}}},
+{"id": 332, "type": "PipeWire:Interface:Device", "version": 3, "permissions": ["r", "w", "x", "m"], "info": {"change-mask": ["props", "params"], "props": {"alsa.card": 1, "alsa.card_name": "HD-Audio Generic", "alsa.components": "HDA:10ec0287,17aa38c6,00100002", "alsa.driver_name": "snd_hda_intel", "alsa.id": "Generic_1", "alsa.long_card_name": "HD-Audio Generic at 0x785c0000 irq 103", "alsa.mixer_name": "Realtek ALC287", "api.acp.auto-port": false, "api.acp.auto-profile": false, "api.alsa.card": 1, "api.alsa.card.longname": "HD-Audio Generic at 0x785c0000 irq 103", "api.alsa.card.name": "HD-Audio Generic", "api.alsa.path": "hw:1", "api.alsa.split-enable": true, "api.alsa.use-acp": true, "api.dbus.ReserveDevice1": "Audio1", "api.dbus.ReserveDevice1.Priority": -20, "client.id": 41, "device.api": "alsa", "device.bus": "pci", "device.bus-path": "pci-0000:63:00.6", "device.description": "Ryzen HD Audio Controller", "device.enum.api": "udev", "device.icon-name": "audio-card-analog-pci", "device.name": "alsa_card.pci-0000_63_00.6", "device.nick": "HD-Audio Generic", "device.plugged.usec": 13563705, "device.product.id": "0x15e3", "device.product.name": "Ryzen HD Audio Controller", "device.string": 1, "device.subsystem": "sound", "device.sysfs.path": "/devices/pci0000:00/0000:00:08.1/0000:63:00.6/sound/card1", "device.vendor.id": "0x1022", "device.vendor.name": "Advanced Micro Devices, Inc. [AMD]", "factory.id": 15, "media.class": "Audio/Device", "object.id": 332, "object.path": "alsa:acp:Generic_1", "object.serial": 23255, "spa.object.id": 4}, "params": {"EnumProfile": [{"index": 0, "name": "off", "description": "Off", "priority": 0, "available": "yes", "classes": [0]}, {"index": 1, "name": "output:analog-stereo+input:analog-stereo", "description": "Analog Stereo Duplex", "priority": 6565, "available": "yes", "classes": [2, ["Audio/Source", 1, "card.profile.devices", [0]], ["Audio/Sink", 1, "card.profile.devices", [3]]]}, {"index": 2, "name": "output:analog-stereo", "description": "Analog Stereo Output", "priority": 6500, "available": "yes", "classes": [1, ["Audio/Sink", 1, "card.profile.devices", [3]]]}, {"index": 3, "name": "output:analog-surround-40+input:analog-stereo", "description": "Analog Surround 4.0 Output + Analog Stereo Input", "priority": 1265, "available": "yes", "classes": [2, ["Audio/Source", 1, "card.profile.devices", [0]], ["Audio/Sink", 1, "card.profile.devices", [4]]]}, {"index": 4, "name": "output:analog-surround-40", "description": "Analog Surround 4.0 Output", "priority": 1200, "available": "yes", "classes": [1, ["Audio/Sink", 1, "card.profile.devices", [4]]]}, {"index": 5, "name": "input:analog-stereo", "description": "Analog Stereo Input", "priority": 65, "available": "yes", "classes": [1, ["Audio/Source", 1, "card.profile.devices", [0]]]}, {"index": 6, "name": "pro-audio", "description": "Pro Audio", "priority": 1, "available": "unknown", "classes": [2, ["Audio/Source", 1, "card.profile.devices", [2]], ["Audio/Sink", 1, "card.profile.devices", [1]]]}], "Profile": [{"index": 0, "name": "off", "description": "Off", "priority": 0, "available": "yes", "classes": [0], "save": true}], "EnumRoute": [{"index": 0, "direction": "Input", "name": "analog-input-internal-mic", "description": "Internal Microphone", "priority": 8900, "available": "unknown", "info": [4, "port.type", "mic", "port.availability-group", "Legacy 1", "device.icon_name", "audio-input-microphone", "card.profile.port", "0"], "profiles": [5, 1, 3], "devices": [0]}, {"index": 1, "direction": "Input", "name": "analog-input-mic", "description": "Microphone", "priority": 8700, "available": "no", "info": [4, "port.type", "mic", "port.availability-group", "Legacy 2", "device.icon_name", "audio-input-microphone", "card.profile.port", "1"], "profiles": [5, 1, 3], "devices": [0]}, {"index": 2, "direction": "Output", "name": "analog-output-speaker", "description": "Speakers", "priority": 10000, "available": "unknown", "info": [4, "port.type", "speaker", "port.availability-group", "Legacy 3", "device.icon_name", "audio-speakers", "card.profile.port", "2"], "profiles": [2, 1, 4, 3], "devices": [3, 4]}, {"index": 3, "direction": "Output", "name": "analog-output-headphones", "description": "Headphones", "priority": 9900, "available": "no", "info": [4, "port.type", "headphones", "port.availability-group", "Legacy 4", "device.icon_name", "audio-headphones", "card.profile.port", "3"], "profiles": [2, 1], "devices": [3]}], "Route": [{"index": 0, "direction": "Input", "name": "analog-input-internal-mic", "description": "Internal Microphone", "priority": 8900, "available": "unknown", "info": [6, "port.type", "mic", "port.availability-group", "Legacy 1", "device.icon_name", "audio-input-microphone", "card.profile.port", "0", "route.hw-mute", "true", "route.hw-volume", "true"], "profiles": [5, 1, 3], "device": 0, "props": {"mute": true, "channelVolumes": [1e-06, 1e-06], "volumeBase": 0.001, "volumeStep": 1.5e-05, "channelMap": ["FL", "FR"], "softVolumes": [0.00727, 0.00727], "latencyOffsetNsec": 0}, "devices": [0], "profile": 1, "save": true}, {"index": 2, "direction": "Output", "name": "analog-output-speaker", "description": "Speakers", "priority": 10000, "available": "unknown", "info": [6, "port.type", "speaker", "port.availability-group", "Legacy 3", "device.icon_name", "audio-speakers", "card.profile.port", "2", "route.hw-mute", "true", "route.hw-volume", "true"], "profiles": [2, 1, 4, 3], "device": 3, "props": {"mute": true, "channelVolumes": [1e-06, 1e-06], "volumeBase": 1.0, "volumeStep": 1.5e-05, "channelMap": ["FL", "FR"], "softVolumes": [1.0, 1.0], "latencyOffsetNsec": 0}, "devices": [3, 4], "profile": 1, "save": true}]}}},
+{"id": 289, "type": "PipeWire:Interface:Port", "version": 3, "permissions": ["r", "x", "m"], "info": {"direction": "output", "change-mask": ["props", "params"], "props": {"audio.channel": "FL", "format.dsp": "32 bit float mono audio", "node.id": 301, "object.id": 289, "object.path": "Vivaldi:output_0", "object.serial": 66434, "port.alias": "Vivaldi:output_FL", "port.direction": "out", "port.group": "stream.0", "port.id": 0, "port.name": "output_FL"}, "params": {"EnumFormat": [{"mediaType": "audio", "mediaSubtype": "dsp", "format": "F32P"}], "Meta": [{"type": "Header", "size": 32}], "IO": [{"id": "Buffers", "size": 8}, {"id": "AsyncBuffers", "size": 8}], "Format": [{"mediaType": "audio", "mediaSubtype": "dsp", "format": "F32P"}], "Buffers": [{"buffers": {"default": 1, "min": 1, "max": 32}, "blocks": 1, "size": {"default": 32768, "min": 64, "max": 2147483647}, "stride": 4}], "Latency": [{"direction": "Input", "minQuantum": 0.0, "maxQuantum": 0.0, "minRate": 0, "maxRate": 0, "minNs": 188999999, "maxNs": 188999999}, {"direction": "Output", "minQuantum": 0.0, "maxQuantum": 0.0, "minRate": 0, "maxRate": 0, "minNs": 0, "maxNs": 0}], "Tag": [{"direction": "Input"}, {"direction": "Output", "info": [2, "media.name", "Playback", "media.class", "Stream/Output/Audio"]}]}}},
+{"id": 179, "type": "PipeWire:Interface:Port", "version": 3, "permissions": ["r", "x", "m"], "info": {"direction": "output", "change-mask": ["props", "params"], "props": {"audio.channel": "FR", "format.dsp": "32 bit float mono audio", "node.id": 301, "object.id": 179, "object.path": "Vivaldi:output_1", "object.serial": 66435, "port.alias": "Vivaldi:output_FR", "port.direction": "out", "port.group": "stream.0", "port.id": 1, "port.name": "output_FR"}, "params": {"EnumFormat": [{"mediaType": "audio", "mediaSubtype": "dsp", "format": "F32P"}], "Meta": [{"type": "Header", "size": 32}], "IO": [{"id": "Buffers", "size": 8}, {"id": "AsyncBuffers", "size": 8}], "Format": [{"mediaType": "audio", "mediaSubtype": "dsp", "format": "F32P"}], "Buffers": [{"buffers": {"default": 1, "min": 1, "max": 32}, "blocks": 1, "size": {"default": 32768, "min": 64, "max": 2147483647}, "stride": 4}], "Latency": [{"direction": "Input", "minQuantum": 0.0, "maxQuantum": 0.0, "minRate": 0, "maxRate": 0, "minNs": 188999999, "maxNs": 188999999}, {"direction": "Output", "minQuantum": 0.0, "maxQuantum": 0.0, "minRate": 0, "maxRate": 0, "minNs": 0, "maxNs": 0}], "Tag": [{"direction": "Input"}, {"direction": "Output", "info": [2, "media.name", "Playback", "media.class", "Stream/Output/Audio"]}]}}},
+{"id": 76, "type": "PipeWire:Interface:Link", "version": 3, "permissions": ["r", "x"], "info": {"output-node-id": 199, "output-port-id": 80, "input-node-id": 95, "input-port-id": 111, "change-mask": ["state", "format", "props"], "state": "paused", "error": null, "format": {"mediaType": "audio", "mediaSubtype": "dsp", "format": "F32P"}, "props": {"client.id": 307, "factory.id": 21, "link.async": true, "link.input.node": 95, "link.input.port": 111, "link.output.node": 199, "link.output.port": 80, "link.passive": true, "object.id": 76, "object.serial": 66313}}},
+{"id": 63, "type": "PipeWire:Interface:Link", "version": 3, "permissions": ["r", "x"], "info": {"output-node-id": 301, "output-port-id": 289, "input-node-id": 308, "input-port-id": 315, "change-mask": ["state", "format", "props"], "state": "active", "error": null, "format": {"mediaType": "audio", "mediaSubtype": "dsp", "format": "F32P"}, "props": {"client.id": 32, "factory.id": 21, "link.input.node": 308, "link.input.port": 315, "link.output.node": 301, "link.output.port": 289, "object.id": 63, "object.serial": 66436}}},
+{"id": 75, "type": "PipeWire:Interface:Link", "version": 3, "permissions": ["r", "x"], "info": {"output-node-id": 301, "output-port-id": 179, "input-node-id": 308, "input-port-id": 305, "change-mask": ["state", "format", "props"], "state": "active", "error": null, "format": {"mediaType": "audio", "mediaSubtype": "dsp", "format": "F32P"}, "props": {"client.id": 32, "factory.id": 21, "link.input.node": 308, "link.input.port": 305, "link.output.node": 301, "link.output.port": 179, "object.id": 75, "object.serial": 66437}}},
+{"id": 278, "type": "PipeWire:Interface:Link", "version": 3, "permissions": ["r", "x"], "info": {"output-node-id": 301, "output-port-id": 289, "input-node-id": 82, "input-port-id": 140, "change-mask": ["state", "format", "props"], "state": "active", "error": null, "format": {"mediaType": "audio", "mediaSubtype": "dsp", "format": "F32P"}, "props": {"client.id": 307, "factory.id": 21, "link.async": true, "link.input.node": 82, "link.input.port": 140, "link.output.node": 301, "link.output.port": 289, "object.id": 278, "object.serial": 66443}}},
+{"id": 187, "type": "PipeWire:Interface:Link", "version": 3, "permissions": ["r", "x"], "info": {"output-node-id": 301, "output-port-id": 179, "input-node-id": 82, "input-port-id": 368, "change-mask": ["state", "format", "props"], "state": "active", "error": null, "format": {"mediaType": "audio", "mediaSubtype": "dsp", "format": "F32P"}, "props": {"client.id": 307, "factory.id": 21, "link.async": true, "link.input.node": 82, "link.input.port": 368, "link.output.node": 301, "link.output.port": 179, "object.id": 187, "object.serial": 66444}}},
+{"id": 376, "type": "PipeWire:Interface:Client", "version": 3, "permissions": ["r", "w", "x", "m"], "info": {"change-mask": ["props"], "props": {"application.language": "C.UTF-8", "application.name": "Vivaldi", "application.process.binary": "vivaldi-bin (deleted)", "application.process.host": "host", "application.process.id": "4211", "application.process.machine-id": "(left out)", "application.process.session-id": "(left out)", "application.process.user": "user", "client.api": "pipewire-pulse", "clock.power-of-two-quantum": true, "config.name": "pipewire-pulse.conf", "core.name": "pipewire-user-2389", "core.version": "1.6.9", "cpu.max-align": 64, "default.clock.max-quantum": 2048, "default.clock.min-quantum": 32, "default.clock.quantum": 1024, "default.clock.quantum-floor": 4, "default.clock.quantum-limit": 8192, "default.clock.rate": 48000, "default.video.height": 480, "default.video.rate.denom": 1, "default.video.rate.num": 25, "default.video.width": 640, "link.max-buffers": 64, "log.level": 2, "mem.allow-mlock": true, "mem.warn-mlock": false, "module.id": 2, "object.id": 376, "object.serial": 66432, "pipewire.access": "unrestricted", "pipewire.access.effective": "unrestricted", "pipewire.protocol": "protocol-native", "pipewire.sec.gid": 1000, "pipewire.sec.pid": "4211", "pipewire.sec.socket": "pipewire-0", "pipewire.sec.uid": 1000, "pulse.server.type": "unix", "settings.check-quantum": false, "settings.check-rate": false, "window.x11.display": "(left out)"}}}
+];
+
+// made up, shaped as PipeWire gives it: a link in error
+DATA.push({ id: 320, type: "PipeWire:Interface:Link", version: 3, permissions: ["r", "x"], made: true, info: { "output-node-id": 199, "output-port-id": 80, "input-node-id": 301, "input-port-id": 999, "change-mask": ["state", "format", "props"], state: "error", error: "no more input formats", format: null, props: { "link.output.node": "199", "link.output.port": "80", "link.input.node": "301", "link.input.port": "999", "object.serial": "70400", "factory.id": "21", "client.id": "376", "object.id": "320" } } });
+// made up, shaped as the profiler's blocks (pw-profiler): the last cycle of node 301 and its driver
+const PROFILER = {
+  301: { followerBlock: { id: 301, name: "Vivaldi", prev: 1764251300112803, signal: 1764251300124011, awake: 1764251300124052, finish: 1764251300124091, status: 3, latency: "1024/48000", "xrun-count": 0 } },
+  308: { info: { counter: 482211, "cpu-load-fast": 0.0071, "cpu-load-medium": 0.0068, "cpu-load-slow": 0.0069, "xrun-count": 0 }, clock: { flags: 0, id: 0, name: "api.bluez5.a2dp.sink", nsec: 1764251300123998, rate: "1/48000", position: 23148128, duration: 1024, delay: 0, "rate-diff": 1.0, "next-nsec": 1764251300145331 }, driverBlock: { id: 308, name: "bluez_output.XX_XX_XX_XX_FD_E3.1", prev: 1764251300102654, signal: 1764251300123998, awake: 1764251300124002, finish: 1764251300124101, status: 3, latency: "1024/48000", "xrun-count": 0 } },
+};
+
+const byId = Object.fromEntries(DATA.map(o => [o.id, o]));
+const type = o => o.type.split(":").pop();
+const props = o => (o.info && o.info.props) || o.props || {};
+const title = o => { const p = props(o); for (const k of ["node.description", "node.name", "device.description", "device.name", "application.name", "port.name", "module.name", "factory.name", "metadata.name", "core.name"]) if (p[k]) return [p[k], k]; return [type(o).toLowerCase() + " " + o.id, null]; };
+const LAMP = { running: "#5cff7a", idle: "#ffb02e", suspended: "#4a4c50", active: "#5cff7a", paused: "#ffb02e", error: "#ff4a32", creating: "#4a4c50", init: "#4a4c50", negotiating: "#ffb02e", allocating: "#ffb02e", unlinked: "#4a4c50" };
+// one order for every kind (ADR 0024): INFO, PROPS, PARAMS, TIMING, CONN, each only where the
+// object has it; a metadata's entries are on its INFO
+const ORDER = ["INFO", "PROPS", "PARAMS", "TIMING", "CONN"];
+const HAS = { Node: ["INFO", "PROPS", "PARAMS", "TIMING"], Port: ["INFO", "PROPS", "PARAMS", "CONN"], Link: ["INFO", "PROPS"], Device: ["INFO", "PROPS", "PARAMS"], Client: ["INFO", "PROPS"], Metadata: ["INFO", "PROPS"], Module: ["INFO", "PROPS"], Factory: ["INFO", "PROPS"], Core: ["INFO", "PROPS"] };
+const TABS = Object.fromEntries(Object.entries(HAS).map(([k, v]) => [k, ORDER.filter(t => v.includes(t))]));
+// property keys whose value is another object's id
+const ID_KEYS = ["client.id", "device.id", "node.id", "factory.id", "module.id", "link.output.node", "link.output.port", "link.input.node", "link.input.port", "node.driver-id", "output-node-id", "output-port-id", "input-node-id", "input-port-id"];
+
+let cur = 301, tab = "INFO", q = "", ns = "ALL", json = {}, shut = {}, linked = {}, popen = {};
+
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const hl = s => { s = esc(s); if (!q) return s; const t = q.toLowerCase(), i = s.toLowerCase().indexOf(esc(t)); return i < 0 ? s : s.slice(0, i) + "<mark>" + s.slice(i, i + esc(t).length) + "</mark>" + s.slice(i + esc(t).length); };
+const has = s => !q || String(s).toLowerCase().includes(q.toLowerCase());
+const sec = (id, head, count, inner, pc = false) => `<div class="sec ${pc ? "pc" : ""} ${shut[cur + id] ? "shut" : ""}"><h3 data-fold="${id}">${head}${count !== undefined ? ` <span class="c">${count}</span>` : ""}</h3>${inner}</div>`;
+const idv = (k, v) => ID_KEYS.includes(k) && byId[+v] ? `<a class="id" data-go="${+v}">${hl(v)}</a>` : null;
+
+// a value as pw-dump writes it: strings quoted, numbers and booleans bare, null as null; objects
+// and arrays of objects nested, arrays of plain values on one line
+const lit = v => v === null ? "null" : typeof v === "string" ? JSON.stringify(v) : String(v);
+const plain = v => v === null || typeof v !== "object";
+function tree(obj, desc = {}) {
+  let h = "";
+  for (const [k, v] of Object.entries(obj)) {
+    if (!has(k) && !has(JSON.stringify(v))) continue;
+    const d = desc[k] ? `<div class="d"><b>PropInfo</b> ${hl(desc[k])}</div>` : "";
+    if (plain(v)) {
+      h += `<div class="row" data-copy="${esc(lit(v))}"><div class="k">${hl(k)}</div><div class="v ${v === null ? "null" : ""}">${idv(k, v) || hl(lit(v))}</div>${d}</div>`;
+    } else if (Array.isArray(v) && v.every(plain)) {
+      const t = "[ " + v.map(lit).join(", ") + " ]";
+      h += `<div class="row" data-copy="${esc(t)}"><div class="k">${hl(k)}</div><div class="v">${hl(t)}</div>${d}</div>`;
+    } else if (Array.isArray(v)) {
+      h += `<div class="row" style="cursor:default"><div class="k">${hl(k)}</div><div class="v null">[ ${v.length} ]</div>${d}</div><div class="nest">${v.map((x, i) => `<div class="idx">[${i}]</div>` + (plain(x) ? `<div class="row"><div class="k"></div><div class="v">${hl(lit(x))}</div></div>` : tree(x))).join("")}</div>`;
+    } else {
+      h += `<div class="row" style="cursor:default"><div class="k">${hl(k)}</div><div class="v null">{ ${Object.keys(v).length} }</div>${d}</div><div class="nest">${tree(v)}</div>`;
+    }
+  }
+  return h;
+}
+const bar = (n, of, ph, chips = "") => `<div class="bar"><div class="search"><span style="color:var(--faint)">⌕</span><input id="q" placeholder="${ph}" value="${esc(q)}"><span class="n">${n === of ? of : n + " of " + of}</span></div>${chips ? `<div class="chips">${chips}</div>` : ""}</div>`;
+
+function propsTab(o) {
+  const all = Object.entries(props(o)).sort(([a], [b]) => a.localeCompare(b));
+  const space = k => k.includes(".") ? k.split(".")[0] : "(no namespace)";
+  const counts = {};
+  all.forEach(([k]) => counts[space(k)] = (counts[space(k)] || 0) + 1);
+  const shown = all.filter(([k, v]) => (ns === "ALL" || space(k) === ns) && (has(k) || has(v)));
+  let h = bar(shown.length, all.length, "search keys and values", [["ALL", all.length], ...Object.entries(counts).sort((a, b) => b[1] - a[1])].map(([s, n]) => `<span class="chip ${ns === s ? "on" : ""}" data-ns="${s}">${s === "ALL" ? "ALL" : s + ".*"}<b>${n}</b></span>`).join(""));
+  if (!all.length) return h + `<div class="empty">PipeWire gives no properties for it.</div>`;
+  if (!shown.length) return h + `<div class="empty">No key or value has “${esc(q)}”.</div>`;
+  const groups = {};
+  shown.forEach(([k, v]) => (groups[space(k)] ||= []).push([k, v]));
+  for (const [g, rows] of Object.entries(groups)) {
+    h += sec("ns-" + g, g === "(no namespace)" ? g : `<code>${g}.*</code>`, rows.length, rows.map(([k, v]) => {
+      const dot = k.indexOf(".");
+      const key = dot > 0 ? `<i>${hl(k.slice(0, dot + 1))}</i>${hl(k.slice(dot + 1))}` : hl(k);
+      return `<div class="row" data-copy="${esc(v)}"><div class="k">${key}</div><div class="v">${idv(k, v) || (v === "" ? '<span style="color:var(--faint)">""</span>' : hl(v))}</div></div>`;
+    }).join(""));
+  }
+  return h;
+}
+
+// PARAMS as an outline (variant B of three, chosen 2026-11-27; A one param at a time and C a
+// table a param were dropped): a row a param id with its count and its first entry on one line,
+// all folded; a click opens a param, its entries rows of their own the same way, each opened by a
+// click; a search opens what matches. Values verbatim, on one line where they fit (a choice
+// { default: 1, min: 1, max: 32 }, a short object, an array [ "FL", "FR" ]); only what doesn't fit
+// nests; a struct of key, value pairs (Props' params, a route's info) a pair a row.
+const SHORT = 44;
+function inline(v) {
+  if (v === null || typeof v !== "object") return lit(v);
+  if (Array.isArray(v)) return v.every(x => x === null || typeof x !== "object") ? "[ " + v.map(lit).join(", ") + " ]" : null;
+  const parts = Object.entries(v).map(([k, x]) => { const t = inline(x); return t === null ? null : `${k}: ${t}`; });
+  return parts.includes(null) ? null : "{ " + parts.join(", ") + " }";
+}
+function compact(obj, desc = {}) {
+  let h = "";
+  for (const [k, v] of Object.entries(obj)) {
+    if (!has(k) && !has(JSON.stringify(v))) continue;
+    const d = desc[k] ? `<div class="d"><b>PropInfo</b> ${hl(desc[k])}</div>` : "";
+    const t = inline(v);
+    if (t !== null && (t.length <= SHORT || v === null || typeof v !== "object" || (Array.isArray(v) && v.length <= 8))) {
+      h += `<div class="row" data-copy="${esc(t)}"><div class="k">${hl(k)}</div><div class="v ${v === null ? "null" : ""}">${idv(k, v) || hl(t)}</div>${d}</div>`;
+    } else if (Array.isArray(v) && v.length % 2 === 0 && v.every((x, i) => i % 2 ? x === null || typeof x !== "object" : typeof x === "string")) {
+      // a struct of key, value pairs as PipeWire sends it (Props' params, a route's info):
+      // still the pairs, one a row
+      h += `<div class="row" style="cursor:default"><div class="k">${hl(k)}</div><div class="v null">[ ${v.length / 2} pairs ]</div>${d}</div><div class="nest">${Array.from({ length: v.length / 2 }, (_, i) => [v[2 * i], v[2 * i + 1]]).filter(([a, b]) => has(a) || has(b)).map(([a, b]) => `<div class="row" data-copy="${esc(lit(b))}"><div class="k">${hl(lit(a))}</div><div class="v">${hl(lit(b))}</div></div>`).join("")}</div>`;
+    } else if (Array.isArray(v)) {
+      h += `<div class="row" style="cursor:default"><div class="k">${hl(k)}</div><div class="v null">[ ${v.length} ]</div>${d}</div><div class="nest">${v.map((x, i) => `<div class="idx">[${i}]</div>` + (inline(x) !== null && inline(x).length <= SHORT ? `<div class="row"><div class="k"></div><div class="v">${hl(inline(x))}</div></div>` : compact(x))).join("")}</div>`;
+    } else {
+      h += `<div class="row" style="cursor:default"><div class="k">${hl(k)}</div><div class="v null">{ ${Object.keys(v).length} }</div>${d}</div><div class="nest">${compact(v)}</div>`;
+    }
+  }
+  return h;
+}
+const oneLine = e => { const t = inline(e); return t !== null ? t : "{ " + Object.entries(e).map(([k, x]) => `${k}: ${inline(x) ?? (Array.isArray(x) ? "[…]" : "{…}")}`).join(", ") + " }"; };
+function paramsTab(o) {
+  const ps = o.info.params || {};
+  const ids = Object.keys(ps);
+  const shown = ids.filter(id => has(id) || has(JSON.stringify(ps[id])));
+  const desc = {};
+  for (const pi of ps.PropInfo || []) if (pi.id && pi.description) desc[pi.id] = pi.description;
+  if (!ids.length) return `<div class="empty">PipeWire gives no params for it.</div>`;
+  const body = (id, e) => json[id] ? "" : compact(e, id === "Props" ? desc : {});
+  const jsonOf = id => json[id] ? `<pre class="json">${hl(JSON.stringify(ps[id], null, 2))}</pre>` : "";
+  const jsonKey = id => `<span class="tool ${json[id] ? "on" : ""}" data-json="${id}">JSON</span>`;
+  const searchBox = `<div class="search"><span style="color:var(--faint)">⌕</span><input id="q" placeholder="search params" value="${esc(q)}"><span class="n">${shown.length === ids.length ? ids.length : shown.length + " of " + ids.length}</span></div>`;
+  {
+    let h = `<div class="bar">${searchBox}</div>`;
+    for (const id of shown) {
+      const es = ps[id], open = popen[cur + id] || (q && true);
+      h += `<div style="margin:6px 10px 0;border-bottom:1px solid var(--line)"><div data-popen="${id}" style="display:flex;gap:8px;align-items:baseline;padding:5px 2px;cursor:pointer"><span style="color:var(--faint);font-size:9px">${open ? "▾" : "▸"}</span><code style="color:var(--amber-ink);min-width:100px">${id}</code><span style="color:var(--faint);font:10.5px 'Noto Sans Mono',monospace">[${es.length}]</span><span style="flex:1;min-width:0;color:var(--dim);font:10.5px 'Noto Sans Mono',monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${open ? "" : esc(es.length ? oneLine(es[0]) : "[ ]")}</span>${open ? jsonKey(id) : ""}</div>`;
+      if (open) {
+        if (json[id]) h += jsonOf(id);
+        else h += es.map((e, i) => {
+          const k = cur + id + ":" + i, eo = popen[k] || (q && true);
+          return `<div style="margin-left:14px"><div data-popen="${id}:${i}" style="display:flex;gap:6px;padding:3px 0;cursor:pointer;font:10.5px 'Noto Sans Mono',monospace"><span style="color:var(--faint);font-size:9px">${eo ? "▾" : "▸"}</span><span style="color:var(--faint)">[${i}]</span><span style="flex:1;min-width:0;color:#a8abae;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${eo ? "" : esc(oneLine(e))}</span></div>${eo ? `<div style="margin-left:14px">${body(id, e)}</div>` : ""}</div>`;
+        }).join("");
+      }
+      h += `</div>`;
+    }
+    return h + (shown.length ? "" : `<div class="empty">No param has “${esc(q)}”.</div>`);
+  }
+}
+
+function objectRows(o) {
+  return tree({ id: o.id, type: o.type, version: o.version, permissions: o.permissions });
+}
+function infoFields(o) {
+  const f = {};
+  for (const [k, v] of Object.entries(o.info || {})) if (k !== "props" && k !== "params") f[k] = v;
+  if (o.info && o.info.params) f.params = Object.keys(o.info.params);
+  return tree(f);
+}
+function pointing(o, key, kind) {
+  const list = DATA.filter(x => type(x) === kind && String(props(x)[key]) === String(o.id));
+  return list;
+}
+function linkRow(l) {
+  const i = l.info;
+  const end = (n, p) => { const nn = byId[n], pp = byId[p]; return `${nn ? esc(title(nn)[0]) : n}:${pp ? esc(props(pp)["port.name"]) : p}`; };
+  return `<div class="row" style="cursor:pointer" data-go="${l.id}"><div class="k"><span class="lamp" style="display:inline-block;width:7px;height:7px;background:${LAMP[i.state]};margin-right:5px"></span>link ${l.id}</div><div class="v">${hl(i.state)} → ${end(i["input-node-id"], i["input-port-id"])}</div></div>`;
+}
+
+function infoTab(o) {
+  const t = type(o);
+  let h = sec("obj", "OBJECT", undefined, objectRows(o)) + (Object.keys(o.info || {}).length ? sec("info", "INFO", undefined, infoFields(o)) : "");
+  if (t === "Node") {
+    const ports = pointing(o, "node.id", "Port");
+    h += sec("ports", `PORTS <code>node.id = ${o.id}</code>`, ports.length, ports.map(p => {
+      const links = DATA.filter(l => type(l) === "Link" && (l.info["output-port-id"] === p.id || l.info["input-port-id"] === p.id));
+      return `<div class="row" style="cursor:pointer" data-go="${p.id}"><div class="k">port ${p.id}</div><div class="v">${hl(props(p)["port.name"])} · ${hl(p.info.direction)}</div></div><div class="nest">${links.map(linkRow).join("")}</div>`;
+    }).join(""));
+    if (props(o)["media.class"] && !props(o)["media.class"].startsWith("Stream/Input/Audio") || o.id === 301)
+      h += sec("pc", "PATCHCORD", undefined, `<div class="pcnote">Where this node is in the rack: Patchcord's, not PipeWire's.</div><div class="where"><div class="s">${esc(o.id === 301 ? "VIVALDI · OUTPUT" : o.id === 308 ? "JLAB GO WORK 2 · HEADPHONES" : "JLAB GO WORK 2 · MIC")}</div><span class="key">SHOW</span></div>`, true);
+  }
+  if (t === "Port") {
+    const links = DATA.filter(l => type(l) === "Link" && (l.info["output-port-id"] === o.id || l.info["input-port-id"] === o.id));
+    h += sec("links", `LINKS <code>output-port-id = ${o.id}</code>`, links.length, links.map(linkRow).join(""));
+  }
+  if (t === "Device") {
+    const nodes = pointing(o, "device.id", "Node");
+    h += sec("nodes", `NODES <code>device.id = ${o.id}</code>`, nodes.length, nodes.map(n => `<div class="row" style="cursor:pointer" data-go="${n.id}"><div class="k"><span class="lamp" style="display:inline-block;width:7px;height:7px;background:${LAMP[n.info.state]};margin-right:5px"></span>node ${n.id}</div><div class="v">${hl(title(n)[0])}</div></div>`).join("") || `<div class="empty" style="margin:4px 2px">none here</div>`);
+  }
+  if (t === "Metadata") h += sec("meta", "METADATA", (o.metadata || []).length, metaTab(o));
+  if (t === "Client") {
+    const mine = DATA.filter(x => String(props(x)["client.id"]) === String(o.id));
+    h += sec("mine", `OBJECTS <code>client.id = ${o.id}</code>`, mine.length, mine.map(n => `<div class="row" style="cursor:pointer" data-go="${n.id}"><div class="k">${type(n).toLowerCase()} ${n.id}</div><div class="v">${hl(title(n)[0])}</div></div>`).join(""));
+  }
+  return h;
+}
+
+function timingTab(o) {
+  const p = PROFILER[o.id];
+  if (!p) return sec("prof", "PROFILER", undefined, `<div class="empty" style="margin:4px 2px">The profiler gives nothing for it: it is in none of the cycles it reports (state ${esc(o.info.state)}).</div>`);
+  let h = "";
+  for (const [k, v] of Object.entries(p)) h += sec("prof-" + k, `<code>${k}</code>`, undefined, tree(v));
+  const b = p.followerBlock || p.driverBlock;
+  const wait = b.awake - b.signal, busy = b.finish - b.awake;
+  const pts = (f) => Array.from({ length: 120 }, (_, i) => `${(i * 300 / 119).toFixed(1)},${(76 - f(i)).toFixed(1)}`).join(" ");
+  h += sec("pc", "PATCHCORD", undefined, `<div class="pcnote">Worked out from the profiler's times above, as pw-top does: Patchcord's arithmetic, not PipeWire's fields.</div>` +
+    tree({ "WAIT (awake − signal)": wait + " ns", "BUSY (finish − awake)": busy + " ns", "B/Q (busy ÷ quantum)": (busy / (1024 / 48000 * 1e9)).toFixed(4) }) +
+    `<div class="chart"><div class="ct">B/Q, the last minute · <span style="color:#5cff7a">average</span> · <span style="color:#ffb02e">peak</span></div><svg viewBox="0 0 300 80"><polyline points="${pts(i => 20 + 10 * Math.abs(Math.sin(i / 3.7)) + 8)}" fill="none" stroke="#ffb02e" stroke-opacity=".8" stroke-width="1.2"/><polyline points="${pts(i => 12 + 4 * Math.sin(i / 7))}" fill="none" stroke="#5cff7a" stroke-width="1.6"/></svg></div>`, true);
+  return h;
+}
+
+function connTab(o) {
+  const out = o.info.direction === "output";
+  const cands = DATA.filter(x => type(x) === "Node" && x.id !== +props(o)["node.id"]).map(n => [n, DATA.filter(p => type(p) === "Port" && +props(p)["node.id"] === n.id && p.info.direction !== o.info.direction)]).filter(([, ps]) => ps.length);
+  let h = sec("pc", "PATCHCORD · " + (out ? "LINK TO" : "LINK FROM"), undefined, `<div class="pcnote">Making links: Patchcord's, not data. Every port that takes this one.</div>` +
+    (cands.length ? cands.map(([n, ps]) => `<div style="margin:8px 0 4px;font-size:12px">${esc(title(n)[0])} <small style="color:var(--dim);font-family:'Noto Sans Mono',monospace">node ${n.id}</small></div>` + ps.map(p => {
+      const on = linked[o.id + ":" + p.id] ?? DATA.some(l => type(l) === "Link" && l.info["output-port-id"] === o.id && l.info["input-port-id"] === p.id);
+      return `<div class="cport ${on ? "on" : ""}" data-tog="${o.id}:${p.id}:${on ? 1 : 0}">${esc(props(p)["port.name"])}${on ? '<span style="margin-left:auto;font:bold 9px Noto Sans;letter-spacing:1px">LINKED</span>' : ""}</div>`;
+    }).join("")).join("") : `<div class="empty" style="margin:4px 2px">No port in this cut of the dump takes it.</div>`), true);
+  return h;
+}
+
+function metaTab(o) {
+  const all = o.metadata || [];
+  const shown = all.filter(m => has(m.key) || has(JSON.stringify(m.value)) || has(m.type));
+  return `<div class="search" style="margin:4px 0 6px"><span style="color:var(--faint)">⌕</span><input id="q" placeholder="search keys and values" value="${esc(q)}"><span class="n">${shown.length === all.length ? all.length : shown.length + " of " + all.length}</span></div><div><table class="meta"><tr><th>SUBJECT</th><th>KEY · TYPE</th><th>VALUE</th></tr>${shown.map(m => `<tr data-copy="${esc(typeof m.value === "string" ? m.value : JSON.stringify(m.value))}"><td class="s">${byId[m.subject] ? `<a class="id" data-go="${m.subject}">${m.subject}</a>` : m.subject}</td><td class="k">${hl(m.key)}<small>${hl(m.type)}</small></td><td class="v">${hl(typeof m.value === "string" ? m.value : JSON.stringify(m.value))}</td></tr>`).join("")}</table></div>`;
+}
+
+function render() {
+  const o = byId[cur], t = type(o);
+  const tabs = TABS[t];
+  if (!tabs.includes(tab)) tab = tabs[0];
+  const groups = {};
+  for (const x of DATA) (groups[type(x)] ||= []).push(x);
+  document.getElementById("pick").innerHTML = Object.entries(groups).map(([g, xs]) => `<h2>${g.toUpperCase()}</h2>` + xs.map(x => `<button class="${x.id === cur ? "on" : ""}" data-go="${x.id}"><span class="lamp" style="background:${LAMP[(x.info || {}).state] || "#3a3c40"}"></span><span class="t">${esc(title(x)[0])}</span>${x.made ? "<em>made up</em>" : ""}<small>${x.id}</small></button>`).join("")).join("");
+  const [name] = title(o);
+  const p = props(o);
+  const sub = [t + " " + o.id, p["media.class"], (o.info || {}).state].filter(Boolean).join(" · ");
+  const body = tab === "INFO" ? infoTab(o) : tab === "PROPS" ? propsTab(o) : tab === "PARAMS" ? paramsTab(o) : tab === "TIMING" ? timingTab(o) : connTab(o);
+  const focused = document.activeElement && document.activeElement.id === "q";
+  document.getElementById("insp").innerHTML =
+    `<div class="ihead"><div class="t"><span class="lamp" style="background:${LAMP[(o.info || {}).state] || "#3a3c40"}"></span><span class="name">${esc(name)}</span></div><div class="sub">${esc(sub)}</div><span class="x">×</span></div>` +
+    `<div class="tabs">${tabs.map(x => `<span class="tab ${x === tab ? "on" : ""}" data-tab="${x}">${x}</span>`).join("")}</div><div class="body">${body}</div>`;
+  if (focused) { const i = document.getElementById("q"); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
+}
+
+document.addEventListener("click", e => {
+  const el = e.target.closest("[data-go],[data-tab],[data-ns],[data-json],[data-fold],[data-tog],[data-jump],[data-popen],[data-copy]");
+  if (!el) return;
+  const d = el.dataset;
+  if (d.go) { if (!byId[+d.go]) return; cur = +d.go; tab = "INFO"; q = ""; ns = "ALL"; }
+  else if (d.tab) { tab = d.tab; q = ""; ns = "ALL"; }
+  else if (d.ns) ns = d.ns;
+  else if (d.json) json[d.json] = !json[d.json];
+  else if (d.popen) popen[cur + d.popen] = !popen[cur + d.popen];
+  else if (d.fold) shut[cur + d.fold] = !shut[cur + d.fold];
+  else if (d.tog) { const [a, b, on] = d.tog.split(":"); linked[a + ":" + b] = on !== "1"; }
+  else if (d.jump) { document.getElementById("card-" + d.jump)?.scrollIntoView({ behavior: "smooth", block: "start" }); return; }
+  else if (d.copy !== undefined) {
+    navigator.clipboard?.writeText(d.copy).catch(() => {});
+    const c = document.getElementById("copied");
+    c.style.left = e.clientX + 12 + "px"; c.style.top = e.clientY - 10 + "px"; c.style.opacity = 1;
+    setTimeout(() => c.style.opacity = 0, 700);
+    return;
+  }
+  render();
+});
+document.addEventListener("input", e => { if (e.target.id === "q") { q = e.target.value; render(); } });
+render();
+</script>
+</body>
+</html>

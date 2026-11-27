@@ -19,16 +19,18 @@ use crate::ui::scene::{Hover, Layer, Scene, TARGET_PICS, View, rasterize};
 use crate::ui::engine::mask_macs;
 use crate::ui::{self, ease};
 
-/// What PipeWire said, with no MAC addresses: the pictures are for others to see, and Bluetooth
-/// devices are named by theirs.
+/// What PipeWire said, with no MAC addresses, user or host names: the pictures are for others to
+/// see, and Bluetooth devices are named by their MAC addresses.
 fn masked(ev: Event) -> Event {
-    let props = |p: crate::pw::Props| p.into_iter().map(|(k, v)| (k, mask_macs(&v))).collect();
+    const PRIVATE: [&str; 4] = ["user-name", "host-name", "application.process.user", "application.process.host"];
+    let props = |p: crate::pw::Props| p.into_iter().map(|(k, v)| { let v = if PRIVATE.contains(&k.as_str()) { "(left out)".to_owned() } else { mask_macs(&v) }; (k, v) }).collect();
     match ev {
         Event::Added { id, kind, props: p } => Event::Added { id, kind, props: props(p) },
         Event::Info { id, props: p, state } => Event::Info { id, props: props(p), state },
         Event::Setting { key, value } => Event::Setting { key, value: mask_macs(&value) },
         Event::Meta { id, subject, key, ty, value } => Event::Meta { id, subject, key, ty, value: value.map(|v| mask_macs(&v)) },
-        Event::Param { id, kind, index, text } => Event::Param { id, kind, index, text: mask_macs(&text) },
+        Event::Param { id, kind, index, value } => Event::Param { id, kind, index, value: value.map(&mask_macs) },
+        Event::Fields { id, fields } => Event::Fields { id, fields: fields.into_iter().map(|(k, v)| { let v = if PRIVATE.contains(&k.as_str()) { crate::pw::PVal::Text("\"(left out)\"".into()) } else { v.map(&mask_macs) }; (k, v) }).collect() },
         ev => ev,
     }
 }
@@ -379,6 +381,8 @@ struct Rec {
     frame: usize,
     /// ENGINE, fed everything PipeWire says; shown while on
     eng: ui::engine::Engine,
+    /// MIXER, shown while on
+    mixer: ui::mixer::Mixer,
     version: String,
 }
 
@@ -420,6 +424,10 @@ impl Rec {
             self.scene.drag_device(&key, hand.0 - off.0, hand.1 - off.1, DPI / self.view.s);
         }
         self.pump();
+        if self.mixer.on {
+            let mut out = compose_mixer(&mut self.mixer, &self.scene, SIZE, DPI, &mut self.panel);
+            return self.save(&mut out);
+        }
         if self.eng.on {
             let devices: Vec<&crate::graph::Device> = self.scene.devs.iter().map(|d| &d.dev).chain(self.scene.hidden_devs.iter()).collect();
             self.eng.build(&self.scene.graph, &devices, &Default::default(), &self.scene.settings);
@@ -548,13 +556,15 @@ impl Rec {
             Key::ViewsAt(_) => self.scene.set_rack(false),
             _ => {}
         }
-        // ENGINE on its key, off on RACK's and the view switch's
+        // ENGINE on its key, MIXER on its own; both off on RACK's and the view switch's
         let on = key == Key::Engine;
-        if matches!(key, Key::Engine | Key::Rack | Key::ViewsAt(_)) && self.eng.on != on {
+        if matches!(key, Key::Engine | Key::Mixer | Key::Rack | Key::ViewsAt(_)) && self.eng.on != on {
             self.eng.set_on(on);
             self.panel.state.engine = on;
             self.pump();
         }
+        self.mixer.on = key == Key::Mixer;
+        self.panel.state.mixer = self.mixer.on;
         // the view follows, as Fit does in the window
         self.view_to = self.fit();
         Ok(())
@@ -588,7 +598,7 @@ fn playing_into_new(scene: &Scene) -> Option<(String, String)> {
 }
 
 /// `patchcord --record DIR`: plays a short session on the live graph — cords patched, a device
-/// dragged into line, the rack and back — and saves it as numbered frames (FPS a second) in DIR,
+/// dragged into line, the rack, MIXER, ENGINE and back to the desk — and saves it as numbered frames (FPS a second) in DIR,
 /// for the README's animation. Nothing is linked in PipeWire.
 pub fn record(dir: &str) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -615,7 +625,7 @@ pub fn record(dir: &str) -> Result<(), String> {
     let cursor = rasterize(&usvg::Options::default(), cursor, DPI).ok_or("cursor")?;
     let status = status(&scene, SIZE.0 as f64 / DPI, DPI);
     let panel = new_panel(&scene);
-    let mut rec = Rec { scene, conn, view: View { x: 0.0, y: 0.0, s: 1.0 }, view_to: View { x: 0.0, y: 0.0, s: 1.0 }, raster: 0.0, panel, status, cursor, ptr: (SIZE.0 as f64 * 0.55, SIZE.1 as f64 * 0.7), down: false, held: None, dragged: None, dir: Path::new(dir).to_owned(), frame: 0, eng, version };
+    let mut rec = Rec { scene, conn, view: View { x: 0.0, y: 0.0, s: 1.0 }, view_to: View { x: 0.0, y: 0.0, s: 1.0 }, raster: 0.0, panel, status, cursor, ptr: (SIZE.0 as f64 * 0.55, SIZE.1 as f64 * 0.7), down: false, held: None, dragged: None, dir: Path::new(dir).to_owned(), frame: 0, eng, mixer: ui::mixer::Mixer::new(false), version };
     rec.view = rec.fit();
     rec.view_to = rec.view;
     // faces drawn once, sharp enough for the desk and the rack
@@ -634,11 +644,11 @@ pub fn record(dir: &str) -> Result<(), String> {
     if let Some(key) = rec.scene.devs.iter().find(|d| d.dev.name.starts_with("BLE MIDI")).or(rec.scene.devs.last()).map(|d| d.dev.key.clone()) {
         rec.drag(&key, (260.0, -60.0), 1.6)?;
     }
-    // into the rack's rails and back to the desk
+    // the four screens: into the rack's rails, MIXER, then ENGINE
     rec.click(Key::ViewsAt(0))?;
     rec.wait(2.6)?;
-    rec.click(Key::ViewsAt(1))?;
-    rec.wait(1.6)?;
+    rec.click(Key::Mixer)?;
+    rec.wait(2.8)?;
     // ENGINE: the real graph; a device chosen shows its details
     rec.click(Key::Engine)?;
     rec.wait(1.8)?;
@@ -647,7 +657,9 @@ pub fn record(dir: &str) -> Result<(), String> {
         rec.choose(&name)?;
         rec.wait(2.8)?;
     }
+    // and back to the desk
     rec.click(Key::Rack)?;
+    rec.click(Key::ViewsAt(1))?;
     rec.wait(1.2)?;
     rec.conn.send(Cmd::Profile(false));
     eprintln!("{dir}: {} frames, {FPS} a second", rec.frame);
@@ -685,7 +697,7 @@ fn compose_engine(eng: &mut ui::engine::Engine, (w, h): (u32, u32), dpi: f64, ve
     out
 }
 
-/// `patchcord --render out.png engine [select=NODE] [tab=server|top|issues|objects|metadata|events]
+/// `patchcord --render out.png engine [select=NODE|ID] [tab=server|top|issues|objects|metadata|events]
 /// [itab=info|conn|props|params|timing] [shut=bottom] [legend] [size=WxH] [report=FILE]`: the ENGINE
 /// screen of the live graph, after the profiler has run for two seconds (it only reads: nothing in
 /// PipeWire changes); `report` also writes what SAVE REPORT would.
