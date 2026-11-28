@@ -32,15 +32,15 @@
   <screenshots>
     <screenshot type="default">
       <caption>Devices on the desk, patched with cords</caption>
-      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.3/docs/screenshots/desk.png</image>
+      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.4/docs/screenshots/desk.png</image>
     </screenshot>
     <screenshot>
       <caption>The same devices in a rack</caption>
-      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.3/docs/screenshots/rack.png</image>
+      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.4/docs/screenshots/rack.png</image>
     </screenshot>
     <screenshot>
       <caption>ENGINE: PipeWire's real graph, with an app's details and timings</caption>
-      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.3/docs/screenshots/engine.png</image>
+      <image>https://raw.githubusercontent.com/bewzaalex/patchcord/v0.7.4/docs/screenshots/engine.png</image>
     </screenshot>
   </screenshots>
   <description>
@@ -65,6 +65,18 @@
     </ul>
   </description>
   <releases>
+    <release version="0.7.4" date="2026-11-28">
+      <url type="details">https://github.com/bewzaalex/patchcord/releases/tag/v0.7.4</url>
+      <description>
+        <p>Surround: every channel of a 5.1 or 7.1 device or stream can be set, on the rack and in MIXER.</p>
+        <ul>
+          <li>A node of more than two channels with a volume each (an HDMI output in 5.1, a 7.1 card, a 5.1 stream, a mic array, a card's Pro Audio profile) is a frame for each part, by its channels' positions: MASTER (the node's own volume and mute, and a meter of its loudest channel), a stereo frame for each pair (FRONT, REAR, SIDE…, with VOLUME, BAL and SPLIT) and a mono one for each channel without a partner (CENTER, LFE, AUX0…)</li>
+          <li>Such a node starts a unit of its own, its frames wrapping onto more units one at a time; channels of the same position (UNK, none) are a frame each, numbered</li>
+          <li>MIXER: such a node is one strip, its MASTER; its SPLIT opens its parts beside it, each with its fader and CUE, a pair with its own L and R</li>
+          <li>The rack: a device of three units or more puts frames beside its name and screen; a device whose first unit has no frames has its name in full across it; narrow room beside a frame gets vents where the field runs on</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.7.3" date="2026-11-27">
       <url type="details">https://github.com/bewzaalex/patchcord/releases/tag/v0.7.3</url>
       <description>
