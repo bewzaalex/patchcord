@@ -9,8 +9,8 @@ ships; what was turned down goes under **Not now** with the ADR that says why.
 
 - **Surround frames** (issue #14, ADR 0025, decided 2026-11-27): a node of more than two
   audio channels as frames by its channels' positions: MASTER (the node's volume and mute),
-  stereo frames for FL+FR, RL+RR, SL+SR…, mono frames for the rest. In the code, not released yet; MIXER's own
-  way not decided (it shows such a node as one strip, as before).
+  stereo frames for FL+FR, RL+RR, SL+SR…, mono frames for the rest. In MIXER one strip whose
+  SPLIT opens the parts beside it (ADR 0026, 2026-11-28). In the code, not released yet.
 - **The rack's view switch, a new look**: RAILS ⇄ DESK works (ADR 0016), but the two-position
   knob in VIEW isn't liked. Find another form for it. Mockup first.
 

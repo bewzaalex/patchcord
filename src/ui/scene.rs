@@ -3926,6 +3926,41 @@ mod tests {
         s
     }
 
+    /// MIXER and a surround node (ADR 0026): one strip, its MASTER, VOLUME with SPLIT; SPLIT
+    /// opens its parts beside it in the same module, its block then MASTER, a part's its name,
+    /// no MUTE on a part, a pair's own SPLIT.
+    #[test]
+    fn a_surround_node_in_mixer_opens_its_parts() {
+        use super::super::mixer::Mixer;
+        let mut ev = demo_events();
+        ev.splice(ev.len() - 1..ev.len() - 1, surround_events());
+        let mut s = Scene::new();
+        s.apply(ev);
+        let mut m = Mixer::new(true);
+        let find = |mods: &[super::super::mixer::Module]| mods.iter().find(|md| md.strips.first().is_some_and(|st| st.node == 30)).cloned().expect("the sink's module");
+        let closed = find(m.modules(&s));
+        assert_eq!(closed.strips.len(), 1);
+        assert!(closed.strips[0].surround && !closed.strips[0].open);
+        assert_eq!(Mixer::block(&closed.strips[0]), ("VOLUME".to_owned(), vec!["CUE", "MUTE", "SPLIT"]));
+        m.split(&mut s, closed.strips[0].at);
+        let open = find(m.modules(&s));
+        let blocks: Vec<(String, Vec<&str>)> = open.strips.iter().map(Mixer::block).collect();
+        let names: Vec<&str> = blocks.iter().map(|b| b.0.as_str()).collect();
+        assert_eq!(names, ["MASTER", "FRONT", "REAR", "CENTER", "LFE"]);
+        assert_eq!(blocks[1].1, ["CUE", "SPLIT"], "a pair: no MUTE, its own SPLIT");
+        assert_eq!(blocks[3].1, ["CUE"], "a mono part");
+        assert!(open.w > closed.w * 4.0, "as wide as its strips");
+        // a part's fader sets its channels only
+        let front = open.strips[1].at;
+        s.set_volume(front, 0.5);
+        let sent = s.outbox.iter().rev().find_map(|c| match c {
+            Cmd::SetMix { node: 30, volumes, master: None, .. } => Some(volumes.clone()),
+            _ => None,
+        });
+        // (PipeWire's volumes are cubic: 50% is 0.125)
+        assert_eq!(sent, Some(vec![0.125, 0.125, 0.512, 0.512, 1.0, 0.343]));
+    }
+
     /// MIXER: the groups in a console's order (inputs, apps, outputs), a module a strip;
     /// an app's PLAY ON keys are its links.
     #[test]
@@ -3995,8 +4030,15 @@ mod tests {
     fn mixer_picture() {
         let Ok(out) = std::env::var("PATCHCORD_PIC") else { return };
         let (w, h) = std::env::var("PATCHCORD_PIC_SIZE").ok().and_then(|v| v.split_once('x').and_then(|(a, b)| Some((a.parse::<u32>().ok()?, b.parse::<u32>().ok()?)))).unwrap_or((1700, 640));
-        let s = mixer_scene();
+        let mut s = mixer_scene();
         let mut m = super::super::mixer::Mixer::new(true);
+        // PATCHCORD_PIC_SURROUND_OPEN: its parts open (SPLIT on its MASTER, ADR 0026)
+        if std::env::var_os("PATCHCORD_PIC_SURROUND_OPEN").is_some() {
+            let masters: Vec<(usize, usize)> = s.devs.iter().enumerate().flat_map(|(di, d)| d.dev.groups.iter().enumerate().filter(|(_, g)| g.part.as_deref() == Some(crate::graph::MASTER)).map(move |(gi, _)| (di, gi))).collect();
+            for at in masters {
+                m.split(&mut s, at);
+            }
+        }
         let mut panel = super::super::panel::Panel::new(super::super::panel::State { rack: false, engine: false, mixer: true, locked: false, align: true, cables: 0, lcd: ["NO PRESET".into(), String::new()], defaults: ["Speakers".into(), "Microphone".into()], cue_led: false, cue_level: 70, hidden: 0, flow: true, pressed: None, more: false });
         let pm = crate::shot::compose_mixer(&mut m, &s, (w, h), 2.0, &mut panel);
         pm.save_png(out).expect("written");

@@ -66,9 +66,8 @@ faces):
   unit of its own, with its MASTER (beside the name and screen, if it is the face's first); a node
   of one or two channels stays beside the frame before it (2026-11-28).
 
-Not decided here: MIXER's own way (variant E, a fader a channel, stays a mockup). Until then
-MIXER shows a surround node as it did, one strip: its MASTER (the node's volume and mute), its
-PLAY ON and RECORD FROM on all its channels, its CUE on all of them.
+Not decided here: MIXER's own way (variant E, a fader a channel, stays a mockup): it is ADR 0026
+(2026-11-28), one strip, its MASTER, whose SPLIT opens the parts beside it.
 
 ## Rejected
 - One knob for all (today): a channel can't be set alone.

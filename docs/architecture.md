@@ -41,7 +41,8 @@ PipeWire ──(pw.rs thread)── Event ──► Graph (graph.rs) ──devic
   registry's type and permissions (`Event::Object`) and params (`Event::Param`, a `PVal` tree),
   ADR 0024.
 - **`ui/mixer.rs`** is MIXER: a module for each strip of the scene (a device's input or output,
-  an app's; `mixer::role_of` says which groups are strips), drawn as one picture each on the
+  an app's; `mixer::role_of` says which groups are strips; a surround node's MASTER, its parts
+  beside it in the same module while its SPLIT is lit, ADR 0026), drawn as one picture each on the
   painter's threads, the faders' caps, knobs, lit LEDs and numbers as small pictures over it. Its keys go through `Scene` (`reroute` for
   PLAY ON, `set_default`, `set_volume`, `set_channels`, `toggle_mute`).
 - **`ui/panel.rs`** holds the top panel, the status bar and the amber lists.

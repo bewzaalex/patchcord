@@ -57,7 +57,7 @@ fn strip_jacks(d: &crate::ui::scene::DevView, gi: usize) -> Vec<&face::JackDef> 
 
 pub fn role_of(dev: &Device, gi: usize) -> Option<Role> {
     let g = dev.groups.get(gi)?;
-    // a surround node is one strip, its MASTER (ADR 0025 is the rack's; MIXER's own way is to come)
+    // a surround node is one strip, its MASTER; its parts open beside it (`Strip::open`, ADR 0026)
     if !matches!(g.role, "PLAYBACK" | "CAPTURE" | "INPUT" | "OUTPUT") || g.channels_part() {
         return None;
     }
@@ -96,6 +96,13 @@ pub struct Strip {
     pub stereo: bool,
     /// SPLIT: a fader for L and one for R
     pub chans: bool,
+    /// a surround node's MASTER (ADR 0025): its SPLIT opens its parts' strips beside it
+    pub surround: bool,
+    /// its parts' strips are open (SPLIT lit): its block is MASTER, not VOLUME
+    pub open: bool,
+    /// a part of a surround node, open beside its MASTER (FRONT, REAR, CENTER…): no MUTE (PipeWire
+    /// mutes only the node), no SETUP, under its MASTER's band
+    pub part: Option<String>,
     /// a key of it held down now: it sinks deeper until it is let go
     held: Option<Hit>,
     /// an app's: PLAY ON or RECORD FROM
@@ -414,12 +421,17 @@ fn row_keys(s: &Strip, x: f64, y: f64, w: f64, split: bool) -> Vec<(Hit, [f64; 4
         hs.push(Hit::Cue(s.at));
     }
     if s.mix.is_some() {
-        hs.push(Hit::Mute(s.at));
-        if split && s.stereo {
+        // (a part has no MUTE: PipeWire mutes only the node, its MASTER does)
+        if s.part.is_none() {
+            hs.push(Hit::Mute(s.at));
+        }
+        // SPLIT: a pair into L and R; a surround node's MASTER opens its parts (under the knobs
+        // too: BAL is no way to them)
+        if (split && s.stereo) || s.surround {
             hs.push(Hit::Chan(s.at));
         }
     }
-    let n = if split { 3.0 } else { 2.0 };
+    let n = if split || s.surround { 3.0 } else { 2.0 };
     // side by side in a block, a thin line of the hole between them
     let kw = (w - (n - 1.0) * KEY_GAP) / n;
     let place = |h: &Hit| match h {
@@ -458,8 +470,15 @@ fn knob_geo(s: &Strip, x0: f64, sy: f64, rows: &Rows) -> KnobGeo {
     }
 }
 
-/// The block's name, as on the rack: VOLUME on what plays, GAIN on what comes in.
-fn block_name(s: &Strip) -> &'static str {
+/// The block's name, as on the rack: VOLUME on what plays, GAIN on what comes in; a part's own
+/// name (FRONT, REAR…), and MASTER on a surround node's while its parts are open.
+fn block_name(s: &Strip) -> &str {
+    if let Some(p) = &s.part {
+        return p;
+    }
+    if s.open {
+        return crate::graph::MASTER;
+    }
     if matches!(s.role, Role::Source | Role::Rec) { "GAIN" } else { "VOLUME" }
 }
 
@@ -539,9 +558,7 @@ impl Mixer {
             let dev = &d.dev;
             // (a card's ports, once for all its groups)
             let sections = scene.port_sections(di);
-            let strips: Vec<Strip> = (0..dev.groups.len())
-                .filter_map(|gi| {
-                    let role = role_of(dev, gi)?;
+            let strip_at = |gi: usize, role: Role| -> Strip {
                     let g = &dev.groups[gi];
                     let node = g.node;
                     let mix = d.mix(gi);
@@ -558,13 +575,23 @@ impl Mixer {
                     let cue = pins.iter().any(|p| scene.cue_jack(p).is_some_and(|j| jacks.iter().any(|k| k.as_str() == j)));
                     let two = g.stereo || g.ports.len() == 2;
                     let chans = g.stereo && mix.is_some() && self.chans.contains(&(dev.key.clone(), gi));
+                    let surround = g.part.as_deref() == Some(crate::graph::MASTER);
+                    let open = surround && self.chans.contains(&(dev.key.clone(), gi));
                     let held = match &self.drag {
                         Some(Drag::Key(h)) if key_of(h) == Some((di, gi)) => Some(h.clone()),
                         _ => None,
                     };
-                    Some(Strip { at: (di, gi), role, node, name: face::name(dev, gi).trim_end_matches(" · MASTER").to_owned(), kind: g.kind, mix, stereo: g.stereo, chans, held, targets: Vec::new(), main, node_name, port, cue, cols: if two { 2 } else { 1 }, level: d.level(gi), x: 6.0, w: STRIP_W })
-                })
-                .collect();
+                    Strip { at: (di, gi), role, node, name: face::name(dev, gi).trim_end_matches(" · MASTER").to_owned(), kind: g.kind, mix, stereo: g.stereo, chans, surround, open, part: None, held, targets: Vec::new(), main, node_name, port, cue, cols: if two { 2 } else { 1 }, level: d.level(gi), x: 6.0, w: STRIP_W }
+            };
+            let strips: Vec<Strip> = (0..dev.groups.len()).filter_map(|gi| role_of(dev, gi).map(|role| strip_at(gi, role))).collect();
+            // an open MASTER's parts, beside it: each a strip of its own, the node's (no SETUP)
+            let parts_of = |m: &Strip| -> Vec<Strip> {
+                let g = &dev.groups[m.at.1];
+                (0..dev.groups.len())
+                    .filter(|o| dev.groups[*o].node == g.node && dev.groups[*o].dir == g.dir && dev.groups[*o].channels_part() && dev.groups[*o].mix.is_some())
+                    .map(|o| Strip { part: dev.groups[o].part.clone(), main: false, node_name: None, port: None, ..strip_at(o, m.role) })
+                    .collect()
+            };
             let profile = dev.card.as_ref().map(|c| c.profile().map_or_else(|| "Off".to_owned(), |p| p.description.clone()));
             // a card's PROFILE once: on its output, else its input
             let profile_on = profile.as_ref().and_then(|_| strips.iter().find(|s| s.role == Role::Sink).or_else(|| strips.iter().find(|s| s.role == Role::Source)).map(|s| s.at));
@@ -586,7 +613,13 @@ impl Mixer {
                     _ => (Section::Apps, 1),
                 };
                 let p = if profile_on == Some(s.at) { profile.clone() } else { None };
-                mods.push((section, first, n, module(format!("{}#{}", dev.key, s.at.1), section, vec![s], p)));
+                let key = format!("{}#{}", dev.key, s.at.1);
+                let mut ss = if s.open { std::iter::once(s.clone()).chain(parts_of(&s)).collect() } else { vec![s] };
+                for (i, st) in ss.iter_mut().enumerate() {
+                    st.x = 6.0 + i as f64 * STRIP_W;
+                }
+                let w = ss.len() as f64 * STRIP_W + 12.0;
+                mods.push((section, first, n, Module { w, ..module(key, section, ss, p) }));
             }
         }
         // a static order within each group: by name, A to Z (the default input too: nothing moves
@@ -695,7 +728,10 @@ impl Mixer {
             for s in &m.strips {
                 let x0 = mx + s.x;
                 let [[lx, lw], [rx, rw]] = halves(x0 + 6.0, s.w - 12.0);
-                self.hits.push((Hit::Graph(s.node), [x0 + 7.0, sy + 4.0, named(s.w), 15.0]));
+                // (a part is under its MASTER's band: the name is the MASTER's, across them all)
+                if s.part.is_none() {
+                    self.hits.push((Hit::Graph(s.node), [x0 + 7.0, sy + 4.0, named(if s.open { m.w - s.x } else { s.w }), 15.0]));
+                }
                 let (kx, kw) = (x0 + 6.0, s.w - 12.0);
                 match s.role {
                     Role::Play | Role::Rec => {
@@ -1380,6 +1416,26 @@ impl Mixer {
         self.size
     }
 
+    /// SPLIT on a strip (for tests): a pair's L and R, a surround MASTER's parts.
+    #[cfg(test)]
+    pub fn split(&mut self, scene: &mut Scene, at: (usize, usize)) {
+        let _ = self.key_up(scene, Hit::Chan(at));
+    }
+
+    /// The names of a strip's block and its keys (for tests).
+    #[cfg(test)]
+    pub fn block(s: &Strip) -> (String, Vec<&'static str>) {
+        let keys = row_keys(s, 0.0, 0.0, 100.0, true)
+            .iter()
+            .map(|(h, _)| match h {
+                Hit::Cue(_) => "CUE",
+                Hit::Mute(_) => "MUTE",
+                _ => "SPLIT",
+            })
+            .collect();
+        (block_name(s).to_owned(), keys)
+    }
+
     /// The modules now (for tests).
     #[cfg(test)]
     pub fn modules(&mut self, scene: &Scene) -> &[Module] {
@@ -1641,7 +1697,7 @@ fn block_keys(o: &mut String, s: &Strip, keys: &[(Hit, [f64; 4])]) {
         match h {
             Hit::Cue(_) => lit_key(o, *r, "CUE", "#5fd4ff", s.cue, held),
             Hit::Mute(..) => lit_key(o, *r, "MUTE", "#ff4a32", s.mix.is_some_and(|m| m.2), held),
-            _ => lit_key(o, *r, "SPLIT", "#ffb02e", s.chans, held),
+            _ => lit_key(o, *r, "SPLIT", "#ffb02e", s.chans || s.open, held),
         }
     }
 }
@@ -1730,10 +1786,15 @@ fn module_svg(m: &Module, print: &str, rows: &Rows) -> String {
         frame(&mut o, 0.0, w, Some(("#6b6e72", "#f3efe6", "OFF", None)));
         ruled(&mut o, 12.0, w - 12.0, HEAD + ROUTE_Y + 8.0, "SETUP", print);
     }
+    // (a surround node's open parts are under its MASTER's band: one band for the node)
     let last = m.strips.len().saturating_sub(1);
     for (i, s) in m.strips.iter().enumerate() {
+        if s.part.is_some() {
+            continue;
+        }
+        let end = m.strips[i + 1..].iter().position(|o| o.part.is_none()).map_or(last, |k| i + k);
         let l = if i == 0 { 0.0 } else { s.x };
-        let r = if i == last { w } else { s.x + s.w };
+        let r = if end == last { w } else { m.strips[end].x + m.strips[end].w };
         frame(&mut o, l, r - l, Some((face::kind_colour(s.kind), face::band_ink(s.kind), &s.name, Some(s.node))));
     }
     // the card's PROFILE: the first LCD under MAIN
@@ -1745,8 +1806,10 @@ fn module_svg(m: &Module, print: &str, rows: &Rows) -> String {
     for (i, s) in m.strips.iter().enumerate() {
         let x0 = s.x;
         let held = |what: fn(&Hit) -> bool| s.held.as_ref().is_some_and(what);
+        // (between a node's MASTER and its parts from under SETUP, which is the whole node's)
         if i > 0 {
-            let _ = write!(o, r#"<path d="M{x0},{sy} V{}" stroke="{print}" stroke-opacity=".35" stroke-dasharray="2 3"/>"#, h - 8.0);
+            let from = if s.part.is_some() { sy + rows.keys_y - 22.0 } else { sy };
+            let _ = write!(o, r#"<path d="M{x0},{from} V{}" stroke="{print}" stroke-opacity=".35" stroke-dasharray="2 3"/>"#, h - 8.0);
         }
         // where it goes, or the device's keys
         let (kx, kw) = (x0 + 6.0, s.w - 12.0);
@@ -1759,7 +1822,9 @@ fn module_svg(m: &Module, print: &str, rows: &Rows) -> String {
             Role::Rec => "RECORD FROM",
             Role::Sink | Role::Source => "SETUP",
         };
-        ruled(&mut o, x0 + 6.0, x0 + s.w - 6.0, ry + 8.0, title, print);
+        if s.part.is_none() {
+            ruled(&mut o, x0 + 6.0, x0 + s.w - 6.0, ry + 8.0, title, print);
+        }
         match s.role {
             Role::Play | Role::Rec => {
                 for (i, t) in s.targets.iter().enumerate() {
