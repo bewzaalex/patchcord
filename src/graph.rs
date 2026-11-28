@@ -107,6 +107,26 @@ fn mono_part(c: &str) -> String {
     }
 }
 
+/// Ports' channels as keys a part can be made of: each one's position, but where several ports
+/// say the same position (UNK, none) each its own, numbered (`UNK 1`, `UNK 2`): every port gets a
+/// frame, none is left off the face (ADR 0025). A node's ports one way and their monitors get the
+/// same keys, in the same order.
+fn channel_keys(ports: &[Port]) -> Vec<String> {
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+    ports
+        .iter()
+        .map(|p| {
+            let c = p.channel.as_str();
+            if ports.iter().filter(|q| q.channel == c).count() < 2 {
+                return c.to_owned();
+            }
+            let n = seen.entry(c).or_insert(0);
+            *n += 1;
+            format!("{} {n}", if c.is_empty() { "MONO" } else { c })
+        })
+        .collect()
+}
+
 /// A surround node's parts from its channels in their order: a pair whose both channels it has,
 /// else the channel alone. (name, its channels)
 fn parts_of(channels: &[String]) -> Vec<(String, Vec<String>)> {
@@ -1077,7 +1097,7 @@ impl Graph {
         };
         let vg = &groups[v];
         let mix = vg.mix.clone().unwrap_or_default();
-        let parts = parts_of(&vg.ports.iter().map(|p| p.channel.clone()).collect::<Vec<_>>());
+        let parts = parts_of(&channel_keys(&vg.ports));
         let mut out = vec![Group {
             label: vg.role.to_owned(),
             client: None,
@@ -1093,13 +1113,14 @@ impl Graph {
             let g = &groups[gi];
             // its channels in the volume's parts, then any of its own the volume hasn't
             let mut mine = parts.clone();
-            for (name, cs) in parts_of(&g.ports.iter().map(|p| p.channel.clone()).collect::<Vec<_>>()) {
+            let keys = channel_keys(&g.ports);
+            for (name, cs) in parts_of(&keys) {
                 if !mine.iter().any(|(_, m)| m.iter().any(|c| cs.contains(c))) {
                     mine.push((name, cs));
                 }
             }
             for (name, cs) in mine {
-                let ports: Vec<Port> = cs.iter().filter_map(|c| g.ports.iter().find(|p| p.channel == *c).cloned()).collect();
+                let ports: Vec<Port> = cs.iter().filter_map(|c| keys.iter().position(|k| k == c).map(|i| g.ports[i].clone())).collect();
                 if ports.is_empty() {
                     continue;
                 }

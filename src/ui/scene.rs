@@ -3613,20 +3613,125 @@ mod tests {
     /// An HDMI sink in 5.1 (ADR 0025): its six channels in, their monitors out, a volume each and
     /// its own; as PipeWire gives it (FL FR RL RR FC LFE, ALSA's order).
     fn surround_events() -> Vec<Event> {
+        sink_events("alsa_output.hdmi-surround", "HDMI Surround", &["FL", "FR", "RL", "RR", "FC", "LFE"], vec![1.0, 1.0, 0.512, 0.512, 1.0, 0.343])
+    }
+
+    /// A sink (node 30) of these channels with these volumes, its monitors too.
+    fn sink_events(name: &str, description: &str, chans: &[&str], volumes: Vec<f32>) -> Vec<Event> {
+        node_events(30, &[("node.name", name), ("node.description", description), ("media.class", "Audio/Sink")], &[("in", "playback", "false"), ("out", "monitor", "true")], chans, volumes)
+    }
+
+    /// A node `id` with these properties, its ports each way (direction, name's start, monitor)
+    /// a channel each, and a volume a channel.
+    fn node_events(id: u32, kv: &[(&str, &str)], dirs: &[(&str, &str, &str)], chans: &[&str], volumes: Vec<f32>) -> Vec<Event> {
         use crate::pw::{Kind, Props};
         let props = |kv: &[(&str, &str)]| kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Props>();
-        let p = props(&[("node.name", "alsa_output.hdmi-surround"), ("node.description", "HDMI Surround"), ("media.class", "Audio/Sink")]);
-        let mut ev = vec![Event::Added { id: 30, kind: Kind::Node, props: p.clone() }, Event::Info { id: 30, props: p, state: Some("running") }];
-        let mut port = 3000;
-        for (dir, pre, mon) in [("in", "playback", "false"), ("out", "monitor", "true")] {
-            for (k, ch) in ["FL", "FR", "RL", "RR", "FC", "LFE"].iter().enumerate() {
+        let p = props(kv);
+        let mut ev = vec![Event::Added { id, kind: Kind::Node, props: p.clone() }, Event::Info { id, props: p, state: Some("running") }];
+        let mut port = id * 100;
+        for (dir, pre, mon) in dirs {
+            for (k, ch) in chans.iter().enumerate() {
                 port += 1;
-                ev.push(Event::Added { id: port, kind: Kind::Port, props: props(&[("node.id", "30"), ("port.id", &k.to_string()), ("port.direction", dir), ("port.name", &format!("{pre}_{ch}")), ("port.monitor", mon), ("audio.channel", ch), ("format.dsp", "32 bit float mono audio")]) });
+                ev.push(Event::Added { id: port, kind: Kind::Port, props: props(&[("node.id", &id.to_string()), ("port.id", &k.to_string()), ("port.direction", dir), ("port.name", &format!("{pre}_{ch}{k}")), ("port.monitor", mon), ("audio.channel", ch), ("format.dsp", "32 bit float mono audio")]) });
             }
         }
-        ev.push(Event::Mix { id: 30, volumes: vec![1.0, 1.0, 0.512, 0.512, 1.0, 0.343], mute: false });
-        ev.push(Event::NodeVolume { id: 30, volume: 1.0 });
+        ev.push(Event::Mix { id, volumes, mute: false });
+        ev.push(Event::NodeVolume { id, volume: 1.0 });
         ev
+    }
+
+    /// The device holding node `id` in a scene of these events: its frames' parts, in order
+    /// (none for a frame not split), and how many of the node's ports are on its face.
+    fn parts_and_ports(ev: Vec<Event>, id: u32) -> (Vec<String>, usize) {
+        let mut ev = ev;
+        ev.push(Event::Synced);
+        let mut s = Scene::new();
+        s.apply(ev);
+        let d = &s.devs.iter().find(|d| d.dev.groups.iter().any(|g| g.node == id)).expect("the node's device").dev;
+        let parts = (0..d.groups.len()).filter(|g| d.groups[*g].node == id && face::host(d, *g).is_none()).map(|g| d.groups[g].part.clone().unwrap_or_default()).collect();
+        let ports = d.groups.iter().filter(|g| g.node == id).map(|g| g.ports.len()).sum();
+        (parts, ports)
+    }
+
+    /// Surround layouts by their positions (ADR 0025): 2.1, 7.1, channels of one position each
+    /// a frame of its own, numbered; a stereo node one frame. Every port on the face.
+    #[test]
+    fn surround_layouts_by_position() {
+        let cases: [(&[&str], &[&str]); 5] = [
+            (&["FL", "FR", "LFE"], &["MASTER", "FRONT", "LFE"]),
+            (&["FL", "FR", "FC", "LFE", "RL", "RR", "SL", "SR"], &["MASTER", "FRONT", "CENTER", "LFE", "REAR", "SIDE"]),
+            (&["UNK", "UNK", "UNK"], &["MASTER", "UNK 1", "UNK 2", "UNK 3"]),
+            (&["", "", ""], &["MASTER", "MONO 1", "MONO 2", "MONO 3"]),
+            (&["FL", "FR"], &[""]),
+        ];
+        for (chans, want) in cases {
+            let (parts, ports) = parts_and_ports(sink_events("alsa_output.x", "X", chans, vec![1.0; chans.len()]), 30);
+            assert_eq!(parts, want, "{chans:?}");
+            assert_eq!(ports, 2 * chans.len(), "{chans:?}: every port on the face");
+        }
+    }
+
+    /// Not only sinks: an app's 5.1 stream, a four-channel mic array, a node both ways (its
+    /// inputs and outputs of one position in one frame: a filter, its volume on its inputs).
+    #[test]
+    fn surround_streams_sources_and_both_ways() {
+        let six = ["FL", "FR", "RL", "RR", "FC", "LFE"];
+        let app = node_events(40, &[("node.name", "player"), ("media.class", "Stream/Output/Audio"), ("application.name", "Player"), ("application.process.id", "40")], &[("out", "output", "false")], &six, vec![1.0; 6]);
+        assert_eq!(parts_and_ports(app, 40), (["MASTER", "FRONT", "REAR", "CENTER", "LFE"].map(String::from).to_vec(), 6));
+        let quad = ["FL", "FR", "RL", "RR"];
+        let mic = node_events(50, &[("node.name", "alsa_input.array"), ("node.description", "Array"), ("media.class", "Audio/Source")], &[("out", "capture", "false")], &quad, vec![1.0; 4]);
+        assert_eq!(parts_and_ports(mic, 50), (["MASTER", "FRONT", "REAR"].map(String::from).to_vec(), 4));
+        let both = node_events(60, &[("node.name", "filter.surround"), ("node.description", "Filter"), ("media.class", "Audio/Sink")], &[("in", "playback", "false"), ("out", "output", "false")], &six, vec![1.0; 6]);
+        let mut ev = both;
+        ev.push(Event::Synced);
+        let mut s = Scene::new();
+        s.apply(ev);
+        let d = &s.devs.iter().find(|d| d.dev.groups.iter().any(|g| g.node == 60)).expect("the node").dev;
+        let front: Vec<usize> = (0..d.groups.len()).filter(|g| d.groups[*g].part.as_deref() == Some("FRONT")).collect();
+        let first = front.iter().copied().find(|g| face::host(d, *g).is_none()).expect("FRONT");
+        let dirs: HashSet<Dir> = face::sections(d, first).iter().map(|g| d.groups[*g].dir).collect();
+        assert_eq!(dirs.len(), 2, "FRONT holds its inputs and outputs");
+    }
+
+    /// A surround node's parts are frames of their own on the rack: they wrap onto units side by
+    /// side, not one a unit (a Pro Audio sink of eight AUX channels, MASTER beside them).
+    #[test]
+    fn a_surround_nodes_frames_share_units() {
+        let chans = ["AUX0", "AUX1", "AUX2", "AUX3", "AUX4", "AUX5", "AUX6", "AUX7"];
+        let mut ev = sink_events("alsa_output.pro-output-0", "Pro Audio", &chans, vec![1.0; 8]);
+        ev.push(Event::Synced);
+        let mut s = Scene::new();
+        s.apply(ev);
+        let d = s.devs.iter().find(|d| d.dev.groups.iter().any(|g| g.node == 30)).expect("the sink");
+        let frames = (0..d.dev.groups.len()).filter(|g| face::host(&d.dev, *g).is_none()).count();
+        assert_eq!(frames, 9, "MASTER and eight AUX");
+        let units = face::rack_units(&d.dev, &d.defs, &d.counts, 1200.0);
+        assert!(units <= 5, "{units} units for {frames} frames");
+        // three units or more: the first unit takes what fits beside the name and screen
+        // (docs/design/rack-top, B), so the name stays the screen's width
+        let geo = face::face_geometry(&d.dev, &d.defs, &d.counts, Some(1200.0), true);
+        let master = d.dev.groups.iter().position(|g| g.part.as_deref() == Some(crate::graph::MASTER)).expect("MASTER");
+        assert_eq!(geo.groups[master].3, -face::LIFT, "MASTER beside the name");
+        assert!(geo.title.is_none());
+    }
+
+    /// A face whose first unit has no frames (a 2U face, its frames all in the second unit):
+    /// its name runs on over it, past the screen's width, and no vent is under it
+    /// (docs/design/rack-top, C and D).
+    #[test]
+    fn a_long_name_runs_on_over_an_empty_first_unit() {
+        let chans = ["FL", "FR", "RL", "RR", "FC", "LFE"];
+        let mut ev = sink_events("alsa_output.long", "Radeon High Definition Audio Controller", &chans, vec![1.0; 6]);
+        ev.push(Event::Synced);
+        let mut s = Scene::new();
+        s.apply(ev);
+        let d = s.devs.iter().find(|d| d.dev.groups.iter().any(|g| g.node == 30)).expect("the sink");
+        let geo = face::face_geometry(&d.dev, &d.defs, &d.counts, Some(1200.0), true);
+        assert!(geo.groups.iter().all(|g| g.3 > 0.0 || g.1 == 0.0), "no frame in the first unit");
+        let [_, _, tw, _] = geo.title.expect("the name runs on");
+        assert!(tw > 190.0 && tw < geo.title_w, "{tw}");
+        let (svg, _, _) = face::face(&d.dev, &d.defs, &d.counts, &[], Some(1200.0), true);
+        assert!(svg.contains("RADEON HIGH DEFINITION AUDIO CONTROLLER"), "the name in full");
     }
 
     /// A node of more than two channels with a volume each is framed by its channels' positions

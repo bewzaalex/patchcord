@@ -48,7 +48,9 @@ faces):
   a volume a channel (a JACK client, a DAW, an interface in its Pro Audio profile without a
   mixer): frames with nothing to set would only be clutter.
 - A node whose channels have no positions (AUX0…AUX17 on a big interface) and a volume a channel:
-  a mono frame a channel, as for any channel without a partner, however many.
+  a mono frame a channel, as for any channel without a partner, however many. Ports that say the
+  same position (UNK, or none) are a frame each, numbered: `UNK 1`, `UNK 2`, `MONO 1`… (2026-11-28:
+  only the first of them had a frame, the others were left off the face).
 - A card's channel volumes are on its route, as for stereo now: a frame's VOLUME and BAL write the
   route's `channelVolumes` (`Cmd::SetRoute`), MASTER's MUTE the route's `mute`; the route has no
   `volume` of its own, so MASTER's VOLUME is the node's `volume`. A stream's and a virtual
@@ -59,7 +61,10 @@ faces):
   they find the new frames' jacks themselves. A part's SPLIT and volume are kept by its own
   label (PLAYBACK FRONT…), the node's by its MASTER's.
 - They wrap onto more units as any frames do (the HDMI 5.1 sink: MASTER, FRONT, REAR in one unit,
-  CENTER and LFE in the next).
+  CENTER and LFE in the next), a frame at a time, not the node whole (2026-11-28: a Pro Audio
+  node's nine frames, too wide for a unit together, went one a unit). A node so split starts a
+  unit of its own, with its MASTER (beside the name and screen, if it is the face's first); a node
+  of one or two channels stays beside the frame before it (2026-11-28).
 
 Not decided here: MIXER's own way (variant E, a fader a channel, stays a mockup). Until then
 MIXER shows a surround node as it did, one strip: its MASTER (the node's volume and mute), its
@@ -79,9 +84,9 @@ PLAY ON and RECORD FROM on all its channels, its CUE on all of them.
   new node gets is the session manager's to decide (WirePlumber), not Patchcord's (2026-11-27).
 
 ## Links
-Code: `Graph::by_position` and `parts_of` (`graph.rs`), `Group.part`, `Mix.chans`/`all`/`master`,
+Code: `Graph::by_position`, `parts_of` and `channel_keys` (`graph.rs`), `Group.part`, `Mix.chans`/`all`/`master`,
 `Event::NodeVolume` and `Cmd::SetMix`'s `master` (`pw.rs`), `Scene::set_mix`, `face::sections`
-and `host` by node and part; test `a_surround_node_is_framed_by_position`; the rack's picture
+and `host` by node and part; tests `a_surround_node_is_framed_by_position`, `surround_layouts_by_position`, `surround_streams_sources_and_both_ways`, `a_surround_nodes_frames_share_units`, `a_master_starts_a_unit` (`face.rs`); the rack's picture
 with `PATCHCORD_PIC_SURROUND=1`.
 `docs/design/channels/` (channels.py, variant G), issue #14, ADR 0014 (one frame a node), ADR 0020
 (a card's frames' names).

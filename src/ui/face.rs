@@ -49,6 +49,8 @@ pub const RACK_SCREW_Y: f64 = RACK_U * 0.25 / 1.75 - RACK_GAP / 2.0;
 /// in, the screws beside its LCD.
 const EAR: f64 = RACK_SCREW_X + RACK_SCREW_R + RACK_SCREW_PAD + 1.5 - PAD;
 const TITLE: f64 = 14.0;
+/// the name's baseline
+const TITLE_Y: f64 = 33.0 - LIFT;
 /// characters the LCD shows on one line
 pub const LCD_CH: usize = 27;
 /// where the LCD's text area is, relative to the face (without rack ears): right under the name,
@@ -142,6 +144,11 @@ pub struct Geometry {
     pub grille: Option<(f64, f64)>,
     /// vents on a multi-unit face, where it has nothing to show: (x0, x1, how far down its unit)
     pub vents: Vec<[f64; 3]>,
+    /// how wide the name may be: the screen's width, or in the rack, over a first unit with no
+    /// frames, on to the face's right edge (docs/design/rack-top, variants C and D)
+    pub title_w: f64,
+    /// the name where it runs on past the screen's width (x, y, w, h): no vents under it
+    pub title: Option<[f64; 4]>,
     /// a card's PROFILE key (x, y, w, h)
     pub profile: Option<[f64; 4]>,
     /// beside it, the PORT key of a card whose output or input has ports to choose from
@@ -389,13 +396,24 @@ pub fn paint(f: Finish, w: f64, h: f64, r: f64) -> (Skin, &'static str) {
     (Skin { w, h, r, base: hex(f.base), noise: f.noise as f32 }, f.print)
 }
 
+/// A vent's hole: its hexagon's radius.
+const VENT_R: f64 = 5.2;
+
+/// The free spans worth vents: wide ones, and a narrow one (a frame's end to the face's) that
+/// runs on into a wide one in the unit over or under it, so the field goes on there; a narrow
+/// one alone stays plain metal. `pitch`: a unit's.
+fn keep_vents(vents: &mut Vec<[f64; 3]>, pitch: f64) {
+    let wide: Vec<[f64; 3]> = vents.iter().filter(|v| v[1] - v[0] > 50.0).copied().collect();
+    vents.retain(|v| v[1] - v[0] > 50.0 || wide.iter().any(|w| ((w[2] - v[2]).abs() - pitch).abs() < 1.0 && v[1].min(w[1]) - v[0].max(w[0]) > 2.0 * VENT_R));
+}
+
 /// A face's vents as a fine honeycomb (docs/design/vents, variant 1): small hexagons on the face's
 /// own grid, not each unit's, so where the free space runs on from one unit into the next the
 /// holes run on with it and a multi-unit device reads as one. In each unit the field is as high
 /// as the frames, its first and last rows touching their top and bottom; between two units' fields
 /// two rows more. Only whole holes: a hole an edge would cut is left out. `pitch`: a unit's.
 fn honeycomb(geo: &Geometry, pitch: f64) -> String {
-    const R: f64 = 5.2;
+    const R: f64 = VENT_R;
     // a frame's top and bottom in its unit's own numbers, and how many rows apart they are
     const TOP: f64 = 18.0;
     const BOTTOM: f64 = 110.0;
@@ -431,6 +449,8 @@ fn honeycomb(geo: &Geometry, pitch: f64) -> String {
         }
     }
     let on = |x: f64, y: f64| rects.iter().any(|r| r[0] <= x && x <= r[2] && r[1] - 0.01 <= y && y <= r[3] + 0.01);
+    // (a name run on over the first unit: no hole under it, nor within a frame's gap of it)
+    let under_title = |x: f64, y: f64| geo.title.is_some_and(|[tx, ty, tw, th]| x + R > tx - 10.0 && x - R < tx + tw + 10.0 && y + R > ty - 6.0 && y - R < ty + th + 6.0);
     let dx = R * 3f64.sqrt() + 2.4;
     let (x_min, x_max) = rects.iter().fold((f64::MAX, f64::MIN), |(a, b), r| (a.min(r[0]), b.max(r[2])));
     // the hexagon's corners round its middle (a point up)
@@ -441,7 +461,7 @@ fn honeycomb(geo: &Geometry, pitch: f64) -> String {
         let mut i = ((x_min - off) / dx).floor() as i64;
         while i as f64 * dx + off <= x_max {
             let x = i as f64 * dx + off;
-            let fits = on(x, y) && [(-R, -R), (R, -R), (-R, R), (R, R)].iter().all(|(a, b)| on(x + a, y + b));
+            let fits = on(x, y) && [(-R, -R), (R, -R), (-R, R), (R, R)].iter().all(|(a, b)| on(x + a, y + b)) && !under_title(x, y);
             if fits {
                 for (k, (a, b)) in corners.iter().enumerate() {
                     let _ = write!(d, "{}{:.1},{:.1}", if k == 0 { "M" } else { "L" }, x + a, y + b);
@@ -722,7 +742,7 @@ fn rows(dev: &Device) -> Vec<Row> {
         let mut rows: Vec<Row> = Vec::new();
         for b in blocks(dev, &ins) {
             match rows.last_mut() {
-                Some(r) if r.left.len() + b.len() <= PER_ROW => r.left.extend(b),
+                Some(r) if r.left.len() + b.len() <= PER_ROW && !(fresh(dev, &b) && !r.left.is_empty()) => r.left.extend(b),
                 _ => rows.push(Row { left: b, right: Vec::new() }),
             }
         }
@@ -783,27 +803,53 @@ fn grid(dev: &Device, jd: &[JackDef], counts: &[usize], rows: &[Row]) -> (Vec<Ve
 /// what sends it out), each unit's from its left edge, on as few units as fit. The lower units
 /// (the whole width, `more`, under the name and screen too) fill first, from the last frame back;
 /// the unit beside the name and screen (`room`) takes only what is left over, so a 2U face is its
-/// name over a row of frames, not frames stepping down. (All of a unit's frames are in `left`.)
+/// name over a row of frames, not frames stepping down. A face of three units or more is a grid
+/// already, frames over frames: its first unit takes what fits beside the name and screen, the
+/// rest follow on, a unit filled after another (docs/design/rack-top, variant B). (All of a
+/// unit's frames are in `left`.)
 fn rack_rows(dev: &Device, jd: &[JackDef], counts: &[usize], room: f64, more: f64) -> Vec<Row> {
     let (ins, outs) = sides(dev);
     let all: Vec<usize> = ins.into_iter().chain(outs).collect();
-    // a node's frames stay on one unit, side by side
+    // a frame's sections stay on one unit, side by side
     let blocks = blocks(dev, &all);
-    for n in 1..=all.len().max(1) {
+    let width = |b: &[usize]| b.iter().map(|g| group_w(dev, *g, jd, counts) + gap_after(dev, *g)).sum::<f64>() - gap_after(dev, b[b.len() - 1]);
+    let fresh: Vec<bool> = blocks.iter().map(|b| fresh(dev, b)).collect();
+    let rows = from_below(&blocks, &fresh, &width, room, more).unwrap_or_else(|| {
+        // (nothing fits however many units: a frame to a unit, under the name and screen)
+        std::iter::once(Vec::new()).chain(all.iter().map(|g| vec![*g])).collect()
+    });
+    let rows = if rows.len() >= 3 {
+        let top = from_above(&blocks, &fresh, &width, room, more);
+        if top.len() <= rows.len() { top } else { rows }
+    } else {
+        rows
+    };
+    rows.into_iter().map(|left| Row { left, right: Vec::new() }).collect()
+}
+
+/// The blocks on as few units as fit, the lower units filled first from the last block back, the
+/// first unit (`room` wide) taking what is left over; none if a block fits no unit. A `fresh`
+/// block starts its unit: nothing goes before it there.
+fn from_below(blocks: &[Vec<usize>], fresh: &[bool], width: &dyn Fn(&[usize]) -> f64, room: f64, more: f64) -> Option<Vec<Vec<usize>>> {
+    for n in 1..=blocks.len() + 1 {
         let mut rows: Vec<Vec<usize>> = vec![Vec::new(); n];
         let mut used = vec![0.0; n];
         let mut k = n - 1;
         let mut whole = true;
-        for b in blocks.iter().rev() {
-            let gw = b.iter().map(|g| group_w(dev, *g, jd, counts) + gap_after(dev, *g)).sum::<f64>() - gap_after(dev, b[b.len() - 1]);
+        // the unit `k` has a fresh block first: the next goes to the unit over it
+        let mut closed = false;
+        for (bi, b) in blocks.iter().enumerate().rev() {
+            let gw = width(b);
             loop {
                 let cap = if k == 0 { room } else { more };
                 let need = if rows[k].is_empty() { gw } else { used[k] + 10.0 + gw };
-                if need <= cap + 1e-6 {
+                if need <= cap + 1e-6 && !closed {
                     rows[k].splice(0..0, b.iter().copied());
                     used[k] = need;
+                    closed = fresh[bi];
                     break;
                 }
+                closed = false;
                 if k == 0 {
                     whole = false;
                     break;
@@ -815,20 +861,48 @@ fn rack_rows(dev: &Device, jd: &[JackDef], counts: &[usize], room: f64, more: f6
             }
         }
         if whole {
-            return rows.into_iter().map(|left| Row { left, right: Vec::new() }).collect();
+            return Some(rows);
         }
     }
-    // (nothing fits however many units: a frame to a unit, under the name and screen)
-    std::iter::once(Vec::new()).chain(all.into_iter().map(|g| vec![g])).map(|left| Row { left, right: Vec::new() }).collect()
+    None
 }
 
-/// Groups in a row, in blocks: a node's groups together, one frame.
+/// The blocks a unit after another, from the first (`room` wide, beside the name and screen):
+/// each unit takes what fits, the next block starts the next unit. A block wider than any unit
+/// has one of its own. A `fresh` block starts a unit of its own (the first, if that is empty).
+fn from_above(blocks: &[Vec<usize>], fresh: &[bool], width: &dyn Fn(&[usize]) -> f64, room: f64, more: f64) -> Vec<Vec<usize>> {
+    let mut rows: Vec<Vec<usize>> = vec![Vec::new()];
+    let mut used = 0.0;
+    for (bi, b) in blocks.iter().enumerate() {
+        let gw = width(b);
+        let cap = if rows.len() == 1 { room } else { more };
+        let empty = rows[rows.len() - 1].is_empty();
+        let need = if empty { gw } else { used + 10.0 + gw };
+        if (need <= cap + 1e-6 && (empty || !fresh[bi])) || (rows.len() > 1 && empty) {
+            rows.last_mut().expect("a unit").extend(b.iter().copied());
+            used = need;
+        } else {
+            rows.push(b.clone());
+            used = gw;
+        }
+    }
+    rows
+}
+
+/// A block that starts a unit of its own: a surround node's MASTER, so the node's frames start
+/// a unit with it (ADR 0025); a node of one or two channels stays beside the frame before.
+fn fresh(dev: &Device, b: &[usize]) -> bool {
+    dev.groups[b[0]].part.as_deref() == Some(crate::graph::MASTER)
+}
+
+/// Groups in a row, in blocks: a frame's groups together (a node's, or a surround node's part's,
+/// ADR 0025: its parts are frames of their own and wrap onto units as any frames do).
 fn blocks(dev: &Device, gs: &[usize]) -> Vec<Vec<usize>> {
-    let node = |g: usize| dev.groups[g].ports.first().map(|p| p.node);
+    let frame = |g: usize| (dev.groups[g].node, dev.groups[g].part.as_deref());
     let mut out: Vec<Vec<usize>> = Vec::new();
     for &g in gs {
         match out.last_mut() {
-            Some(b) if node(b[0]) == node(g) => b.push(g),
+            Some(b) if frame(b[0]) == frame(g) => b.push(g),
             _ => out.push(vec![g]),
         }
     }
@@ -922,7 +996,15 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
     // (in the rack a face fills its units but for the gap to the next one)
     let units = rows_of.len().max(1) as f64;
     let h = if rack { RACK_U * units - RACK_GAP } else { DEV_H * units };
-    let mut geo = Geometry { w, h, jacks: vec![(0.0, 0.0); jd.len()], switches: Vec::new(), hide, left: ear, groups: vec![(0.0, 0.0, 0.0, 0.0); dev.groups.len()], grille: None, profile, port, mix: Vec::new(), meters: Vec::new(), vents: Vec::new(), graph: Vec::new() };
+    let mut geo = Geometry { w, h, jacks: vec![(0.0, 0.0); jd.len()], switches: Vec::new(), hide, left: ear, groups: vec![(0.0, 0.0, 0.0, 0.0); dev.groups.len()], grille: None, profile, port, mix: Vec::new(), meters: Vec::new(), vents: Vec::new(), title_w: IDW, title: None, graph: Vec::new() };
+    // in the rack, a first unit with no frames: the name on over it to the right edge
+    if rack && rows_of.first().is_none_or(|r| r.left.is_empty() && r.right.is_empty()) {
+        geo.title_w = w - 2.0 * (ear + PAD);
+        let tw = text::width(text::BLACK, &fit_title(&dev.name, geo.title_w), TITLE, 0.0);
+        if tw > IDW {
+            geo.title = Some([ear + PAD, TITLE_Y - TITLE, tw, TITLE + 3.0]);
+        }
+    }
     // a group at `x`, in the unit `oy` down
     let place = |gi: usize, x: f64, oy: f64, geo: &mut Geometry| -> f64 {
         let (gw, jw) = (group_w(dev, gi, jd, counts), jacks_w(dev, gi, jd, counts));
@@ -1038,7 +1120,7 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
             }
             geo.vents.push([a, b0 - 10.0, oy]);
         }
-        geo.vents.retain(|[a, b, _]| b - a > 50.0);
+        keep_vents(&mut geo.vents, if rack { RACK_U } else { DEV_H });
         return geo;
     }
     // more than one unit: one grid, a unit for each row; inputs on their column's left edge,
@@ -1073,7 +1155,7 @@ pub fn face_geometry(dev: &Device, jd: &[JackDef], counts: &[usize], rack_w: Opt
                 geo.vents.push([a, b, oy]);
             }
         }
-        geo.vents.retain(|[a, b, _]| b - a > 50.0);
+        keep_vents(&mut geo.vents, DEV_H);
         return geo;
     }
     // what takes sound in on the left, what sends it out on the right; in a rack against the
@@ -1587,7 +1669,7 @@ pub fn face(dev: &Device, jd: &[JackDef], counts: &[usize], split: &[bool], rack
     let grille = honeycomb(&geo, if rack { RACK_U } else { DEV_H });
 
     let r = if rack { 3.0 } else { 12.0 };
-    let title = format!(r#"<text x="{x0}" y="{}" font-size="{TITLE}">{}</text>"#, 33.0 - LIFT, esc(&fit_title(&dev.name, IDW)));
+    let title = format!(r#"<text x="{x0}" y="{TITLE_Y}" font-size="{TITLE}">{}</text>"#, esc(&fit_title(&dev.name, geo.title_w)));
     // HIDE: a small key at the left of the row under the LCD, an eye struck through; not there
     // while the device has cords (only an unused one can be hidden: `face_geometry`)
     let hide = if geo.hide[2] == 0.0 {
@@ -1771,6 +1853,28 @@ fn base64(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A surround node's MASTER starts a unit of its own, from the bottom up and from the top
+    /// down; the frames after it stay beside it.
+    #[test]
+    fn a_master_starts_a_unit() {
+        let blocks = vec![vec![0], vec![1], vec![2]];
+        let fresh = [false, true, false];
+        let width = |_: &[usize]| 100.0;
+        assert_eq!(from_below(&blocks, &fresh, &width, 1000.0, 1000.0), Some(vec![vec![0], vec![1, 2]]));
+        assert_eq!(from_above(&blocks, &fresh, &width, 1000.0, 1000.0), vec![vec![0], vec![1, 2]]);
+        // first, it stays beside the name and screen
+        assert_eq!(from_above(&blocks, &[true, false, false], &width, 1000.0, 1000.0), vec![vec![0, 1, 2]]);
+    }
+
+    /// A narrow free span keeps its vents when a wide one runs on from it in the unit over or
+    /// under it; alone, it is plain metal.
+    #[test]
+    fn a_narrow_span_keeps_its_vents_beside_a_field() {
+        let mut v = vec![[900.0, 940.0, 0.0], [700.0, 940.0, RACK_U], [100.0, 140.0, 2.0 * RACK_U]];
+        keep_vents(&mut v, RACK_U);
+        assert_eq!(v, vec![[900.0, 940.0, 0.0], [700.0, 940.0, RACK_U]]);
+    }
     use crate::pw::{Avail, Event, Kind, Profile, Props, Route};
 
     /// A card's nodes (id, class, node.nick, card.profile.device), and its routes in use
